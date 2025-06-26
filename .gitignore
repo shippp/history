@@ -198,3 +198,8 @@ cython_debug/
 notebooks/data/*/*/*/*
 
 !notebooks/data/iceland/aerial/1980_08_22/calibration_report.pdf
+!notebooks/data/casa_grande/aerial/1978_09_06/calibration_report.pdf
+!notebooks/data/casa_grande/aerial/1978_09_06/images_footprint.geojson
+!notebooks/data/casa_grande/aerial/1978_09_06/camera_model_extrinsics.csv
+!notebooks/data/casa_grande/aerial/1978_09_06/camera_model_intrinsics.csv
+!notebooks/data/casa_grande/aerial/1978_09_06/image_mask.tif
