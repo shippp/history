@@ -203,3 +203,8 @@ notebooks/data/*/*/*/*
 !notebooks/data/casa_grande/aerial/1978_09_06/camera_model_extrinsics.csv
 !notebooks/data/casa_grande/aerial/1978_09_06/camera_model_intrinsics.csv
 !notebooks/data/casa_grande/aerial/1978_09_06/image_mask.tif
+
+!notebooks/data/iceland/aerial/1980_08_22/camera_model_intrinsics.csv
+!notebooks/data/iceland/aerial/1980_08_22/image_mask.tif
+!notebooks/data/iceland/aerial/1980_08_22/pseudofiducials.csv
+dev/
