@@ -13,7 +13,7 @@ import os
 import subprocess
 from glob import glob
 
-import download_tools as dt
+import src.history.aux_data.download_tools as dt
 import xdem
 import matplotlib.pyplot as plt
 import geoutils as gu

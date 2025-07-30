@@ -196,6 +196,7 @@ cython_debug/
 
 # ignore all generating data 
 notebooks/data/*/*/*/raw_images
-
+notebooks/data/*/aux_data/*
 
 dev/
+.vscode
