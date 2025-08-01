@@ -14,7 +14,44 @@ def iter_point2dem(
     casagrande_ref_dem_large: str | None = None,
     overwrite: bool = False,
     dry_run: bool = False,
-):
+) -> None:
+    """
+    Batch process point cloud files in a directory to generate DEMs aligned with reference DEMs.
+
+    This function iterates over all point cloud files (*.las or *.laz) in `input_directory`,
+    selects the appropriate reference DEM based on site and dataset extracted from filenames,
+    and calls `point2dem` to create coregistered DEMs saved in `output_directory`.
+    
+    Parameters
+    ----------
+    input_directory : str
+        Path to the directory containing input point cloud files.
+    output_directory : str
+        Directory where output DEM files will be saved.
+    iceland_ref_dem_zoom : str or None, optional
+        Path to the Iceland zoom reference DEM for the 'AI' dataset.
+    iceland_ref_dem_large : str or None, optional
+        Path to the Iceland large reference DEM for non-'AI' datasets.
+    casagrande_ref_dem_zoom : str or None, optional
+        Path to the Casagrande zoom reference DEM for the 'AI' dataset.
+    casagrande_ref_dem_large : str or None, optional
+        Path to the Casagrande large reference DEM for non-'AI' datasets.
+    overwrite : bool, optional
+        If True, overwrite existing DEM files. Default is False.
+    dry_run : bool, optional
+        If True, only print the commands without executing them. Default is False.
+    
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    - Expects filenames to be parsable by `FileNaming` class to determine site and dataset.
+    - Output DEM filenames are derived from input filenames by removing '_pointcloud.las' or '_pointcloud.laz'.
+    - Requires `point2dem` function to be defined and accessible.
+    - Creates the output directory if it does not exist.
+    """
     os.makedirs(output_directory, exist_ok=True)
 
     for filename in os.listdir(input_directory):
@@ -57,6 +94,32 @@ def iter_point2dem(
 def point2dem(
     pointcloud_file: str, output_dem: str, ref_dem: str, dry_run: bool = False
 ) -> None:
+    """
+    Generate a DEM raster from a point cloud file using the ASP `point2dem` command,
+    aligning output to a reference DEM’s spatial extent, resolution, and coordinate system.
+
+    Parameters
+    ----------
+    pointcloud_file : str
+        Path to the input point cloud file (e.g., .las, .laz) to convert to DEM.
+    output_dem : str
+        Path where the generated DEM raster will be saved.
+    ref_dem : str
+        Path to the reference DEM raster used to define the output spatial reference,
+        resolution, and bounding box.
+    dry_run : bool, optional
+        If True, only print the generated command without executing it. Default is False.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    - This function constructs and runs the `point2dem` command line tool from the Ames Stereo Pipeline (ASP).
+    - The output DEM will be projected and clipped to match the reference DEM’s CRS, bounds, and resolution.
+    - Requires that `point2dem` is installed and accessible in the system PATH.
+    """
     ref_raster = Raster(ref_dem)
 
     bounds = ref_raster.bounds
