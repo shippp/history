@@ -19,7 +19,7 @@ class FileNaming:
 
 
         assert self.site in ["CG", "IL"]
-        assert self.dataset in ["AI", "MC"]
+        assert self.dataset in ["AI", "MC", "PC"]
         assert self.images in ["RA", "PP"]
         assert self.camera_used in ["CY", "CN"]
         assert self.gcp_used in ["GY", "GN"]

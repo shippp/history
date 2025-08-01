@@ -82,6 +82,15 @@ def iter_coregister_dems(
     """
     series = []
 
+    ref_dem_mapping = {
+        "CGAI": (casagrande_ref_dem_zoom, casagrande_ref_dem_zoom_mask),
+        "CGMC": (casagrande_ref_dem_large, casagrande_ref_dem_large_mask),
+        "CGPC": (casagrande_ref_dem_large, casagrande_ref_dem_large_mask),
+        "ILAI": (iceland_ref_dem_zoom, iceland_ref_dem_zoom_mask),
+        "ILMC": (iceland_ref_dem_large, iceland_ref_dem_large_mask),
+        "ILPC": (iceland_ref_dem_large, iceland_ref_dem_large_mask)
+    }
+
     for filename in os.listdir(input_directory):
         if filename.endswith("-DEM.tif"):
             file_naming = FileNaming(filename)
@@ -103,12 +112,7 @@ def iter_coregister_dems(
                 continue
 
             # select the good reference DEM and mask in terms of the site and the dataset
-            if file_naming.site == "CG":
-                ref_dem_path = casagrande_ref_dem_zoom if file_naming.dataset == "AI" else casagrande_ref_dem_large
-                ref_dem_mask_path = casagrande_ref_dem_zoom_mask if file_naming.dataset == "AI" else casagrande_ref_dem_large_mask
-            else:
-                ref_dem_path = iceland_ref_dem_zoom if file_naming.dataset == "AI" else iceland_ref_dem_large
-                ref_dem_mask_path = iceland_ref_dem_zoom_mask if file_naming.dataset == "AI" else iceland_ref_dem_large_mask
+            ref_dem_path, ref_dem_mask_path = ref_dem_mapping.get(file_naming.site + file_naming.dataset)
 
             print(f"coregister_dem({dem_path}, {ref_dem_path}, {ref_dem_mask_path}, {output_dem_path})")
             if not dry_run:
