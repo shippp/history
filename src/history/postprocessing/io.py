@@ -135,71 +135,148 @@ def uncompress_all_submissions(
     
     # Process each archive file
     for archive_file in sorted(archive_files):
-        # Determine extraction directory name (remove extension)
-        if archive_file.suffix == '.gz' and archive_file.stem.endswith('.tar'):
-            # Handle .tar.gz
-            extract_name = archive_file.stem.replace('.tar', '')
-        else:
-            extract_name = archive_file.stem
-        
-        extract_dir = output_dir / extract_name
-        
-        # Check if already extracted and not overwriting
-        if extract_dir.exists() and not overwrite:
-            if verbose:
-                print(f"Skipping {archive_file.name} - already extracted")
-            results[archive_file.name] = str(extract_dir)
-            continue
-        
-        if dry_run:
-            if verbose:
-                print(f"{archive_file.name} -> {extract_dir}")
-            results[archive_file.name] = str(extract_dir)
-            continue
-        
-        # Remove existing directory if overwriting
-        if extract_dir.exists() and overwrite:
-            if verbose:
-                print(f"Removing existing directory: {extract_dir}")
-            shutil.rmtree(extract_dir)
-        
-        # Determine extraction method
-        extraction_func = None
-        for ext, func in archive_extensions.items():
-            if archive_file.name.endswith(ext):
-                extraction_func = func
-                break
-        
-        if extraction_func is None:
-            if verbose:
-                print(f"Unsupported archive format: {archive_file.name}")
-            continue
-        
-        try:
-            if verbose:
-                print(f"Extracting {archive_file.name}...")
-            
-            # Create extraction directory
-            extract_dir.mkdir(exist_ok=True)
-            
-            # Extract the archive
-            extraction_func(archive_file, extract_dir)
-            results[archive_file.name] = str(extract_dir)
-            
-            if verbose:
-                print(f"Successfully extracted {archive_file.name}")
-                
-        except Exception as e:
-            if verbose:
-                print(f"Failed to extract {archive_file.name}: {e}")
-            # Clean up partial extraction
-            if extract_dir.exists():
-                shutil.rmtree(extract_dir)
+
+        result = extract_single_archive(
+            archive_file,
+            output_dir,
+            overwrite=overwrite,
+            dry_run=dry_run,
+            verbose=verbose
+        )
+        if result is not None:
+            results[archive_file.name] = result
     
+    # Check if any files are archives
+    archive_files_l2 = []
+    for ext in sorted_extensions:
+        archive_files_l2.extend(output_dir.glob(f"**/*{ext}"))
+    
+    if verbose:
+        print(f"\nFound {len(archive_files_l2)} encapsulated archive files")
+        [print(i) for i in sorted(archive_files_l2)]
+    
+    if len(archive_files_l2) > 0:
+        for archive_file in sorted(archive_files_l2):
+
+            archive_dir = archive_file.parent
+            result = extract_single_archive(
+                archive_file,
+                archive_dir,
+                overwrite=overwrite,
+                dry_run=dry_run,
+                verbose=verbose
+            )
+            if result is not None:
+                results[archive_file.name] = result      
+                archive_file.unlink() # delete encapsulated archive
+
     if verbose:
         print(f"Extraction complete. Processed {len(results)} files.")
     
     return results
+
+
+def extract_single_archive(archive_file: Union[str, Path],
+                           output_dir: Path,
+                           overwrite: bool = False,
+                           dry_run: bool = True,
+                           verbose: bool = True) -> Union[str, None]:
+    """
+    Extract a single archive file to the specified output directory.
+
+    Parameters
+    ----------
+    archive_file : str or Path
+        Path to the archive file to be extracted
+    output_dir : str or Path
+        Directory to extract files to
+    overwrite : bool, default False
+        Whether to overwrite existing extracted directory
+    dry_run : bool, default True
+        If True, only print what would be done without actually extracting
+    verbose : bool, default True
+        Whether to print progress messages
+    Returns
+    -------
+    str or None
+        Path to the extraction directory if successful, None otherwise
+    """
+    # Define supported archive extensions
+    archive_extensions = {
+        '.zip': _extract_zip,
+        '.7z': _extract_7z,
+        '.tgz': _extract_tar,
+        '.tar.gz': _extract_tar,
+        '.tar.bz2': _extract_tar,
+        '.tar.xz': _extract_tar,
+    }
+
+    # Convert str to Path
+    archive_file = Path(archive_file)
+    output_dir = Path(output_dir)
+
+    # Determine extraction directory name (remove extension)
+    if archive_file.suffix == '.gz' and archive_file.stem.endswith('.tar'):
+        # Handle .tar.gz
+        extract_name = archive_file.stem.replace('.tar', '')
+    else:
+        extract_name = archive_file.stem
+    
+    extract_dir = output_dir / extract_name
+    
+    # Check if already extracted and not overwriting
+    if extract_dir.exists() and not overwrite:
+        if verbose:
+            print(f"Skipping {archive_file.name} - already extracted")
+        result = str(extract_dir)
+        return result
+    
+    if dry_run:
+        if verbose:
+            print(f"{archive_file.name} -> {extract_dir}")
+        result = str(extract_dir)
+        return result
+    
+    # Remove existing directory if overwriting
+    if extract_dir.exists() and overwrite:
+        if verbose:
+            print(f"Removing existing directory: {extract_dir}")
+        shutil.rmtree(extract_dir)
+    
+    # Determine extraction method
+    extraction_func = None
+    for ext, func in archive_extensions.items():
+        if archive_file.name.endswith(ext):
+            extraction_func = func
+            break
+    
+    if extraction_func is None:
+        if verbose:
+            print(f"Unsupported archive format: {archive_file.name}")
+        return None
+    
+    try:
+        if verbose:
+            print(f"Extracting {archive_file.name}...")
+        
+        # Create extraction directory
+        extract_dir.mkdir(exist_ok=True)
+        
+        # Extract the archive
+        extraction_func(archive_file, extract_dir)
+        result = str(extract_dir)
+        
+        if verbose:
+            print(f"Successfully extracted {archive_file.name}")
+            
+    except Exception as e:
+        if verbose:
+            print(f"Failed to extract {archive_file.name}: {e}")
+        # Clean up partial extraction
+        if extract_dir.exists():
+            shutil.rmtree(extract_dir)
+
+    return result
 
 
 def _extract_zip(archive_path: Path, extract_dir: Path) -> None:
