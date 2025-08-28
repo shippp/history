@@ -5,6 +5,8 @@ dependencies:
   - python=3.11
   - xdem
   - ipykernel
+  - py7zr
+  - contextily
   - pip
   - pip :
     - usgsxplore
