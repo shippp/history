@@ -315,7 +315,7 @@ def analyze_submissions(data_dir: Union[str, Path], verbose: bool = True) -> tup
         and dictionary mapping adjusted experiment codes to file paths
     """
     data_dir = Path(data_dir)
-    
+
     # Define the expected mandatory files
     mandatory_files = [
         'sparse_pointcloud.laz',  # or .las
@@ -491,6 +491,10 @@ def analyze_submissions(data_dir: Union[str, Path], verbose: bool = True) -> tup
                             found_meaning = meaning
                             break
                     
+                    if found_code == "XX":
+                        if verbose:
+                            print(f"Warning: experiment {experiment_code} missing or unrecognized code for {category}")
+
                     found_codes[category] = found_meaning
                     experiment_parts.append(found_code)
                 
