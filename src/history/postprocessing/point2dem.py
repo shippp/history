@@ -16,7 +16,8 @@ def iter_point2dem(
     casagrande_ref_dem_large: str | None = None,
     overwrite: bool = False,
     dry_run: bool = False,
-    max_workers: int = 5
+    asp_path: str = None,
+    max_workers: int = 5,
 ) -> None:
     """
     Batch process point cloud files in a directory to generate DEMs aligned with reference DEMs.
@@ -43,6 +44,8 @@ def iter_point2dem(
         If True, overwrite existing DEM files. Default is False.
     dry_run : bool, optional
         If True, only print the commands without executing them. Default is False.
+    asp_path : str or None, optional
+        Path to the ASP installation directory. If None, assumes `point2dem` is in system PATH.
     max_workers : int, optional
         max number of process.
     
@@ -95,7 +98,7 @@ def iter_point2dem(
 
                 # start a process of point2dem function
                 futures.append(
-                    executor.submit(point2dem, pointcloud_file, output_dem, ref_dem, dry_run)
+                    executor.submit(point2dem, pointcloud_file, output_dem, ref_dem, dry_run, asp_path)
                 )
         # Create the pbar and wait for all process to finish
         for future in tqdm(as_completed(futures), total=len(futures), desc="Converting into DEM", unit="File"):
@@ -106,7 +109,7 @@ def iter_point2dem(
 
 
 def point2dem(
-    pointcloud_file: str, output_dem: str, ref_dem: str, dry_run: bool = False, max_workers: int = 1
+    pointcloud_file: str, output_dem: str, ref_dem: str, dry_run: bool = False, asp_path: str=None, max_workers: int = 1
 ) -> None:
     """
     Generate a DEM raster from a point cloud file using the ASP `point2dem` command,
@@ -123,6 +126,8 @@ def point2dem(
         resolution, and bounding box.
     dry_run : bool, optional
         If True, only print the generated command without executing it. Default is False.
+    asp_path : str, optional
+        Path to the ASP installation directory. If None, assumes `point2dem` is in system PATH.
     max_workers : int, optional
         Number of threads to run point2dem.
 
@@ -145,8 +150,13 @@ def point2dem(
 
     res = ref_raster.res[0]
 
-    command = f'point2dem --t_srs "{str_crs}" --tr {res} --t_projwin {str_bounds} --threads {max_workers} --datum WGS84  {pointcloud_file} -o {output_dem}'
-    
+    if asp_path is not None:
+        point2dem_exec = os.path.join(asp_path, "point2dem")
+    else:
+        point2dem_exec = "point2dem"
+
+    command = f'{point2dem_exec} --t_srs "{str_crs}" --tr {res} --t_projwin {str_bounds} --threads {max_workers} --datum WGS84  {pointcloud_file} -o {output_dem}'
+
     if dry_run:
         print(command)
     else:

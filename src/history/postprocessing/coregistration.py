@@ -3,6 +3,7 @@ import xdem
 import numpy as np
 import pandas as pd
 import os
+import matplotlib.pyplot as plt
 
 from .file_naming import FileNaming
 
@@ -225,11 +226,27 @@ def coregister_dem(
             os.makedirs(os.path.dirname(output_ddem_before_path), exist_ok=True)
         ddem_before.save(output_ddem_before_path, tiled=True)
 
+        # Make quick plot
+        plt.figure()
+        ddem_before.plot(cmap="coolwarm", vmin=-10, vmax=10, cbar_title="Elevation difference (m)")
+        plt.title("dDEM before coregistration")
+        plt.tight_layout()
+        plt.savefig(output_ddem_before_path.replace(".tif", ".png"), dpi=200)
+        plt.close()
+
     # if the output_ddem_after_path is set save the ddem after coreg
     if output_ddem_after_path:
         if os.path.dirname(output_ddem_after_path):
             os.makedirs(os.path.dirname(output_ddem_after_path), exist_ok=True)
         ddem_after.save(output_ddem_after_path, tiled=True)
+
+        # Make quick plot
+        plt.figure()
+        ddem_after.plot(cmap="coolwarm", vmin=-10, vmax=10, cbar_title="Elevation difference (m)")
+        plt.title("dDEM after coregistration")
+        plt.tight_layout()
+        plt.savefig(output_ddem_after_path.replace(".tif", ".png"), dpi=200)
+        plt.close()
 
     return pd.Series(result, name=os.path.basename(dem_path))
 
