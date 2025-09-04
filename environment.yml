@@ -7,6 +7,9 @@ dependencies:
   - ipykernel
   - py7zr
   - contextily
+  - laspy
+  - jupyterlab
+  - ruff
   - pip
   - pip :
     - usgsxplore

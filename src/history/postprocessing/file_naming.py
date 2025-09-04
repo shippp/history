@@ -1,30 +1,55 @@
 import os
 
-class FileNaming:
+
+class FileNaming(dict):
+    # Mappings for validation and optional human-readable names
+    VALID_SITE = {"CG": "casa_grande", "IL": "iceland"}
+    VALID_DATASET = {"AI": "aerial", "MC": "kh9mc", "PC": "kh9pc"}
+    VALID_IMAGES = {"RA": "raw", "PP": "preprocessed"}
+    VALID_CAMERA = {"CY": True, "CN": False}
+    VALID_GCP = {"GY": True, "GN": False}
+    VALID_COREG = {"PY": True, "PN": False}
+    VALID_MTP = {"MY": True, "MN": False}
+    VALID_PCTYPE = {"dense": "dense", "sparse": "sparse"}
+
+    # Define the keys and their validation mapping in order
+    KEYS_MAPPING = [
+        ("author", None),
+        ("site", VALID_SITE),
+        ("dataset", VALID_DATASET),
+        ("images", VALID_IMAGES),
+        ("camera_used", VALID_CAMERA),
+        ("gcp_used", VALID_GCP),
+        ("pointcloud_coregistration", VALID_COREG),
+        ("mtp_adjustment", VALID_MTP),
+        ("pointcloud_type", VALID_PCTYPE),
+    ]
+
     def __init__(self, file: str):
+        super().__init__()  # initialize dict
+
         filename = os.path.basename(file)
+        parts = filename.split("_")
 
-        self.splited_filename = filename.split("_")
+        assert len(parts) > 8, f"File {file} has unexpected format"
 
-        assert len(self.splited_filename) > 8, f"File {file} has unexpected format"
+        self["code"] = parts[0]
 
-        self.author = self.splited_filename[0]
-        self.site = self.splited_filename[1]
-        self.dataset = self.splited_filename[2]
-        self.images = self.splited_filename[3]
-        self.camera_used = self.splited_filename[4]
-        self.gcp_used = self.splited_filename[5]
-        self.pointcloud_coregistration = self.splited_filename[6]
-        self.mtp_adjustment = self.splited_filename[7]
+        # First part is always author
+        self["author"] = parts[0]
 
+        # For other codes, search in the filename
+        remaining_parts = parts[1:]
+        for key, mapping in self.KEYS_MAPPING[1:]:  # skip author
+            if mapping is not None:
+                # Find first part in remaining_parts that matches mapping
+                found = next((p for p in remaining_parts if p in mapping), None)
+                self[key] = mapping.get(found, "unknown")
+                if found is None:
+                    self["code"] += "_XX"
+                else:
+                    self["code"] += "_" + found
 
-        assert self.site in ["CG", "IL"], f"Wrong site code for file {file}"
-        assert self.dataset in ["AI", "MC", "PC"], f"Wrong dataset code for file {file}"
-        assert self.images in ["RA", "PP"], f"Wrong image code for file {file}"
-        assert self.camera_used in ["CY", "CN"], f"Wrong camera code for file {file}"
-        assert self.gcp_used in ["GY", "GN"], f"Wrong gcp code for file {file}"
-        assert self.pointcloud_coregistration in ["PY", "PN"], f"Wrong coreg code for file {file}"
-        assert self.mtp_adjustment in ["MY", "MN"], f"Wrong multitemp code for file {file}"
-
-
-
+            else:
+                self[key] = "unknown"
+                self["code"] += "_XX"
