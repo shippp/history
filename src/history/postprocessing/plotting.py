@@ -610,7 +610,7 @@ def plot_extrinsics_comparison(
                                               color='blue', markersize=8, label='Final positions')
         ax.legend(
             [legend_ellipse, final_proxy],
-            [f'Scal factor ×{oval_scale_factor:.2f}', 'Final positions'],
+            [f'Scale factor ×{oval_scale_factor:.2f}', 'Final positions'],
             handler_map={Ellipse: HandlerPatch()},
             loc='lower left',
             frameon=True
