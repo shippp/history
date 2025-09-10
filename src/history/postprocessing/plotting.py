@@ -573,7 +573,7 @@ def plot_extrinsics_comparison(
         except Exception:
             cmap = plt.cm.managua if hasattr(plt.cm, "managua") else plt.cm.RdBu_r
 
-        # ---- NEW ellipse placement to guarantee final on far end ----
+        # ---- ellipse placement to guarantee final on far end ----
         for i in range(len(merged_df_utm)):
             dx = final_x[i] - initial_x[i]
             dy = final_y[i] - initial_y[i]

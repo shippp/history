@@ -523,3 +523,67 @@ def write_asp_pivoted_rotation(
     # 4) write file for ASP (space-separated)
     np.savetxt(output_filename, M_pivot, fmt="%.17g")
     return M_pivot
+
+def analyze_transform(R):
+    """
+    Analyze a 3x3 transform matrix for rotation, scale, and shear.
+
+    Parameters
+    ----------
+    R : array-like, shape (3,3)
+        Linear transform matrix (e.g. from an ASP 4x4).
+
+    Returns
+    -------
+    dict
+        - scale : (sx, sy, sz)
+            Lengths of the column vectors, i.e. scale factors along x, y, z.
+        - shear : (shear_xy, shear_xz, shear_yz)
+            Dot products between normalized axes; zero means perfectly orthogonal.
+        - rotation_deg : (roll, pitch, yaw)
+            Euler angles (degrees) recovered in ZYX order
+            (yaw about Z, pitch about Y, roll about X).
+
+    Notes
+    -----
+    - The matrix is decomposed into scale, shear, and rotation parts.
+    - If scale ≈ 1 and shear ≈ 0, the transform is a pure rotation.
+    - Euler angle extraction uses the ZYX convention and handles gimbal lock.
+    - Assumes right-handed coordinate system and column-vector convention.
+    """
+    R = np.asarray(R, dtype=float)
+    
+    # --- scale factors (norms of columns) ---
+    sx = np.linalg.norm(R[:,0])
+    sy = np.linalg.norm(R[:,1])
+    sz = np.linalg.norm(R[:,2])
+    
+    # --- normalize columns to get pure rotation + shear ---
+    Rn = np.zeros_like(R)
+    Rn[:,0] = R[:,0] / sx
+    Rn[:,1] = R[:,1] / sy
+    Rn[:,2] = R[:,2] / sz
+    
+    # --- shear: dot products between axes (should be 0 if orthogonal) ---
+    shear_xy = np.dot(Rn[:,0], Rn[:,1])
+    shear_xz = np.dot(Rn[:,0], Rn[:,2])
+    shear_yz = np.dot(Rn[:,1], Rn[:,2])
+    
+    # --- recover Euler angles (ZYX order: roll=X, pitch=Y, yaw=Z) ---
+    if abs(Rn[2,0]) < 1.0:  # not gimbal locked
+        ry = -np.arcsin(Rn[2,0])
+        rx = np.arctan2(Rn[2,1], Rn[2,2])
+        rz = np.arctan2(Rn[1,0], Rn[0,0])
+    else:  # gimbal lock
+        ry = np.pi/2 if Rn[2,0] < 0 else -np.pi/2
+        rx = np.arctan2(-Rn[0,1], -Rn[0,2])
+        rz = 0.0
+
+    print("=== Transform analysis ===")
+    print(f"Scale: sx={sx:.6f}, sy={sy:.6f}, sz={sz:.6f}")
+    print(f"Shear (dot products): xy={shear_xy:.6e}, xz={shear_xz:.6e}, yz={shear_yz:.6e}")
+    print(f"Rotation (deg): rx={np.degrees(rx):.6f}, ry={np.degrees(ry):.6f}, rz={np.degrees(rz):.6f}")
+
+    return dict(scale=(sx,sy,sz),
+                shear=(shear_xy,shear_xz,shear_yz),
+                rotation_deg=(np.degrees(rx), np.degrees(ry), np.degrees(rz)))
