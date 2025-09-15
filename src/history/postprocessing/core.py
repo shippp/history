@@ -18,21 +18,18 @@ Intended Use:
 
 import os
 import subprocess
-from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
-from glob import glob
-from pathlib import Path
 
 import geoutils as gu
-import laspy
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import rasterio
 import xdem
-from rasterio.enums import Resampling
 from tqdm import tqdm
+
+from history.postprocessing.io import PathsManager, parse_filename, uncompress_all_submissions
+from history.postprocessing.utils import get_dems_df, get_pointcloud_df, load_coreg_results
+from history.postprocessing.visualization import plot_files_recap
 
 
 #######################################################################################################################
@@ -40,131 +37,88 @@ from tqdm import tqdm
 #######################################################################################################################
 class PostProcessing:
     """
-    The PostProcessing class provides tools to manage and analyze DEMs generated from point cloud data.
+    Post-processing pipeline for photogrammetry and DEM generation.
 
-    This class supports the full workflow from raw point cloud files to processed DEMs, including:
-    - Converting point clouds into DEMs using ASP's point2dem (parallel or sequential execution).
-    - Coregistering DEMs against reference datasets and generating difference DEMs and plots.
-    - Extracting and summarizing metadata from point clouds and DEMs.
-    - Building comprehensive DataFrames linking processing outputs with metadata for further analysis.
+    This class centralizes all operations required after initial photogrammetry
+    processing, including:
+        - Extracting and organizing submission archives
+        - Generating DEMs from dense point clouds using ASP `point2dem`
+        - Coregistering raw DEMs against reference DEMs
+        - Computing metadata for point clouds and DEMs
+        - Building consolidated DataFrames for analysis and reporting
+        - Producing visual summaries and mosaics of DEM outputs
 
-    Key Features:
-        - Parallelized or sequential DEM generation from point cloud files.
-        - Automatic handling of overwrite rules, dry runs, and missing references.
-        - Coregistration of DEMs with reference DEMs and corresponding masks.
-        - Generation of difference DEMs (before and after correction) and diagnostic plots.
-        - Extraction of point cloud metadata (e.g., LAS version, CRS, bounding box, point count).
-        - Extraction of DEM metadata (e.g., NoData percentage, min/max values, resolution, CRS).
-        - Compilation of global DataFrames summarizing file paths, metadata, and coregistration results.
-
-    Typical Workflow:
-        1. Generate raw DEMs from point clouds using `iter_point2dem` or `iter_point2dem_single_cmd`.
-        2. Coregister DEMs using `iter_coregister_dems`.
-        3. Analyze point cloud and DEM metadata with `_get_pointcloud_df`, `_get_dems_df`, and `_get_coreg_df`.
-        4. Compile results into a global DataFrame using `compute_global_df`.
+    It relies on a `PathsManager` instance to manage input and output directories,
+    and interacts with external tools (e.g., ASP `point2dem`) as well as custom
+    coregistration utilities.
 
     Attributes:
-        pointcloud_files (list[str]): List of paths to point cloud files to be processed.
+        paths_manager (PathsManager): Manager for locating input and output files
+            within the processing workspace.
 
-    Returns:
-        The class does not directly return values, but its methods produce DEM files,
-        coregistered DEMs, difference DEMs, plots, and summary DataFrames.
+    Typical workflow:
+        1. Uncompress submissions into working directories
+        2. Convert dense point clouds into raw DEMs
+        3. Coregister DEMs to reference datasets
+        4. Build global DataFrames with filepaths and metadata
+        5. Generate visual reports (recap plots, DEM mosaics)
 
-    Note:
-        Reference DEMs and masks must be available in the project directory structure
-        for coregistration and DEM generation steps.
+    Example:
+        >>> pp = PostProcessing(paths_manager)
+        >>> pp.uncompress_all_submissions()
+        >>> pp.iter_point2dem(overwrite=False)
+        >>> coreg_df = pp.iter_coregister_dems()
+        >>> pp.compute_global_df()
+        >>> pp.plot_files_recap()
     """
 
-    def __init__(
-        self,
-        pointcloud_files: list[str],
-        raw_dems_directory: str | None = None,
-        coregistered_dems_directory: str | None = None,
-        ddems_before_directory: str | None = None,
-        ddems_after_directory: str | None = None,
-        plots_directory: str | None = None,
-        postproc_csv: str | None = None,
-        iceland_ref_dem_zoom: str | None = None,
-        iceland_ref_dem_large: str | None = None,
-        casagrande_ref_dem_zoom: str | None = None,
-        casagrande_ref_dem_large: str | None = None,
-        iceland_ref_dem_zoom_mask: str | None = None,
-        iceland_ref_dem_large_mask: str | None = None,
-        casagrande_ref_dem_zoom_mask: str | None = None,
-        casagrande_ref_dem_large_mask: str | None = None,
-    ):
-        self.pointcloud_files = pointcloud_files
-        self._paths = {
-            "pointcloud_files": pointcloud_files,
-            "raw_dems_directory": raw_dems_directory,
-            "coregistered_dems_directory": coregistered_dems_directory,
-            "ddems_before_directory": ddems_before_directory,
-            "ddems_after_directory": ddems_after_directory,
-            "plots_directory": plots_directory,
-            "postproc_csv": postproc_csv,
-            "iceland_ref_dem_zoom": iceland_ref_dem_zoom,
-            "iceland_ref_dem_large": iceland_ref_dem_large,
-            "casagrande_ref_dem_zoom": casagrande_ref_dem_zoom,
-            "casagrande_ref_dem_large": casagrande_ref_dem_large,
-            "iceland_ref_dem_zoom_mask": iceland_ref_dem_zoom_mask,
-            "iceland_ref_dem_large_mask": iceland_ref_dem_large_mask,
-            "casagrande_ref_dem_zoom_mask": casagrande_ref_dem_zoom_mask,
-            "casagrande_ref_dem_large_mask": casagrande_ref_dem_large_mask,
-        }
-
-    def get_path(self, key: str) -> str:
+    def __init__(self, paths_manager: PathsManager):
         """
-        Get a path from the dictionary by key.
-
-        Raises
-        ------
-        KeyError
-            If the key does not exist in the dictionary.
-        ValueError
-            If the key exists but its value is None.
-        """
-        if key not in self._paths:
-            raise KeyError(f"Key '{key}' not found in PostProcessing paths.")
-
-        path = self._paths[key]
-        if path is None:
-            raise ValueError(f"Path for key '{key}' is set to None.")
-
-        return path
-
-    def set_path(self, key: str, value: str) -> None:
-        """
-        Update or add a path in the dictionary.
-        """
-        self._paths[key] = value
-
-    def iter_point2dem(
-        self, overwrite: bool = False, dry_run: bool = False, asp_path: str = None, max_workers: int = 4
-    ) -> None:
-        """
-        Convert all available point cloud files into DEMs using ASP's point2dem tool in parallel.
-
-        This method iterates over all point cloud files, prepares output DEM file paths,
-        checks whether processing should be skipped (based on existing files or missing references),
-        and submits point2dem tasks to a process pool executor. The execution can be customized
-        with overwrite, dry-run, and external ASP binary path options.
+        Initialize the post-processing pipeline.
 
         Args:
-            overwrite (bool, optional): If True, overwrite existing DEM files. Defaults to False.
-            dry_run (bool, optional): If True, simulate processing without executing point2dem. Defaults to False.
-            asp_path (str, optional): Path to the ASP binary directory. If None, assumes it is in PATH. Defaults to None.
-            max_workers (int, optional): Maximum number of worker processes for parallel execution. Defaults to 4.
+            paths_manager (PathsManager): Manager providing access to all input and
+                output directories required for processing.
+        """
+        self.paths_manager = paths_manager
+
+    def iter_point2dem(
+        self,
+        overwrite: bool = False,
+        dry_run: bool = False,
+        asp_path: str = None,
+        max_concurrent_commands: int = 1,
+        max_threads_per_command: int = 4,
+    ) -> None:
+        """
+        Convert dense point cloud files into DEMs using the ASP `point2dem` tool.
+
+        This method iterates over all available dense point cloud files, selects the
+        appropriate reference DEM for each dataset and site, and generates aligned
+        DEMs. Processing is executed in parallel using a process pool, with optional
+        control over concurrency and threading per command.
+
+        Args:
+            overwrite (bool, optional): If True, overwrite existing DEMs. Defaults to False.
+            dry_run (bool, optional): If True, simulate execution without running `point2dem`. Defaults to False.
+            asp_path (str, optional): Path to the ASP `point2dem` executable. If None, assumes it is in PATH.
+            max_concurrent_commands (int, optional): Maximum number of `point2dem` processes to run in parallel. Defaults to 1.
+            max_threads_per_command (int, optional): Number of threads allocated per `point2dem` process. Defaults to 4.
 
         Returns:
             None
         """
+        output_dir = self.paths_manager.get_path("raw_dems_dir")
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-        os.makedirs(self.get_path("raw_dems_directory"), exist_ok=True)
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # here hide the output of each command multiple command are running
+        stdout = None if max_concurrent_commands == 1 else subprocess.DEVNULL
+
+        with ProcessPoolExecutor(max_workers=max_concurrent_commands) as executor:
             futures = []
-            for file in self.pointcloud_files:
+            for file in self.paths_manager.dense_pointcloud_files:
                 code, metadatas = parse_filename(file)
-                output_dem = os.path.join(self.get_path("raw_dems_directory"), code)
+                output_dem = output_dir / code
 
                 # check the overwrite
                 if os.path.exists(f"{output_dem}-DEM.tif") and not overwrite:
@@ -173,105 +127,82 @@ class PostProcessing:
 
                 # skip if no reference DEM is provided
                 try:
-                    ref_dem_file = self._get_references_dem_and_mask(metadatas["site"], metadatas["dataset"])[0]
+                    ref_dem_file, _ = self.paths_manager.get_ref_dem_and_mask(metadatas["site"], metadatas["dataset"])
                 except Exception as e:
-                    print(f"Skip {code} : {e}")
+                    print(f"Error {code} : {e}")
                     continue
 
                 # start a process of point2dem function
-                futures.append(executor.submit(point2dem, file, output_dem, ref_dem_file, dry_run, asp_path))
+                futures.append(
+                    executor.submit(
+                        point2dem, file, output_dem, ref_dem_file, dry_run, asp_path, max_threads_per_command, stdout
+                    )
+                )
 
-            # Create the pbar and wait for all process to finish
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Converting into DEM", unit="File"):
+            # create a pbar if max_concurrent_commands > 1
+            iterand = (
+                as_completed(futures)
+                if max_concurrent_commands == 1
+                else tqdm(as_completed(futures), total=len(futures), desc="Converting into DEM", unit="File")
+            )
+            for future in iterand:
                 try:
                     future.result()
                 except Exception as e:
                     print(f"[!] Error: {e}")
 
-    def iter_point2dem_single_cmd(
-        self, overwrite: bool = False, dry_run: bool = False, asp_path: str = None, max_workers: int = 4
-    ) -> None:
-        """
-        Convert point cloud files into DEMs sequentially using ASP's point2dem tool.
-
-        This method iterates over point cloud files, validates output DEM paths,
-        checks for overwrite conditions, and ensures that reference DEMs are available.
-        Each file is processed with a direct call to point2dem instead of parallel execution.
-
-        Args:
-            overwrite (bool, optional): If True, overwrite existing DEM files. Defaults to False.
-            dry_run (bool, optional): If True, simulate processing without running point2dem. Defaults to False.
-            asp_path (str, optional): Path to the ASP binary directory. If None, assumes it is in PATH. Defaults to None.
-            max_workers (int, optional): Number of threads to use within the point2dem call. Defaults to 4.
-
-        Returns:
-            None
-        """
-
-        os.makedirs(self.get_path("raw_dems_directory"), exist_ok=True)
-
-        for file in self.pointcloud_files:
-            code, metadatas = parse_filename(file)
-            output_dem = os.path.join(self.get_path("raw_dems_directory"), code)
-
-            # check the overwrite
-            if os.path.exists(f"{output_dem}-DEM.tif") and not overwrite:
-                print(f"Skip {code} : {output_dem}-DEM.tif already exist.")
-                continue
-
-            # skip if no reference DEM is provided
-            try:
-                ref_dem_file = self._get_references_dem_and_mask(metadatas["site"], metadatas["dataset"])[0]
-            except Exception as e:
-                print(f"Skip {code} : {e}")
-                continue
-
-            point2dem(file, output_dem, ref_dem_file, dry_run, asp_path, max_workers, None)
-
     def iter_coregister_dems(
         self, overwrite: bool = False, dry_run: bool = False, verbose: bool = True
     ) -> pd.DataFrame:
         """
-        Coregister raw DEMs against reference DEMs and generate outputs including coregistered DEMs,
-        difference DEMs (before and after correction), and diagnostic plots.
+        Coregister raw DEMs against reference DEMs and generate diagnostic outputs.
 
-        This method iterates over DEM files, checks overwrite conditions, retrieves reference DEMs
-        and masks, and applies DEM coregistration. Results are stored in multiple output directories,
-        and a summary DataFrame of coregistration results is returned and saved as a CSV file.
+        This method processes all available raw DEM files by aligning them to
+        reference DEMs using the `coregister_dem` function. It produces:
+            - Coregistered DEMs
+            - Difference DEMs (before and after correction)
+            - Diagnostic plots
+
+        For each DEM, overwrite conditions are checked, reference DEMs and masks are
+        retrieved, and coregistration is applied unless `dry_run` is enabled. A
+        summary of coregistration results is saved as a timestamped CSV file in
+        `coreg_dems_dir`.
 
         Args:
-            overwrite (bool, optional): If True, overwrite existing coregistered DEMs. Defaults to False.
-            dry_run (bool, optional): If True, simulate coregistration without execution. Defaults to False.
-            verbose (bool, optional): If True, print detailed processing information. Defaults to True.
+            overwrite (bool, optional): If True, overwrite existing coregistered DEMs.
+                Defaults to False.
+            dry_run (bool, optional): If True, simulate coregistration without
+                performing computations. Defaults to False.
+            verbose (bool, optional): If True, print detailed progress information.
+                Defaults to True.
 
         Returns:
-            pd.DataFrame or None: A DataFrame containing coregistration results indexed by DEM code,
+            pd.DataFrame or None: DataFrame of coregistration results indexed by code,
             or None if no DEMs were processed.
         """
 
         data = []
-        for file in glob(os.path.join(self.get_path("raw_dems_directory"), "*-DEM.tif")):
+        for file in self.paths_manager.raw_dem_files:
             code, metadatas = parse_filename(file)
 
-            output_dem_path = os.path.join(self.get_path("coregistered_dems_directory"), f"{code}-DEM_coreg.tif")
+            output_dem_path = self.paths_manager.get_path("coreg_dems_dir") / f"{code}-DEM_coreg.tif"
 
             # not overwrite existing files
-            if os.path.exists(output_dem_path) and not overwrite:
+            if output_dem_path.exists() and not overwrite:
                 print(f"Skip {code} : {output_dem_path} already exist.")
                 continue
 
             # read the corresponding mask and dem references
             try:
-                ref_dem_file, ref_dem_mask_file = self._get_references_dem_and_mask(
+                ref_dem_file, ref_dem_mask_file = self.paths_manager.get_ref_dem_and_mask(
                     metadatas["site"], metadatas["dataset"]
                 )
             except Exception as e:
-                print(f"Skip {code} : {e}")
+                print(f"Error {code} : {e}")
                 continue
 
-            output_ddem_before_path = os.path.join(self.get_path("ddems_before_directory"), f"{code}-DDEM_before.tif")
-            output_ddem_after_path = os.path.join(self.get_path("ddems_after_directory"), f"{code}-DDEM_after.tif")
-            output_plot_path = os.path.join(self.get_path("plots_directory"), f"{code}.png")
+            output_ddem_before_path = self.paths_manager.get_path("ddems_dir") / f"{code}-DDEM_before.tif"
+            output_ddem_after_path = self.paths_manager.get_path("ddems_dir") / f"{code}-DDEM_after.tif"
 
             if verbose:
                 print(f"coregister_dem({file}, {ref_dem_file}, {ref_dem_mask_file}, {output_dem_path})")
@@ -284,7 +215,6 @@ class PostProcessing:
                         output_dem_path,
                         output_ddem_before_path,
                         output_ddem_after_path,
-                        output_plot_path,
                     )
                     res["code"] = code
                     data.append(res)
@@ -295,255 +225,88 @@ class PostProcessing:
             df = pd.DataFrame(data).set_index("code")
             datetime_str = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
             filename = f"coreg_res_{datetime_str}.csv"
-            df.to_csv(os.path.join(self.get_path("coregistered_dems_directory"), filename))
+            df.to_csv(self.paths_manager.get_path("coreg_dems_dir") / filename)
             return df
         else:
             return None
 
-    def compute_global_df(self) -> pd.DataFrame:
+    def compute_global_df(self) -> None:
         """
-        Build a global DataFrame summarizing all available processing outputs.
+        Build and save a global DataFrame combining metadata from point clouds, DEMs,
+        and coregistration results.
 
-        This method collects file paths for point clouds, raw DEMs, coregistered DEMs,
-        and difference DEMs (before and after coregistration), then organizes them by code.
-        Metadata extracted from filenames is merged with additional information from
-        point clouds, DEMs, and coregistration results.
+        This method collects filepaths and metadata from multiple sources, merges them
+        into a single DataFrame, and exports the result as a CSV file for further
+        analysis.
+
+        Steps:
+            1. Load base filepaths DataFrame from the paths manager.
+            2. Join point cloud metadata.
+            3. Join DEM metadata.
+            4. Join coregistration results.
+            5. Save the consolidated DataFrame to disk.
 
         Returns:
-            pd.DataFrame: A DataFrame indexed by code, containing file paths, metadata,
-            and processing-related information from point clouds, DEMs, and coregistration steps.
+            None
         """
-        mapping = {
-            "pointcloud_file": self.pointcloud_files,
-            "raw_dem_file": glob(os.path.join(self.get_path("raw_dems_directory"), "*-DEM.tif")),
-            "coreg_dem_file": glob(os.path.join(self.get_path("coregistered_dems_directory"), "*-DEM_coreg.tif")),
-            "ddem_before_file": glob(os.path.join(self.get_path("ddems_before_directory"), "*-DDEM_before.tif")),
-            "ddem_after_file": glob(os.path.join(self.get_path("ddems_after_directory"), "*-DDEM_after.tif")),
-        }
-        nested_dict = defaultdict(dict)
-        for key, files in mapping.items():
-            for file in files:
-                code, metadatas = parse_filename(file)
-                nested_dict[code]["code"] = code
-                nested_dict[code].update(metadatas)
-                nested_dict[code][key] = file
-        df = pd.DataFrame(list(nested_dict.values())).set_index("code")
-        df = df.join(self._get_pointcloud_df(df), how="outer")
-        df = df.join(self._get_dems_df(df), how="outer")
-        df = df.join(self._get_coreg_df(), how="outer")
-        return df
+        df = self.paths_manager.get_filepaths_df()
+        df = df.join(get_pointcloud_df(df), how="outer")
+        df = df.join(get_dems_df(df), how="outer")
+        df = df.join(load_coreg_results(self.paths_manager.get_path("coreg_dems_dir")), how="outer")
+        df.to_csv(self.paths_manager.get_path("postproc_csv"))
 
-    def _get_references_dem_and_mask(self, site: str, dataset: str) -> tuple[str, str]:
+    def uncompress_all_submissions(
+        self, overwrite: bool = False, dry_run: bool = False, verbose: bool = False
+    ) -> dict[str, str]:
         """
-        Retrieve the reference DEM and corresponding mask file for a given site and dataset.
+        Uncompress all raw submissions into the extracted submissions directory.
 
-        This method uses a predefined mapping of (site, dataset) pairs to locate the
-        appropriate reference DEM and its mask within the project directory.
+        This method takes archived submission files from the `raw_submissions_dir` and
+        extracts their contents into the `extracted_submissions_dir`. It supports
+        optional overwrite, dry-run mode, and verbose logging.
 
         Args:
-            site (str): Name of the study site (e.g., "casa_grande", "iceland").
-            dataset (str): Dataset type associated with the site (e.g., "aerial", "kh9mc", "kh9pc").
+            overwrite (bool, optional): If True, overwrite existing extracted files. Defaults to False.
+            dry_run (bool, optional): If True, simulate extraction without writing to disk. Defaults to False.
+            verbose (bool, optional): If True, print detailed processing information. Defaults to False.
 
         Returns:
-            tuple[str, str]: A tuple containing the file paths to the reference DEM and its mask.
+            dict[str, str]: A mapping from original archive filenames to their extraction directories.
         """
-        mapping = {
-            ("casa_grande", "aerial"): "casagrande_ref_dem_zoom",
-            ("casa_grande", "kh9mc"): "casagrande_ref_dem_large",
-            ("casa_grande", "kh9pc"): "casagrande_ref_dem_large",
-            ("iceland", "aerial"): "iceland_ref_dem_zoom",
-            ("iceland", "kh9mc"): "iceland_ref_dem_large",
-            ("iceland", "kh9pc"): "iceland_ref_dem_large",
-        }
-        res = mapping[(site, dataset)]
-        return self.get_path(res), self.get_path(res + "_mask")
+        input_dir = self.paths_manager.get_path("raw_submissions_dir")
+        output_dir = self.paths_manager.get_path("extracted_submissions_dir")
+        return uncompress_all_submissions(input_dir, output_dir, overwrite, dry_run, verbose)
 
-    def _get_pointcloud_df(self, df: pd.DataFrame) -> pd.DataFrame:
+    def plot_files_recap(self, output_path: str | None = None, show: bool = True) -> None:
         """
-        Extract metadata from point cloud files and return as a DataFrame.
+        Generate a visual recap of available files for each code.
 
-        This method iterates over the rows of a given DataFrame, opens each point cloud
-        file, and extracts metadata such as LAS version, CRS, point count, and bounding
-        box coordinates. Results are compiled into a new DataFrame indexed by code.
+        This method creates a matrix-style plot showing the presence or absence of
+        different file types (point clouds, camera parameters, DEMs, etc.) for each
+        dataset entry. The plot can either be displayed, saved to disk, or both.
 
         Args:
-            df (pd.DataFrame): Input DataFrame containing a "pointcloud_file" column with file paths.
+            output_path (str | None, optional): Path to save the plot image. If None,
+                the plot is not saved. Defaults to None.
+            show (bool, optional): If True, display the plot interactively. Defaults to True.
 
         Returns:
-            pd.DataFrame: A DataFrame indexed by code, containing point cloud metadata including:
-                - "las_version" (str): LAS file format version.
-                - "pointcloud_crs" (CRS): Coordinate reference system of the point cloud.
-                - "point_count" (int): Number of points in the cloud.
-                - "bounds_x_min", "bounds_x_max" (float): Minimum and maximum X coordinates.
-                - "bounds_y_min", "bounds_y_max" (float): Minimum and maximum Y coordinates.
-                - "bounds_z_min", "bounds_z_max" (float): Minimum and maximum Z coordinates.
+            None
         """
+        plot_files_recap(self.paths_manager.get_filepaths_df(), output_path, show)
 
-        res = []
-        for code, row in df.iterrows():
-            if not pd.isna(row["pointcloud_file"]):
-                try:
-                    with laspy.open(row["pointcloud_file"]) as fh:
-                        header = fh.header
-                        row_dict = {"code": code}
-                        row_dict.update(
-                            {
-                                "las_version": f"{header.version.major}.{header.version.minor}",
-                                "pointcloud_crs": header.parse_crs(),
-                                "point_count": header.point_count,
-                                "bounds_x_min": header.mins[0],
-                                "bounds_x_max": header.maxs[0],
-                                "bounds_y_min": header.mins[1],
-                                "bounds_y_max": header.maxs[1],
-                                "bounds_z_min": header.mins[2],
-                                "bounds_z_max": header.maxs[2],
-                            }
-                        )
-                        res.append(row_dict)
-                except Exception as e:
-                    print(f"Warning: Could not process file '{row['pointcloud_file']}' ({e})")
-        return pd.DataFrame(res).set_index("code")
-
-    def _get_dems_df(self, df: pd.DataFrame) -> pd.DataFrame:
+    def get_global_df(self) -> pd.DataFrame:
         """
-        Extract metadata from raw and coregistered DEM files and return as a DataFrame.
+        Load the consolidated post-processing DataFrame from disk.
 
-        This method iterates over the rows of a given DataFrame, reads raw and coregistered DEMs
-        if available, and computes summary statistics (using `get_dem_informations`).
-        Results are aggregated into a new DataFrame indexed by code, with prefixed column names
-        to distinguish between raw and coregistered DEMs.
-
-        Args:
-            df (pd.DataFrame): Input DataFrame containing "raw_dem_file" and "coreg_dem_file" columns.
+        This method reads the global CSV file previously generated by
+        `compute_global_df` and returns it as a pandas DataFrame, indexed by code.
 
         Returns:
-            pd.DataFrame: A DataFrame indexed by code, containing DEM metadata including:
-                - "raw_dem_percent_nodata", "raw_dem_min", "raw_dem_max", "raw_dem_crs", "raw_dem_resolution"
-                - "coreg_dem_percent_nodata", "coreg_dem_min", "coreg_dem_max", "coreg_dem_crs", "coreg_dem_resolution"
+            pd.DataFrame: The consolidated DataFrame containing filepaths, metadata,
+            and coregistration results for all processed datasets.
         """
-
-        res = []
-        for code, row in df.iterrows():
-            dict_row = {"code": code}
-
-            if not pd.isna(row["raw_dem_file"]):
-                tmp_dict = self.get_dem_informations(row["raw_dem_file"])
-                tmp_dict = {f"raw_dem_{k}": v for k, v in tmp_dict.items()}
-                dict_row.update(tmp_dict)
-
-            if not pd.isna(row["coreg_dem_file"]):
-                tmp_dict = self.get_dem_informations(row["coreg_dem_file"])
-                tmp_dict = {f"coreg_dem_{k}": v for k, v in tmp_dict.items()}
-                dict_row.update(tmp_dict)
-
-            res.append(dict_row)
-
-        return pd.DataFrame(res).set_index("code")
-
-    def _get_coreg_df(self) -> pd.DataFrame:
-        """
-        Load and merge coregistration result CSV files into a single DataFrame.
-
-        This method searches for CSV files containing coregistration results,
-        loads them, concatenates them into one DataFrame, and removes duplicate
-        entries by keeping the first occurrence.
-
-        Returns:
-            pd.DataFrame: A DataFrame indexed by DEM code containing coregistration results.
-
-        Raises:
-            FileNotFoundError: If no coreg_res_*.csv files are found in the coregistered DEMs directory.
-        """
-        csv_files = glob(os.path.join(self.get_path("coregistered_dems_directory"), "coreg_res_*.csv"))
-
-        if not csv_files:
-            raise FileNotFoundError("No coreg_res_*.csv files found.")
-
-        dfs = []
-        for csv_file in csv_files:
-            tmp_df = pd.read_csv(csv_file, index_col="code")
-            dfs.append(tmp_df)
-
-        df = pd.concat(dfs, axis=0)
-
-        df = df[~df.index.duplicated(keep="first")]
-
-        return df
-
-    @staticmethod
-    def get_dem_informations(file, reduction_factor: int = 20) -> dict:
-        """
-        Extract summary information from a DEM file with optional downsampling.
-
-        This method reads a DEM raster, reduces its resolution by a specified factor,
-        and computes basic statistics and metadata such as the percentage of NoData pixels,
-        minimum and maximum values, CRS, and resolution.
-
-        Args:
-            file (str): Path to the DEM file.
-            reduction_factor (int, optional): Factor by which to reduce DEM resolution
-                for faster computation. Defaults to 20.
-
-        Returns:
-            dict: A dictionary containing DEM information with keys:
-                - "percent_nodata" (float): Percentage of NoData pixels.
-                - "min" (float or None): Minimum DEM value, or None if empty.
-                - "max" (float or None): Maximum DEM value, or None if empty.
-                - "crs" (CRS): Coordinate reference system of the DEM.
-                - "resolution" (float): DEM spatial resolution.
-        """
-
-        res = {}
-        with rasterio.open(file) as src:
-            new_height = src.height // reduction_factor
-            new_width = src.width // reduction_factor
-
-            dem = src.read(
-                1,
-                out_shape=(new_height, new_width),
-                resampling=Resampling.nearest,  # conserve les voids
-                masked=True,
-            )
-            res["percent_nodata"] = (dem.mask.sum() / dem.size) * 100
-            res["min"] = float(dem.min()) if dem.count() > 0 else None
-            res["max"] = float(dem.max()) if dem.count() > 0 else None
-            res["crs"] = src.crs
-            res["resolution"] = src.res[0]
-
-        return res
-
-
-def find_pointclouds(root_dir: str) -> list[str]:
-    """
-    Recursively search for point cloud files in a directory.
-
-    This function looks for LAS/LAZ files ending with either
-    'sparse_pointcloud.las', 'sparse_pointcloud.laz',
-    'dense_pointcloud.las', or 'dense_pointcloud.laz'.
-
-    Parameters
-    ----------
-    root_dir : str
-        Root directory to search in.
-
-    Returns
-    -------
-    list of str
-        List of matching file paths.
-    """
-    root = Path(root_dir)
-    matches = []
-    patterns = [
-        "*sparse_pointcloud.las",
-        "*sparse_pointcloud.laz",
-        "*dense_pointcloud.las",
-        "*dense_pointcloud.laz",
-    ]
-
-    for pattern in patterns:
-        matches.extend(root.rglob(pattern))
-
-    return [str(path) for path in matches]
+        return pd.read_csv(self.paths_manager.get_path("postproc_csv"), index_col="code")
 
 
 #######################################################################################################################
@@ -620,7 +383,6 @@ def coregister_dem(
     output_dem_path: str,
     output_ddem_before_path: str | None = None,
     output_ddem_after_path: str | None = None,
-    output_plot_path: str | None = None,
 ) -> dict:
     result = {}
 
@@ -678,89 +440,4 @@ def coregister_dem(
             os.makedirs(os.path.dirname(output_ddem_after_path), exist_ok=True)
         ddem_after.save(output_ddem_after_path, tiled=True)
 
-    # save a plot of ddem before transformation and after
-    if output_plot_path:
-        if os.path.dirname(output_plot_path):
-            os.makedirs(os.path.dirname(output_plot_path), exist_ok=True)
-
-        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-
-        ddem_before.plot(
-            cmap="coolwarm",
-            vmin=-10,
-            vmax=10,
-            cbar_title="Elevation difference (m)",
-            ax=axes[0],
-        )
-        axes[0].set_title(
-            f"dDEM before coregistration \n(mean: {result['mean_before_coreg']:.3f}, med: {result['median_before_coreg']:.3f}, nmad: {result['nmad_before_coreg']:.3f})"
-        )
-        axes[0].axis("off")
-
-        ddem_after.plot(
-            cmap="coolwarm",
-            vmin=-10,
-            vmax=10,
-            cbar_title="Elevation difference (m)",
-            ax=axes[1],
-        )
-        axes[1].set_title(
-            f"dDEM after coregistration \n(mean: {result['mean_after_coreg']:.3f}, med: {result['median_after_coreg']:.3f}, nmad: {result['nmad_after_coreg']:.3f})"
-        )
-        axes[1].axis("off")
-
-        plt.tight_layout()
-        plt.savefig(output_plot_path, dpi=200)
-        plt.close()
-
     return result
-
-
-def parse_filename(file: str) -> tuple[str, dict]:
-    """Parse a file name into a code string and metadata dictionary.
-
-    Args:
-        file (str): Path or filename to parse.
-
-    Returns:
-        tuple[str, dict]: A tuple containing:
-            - code (str): Reconstructed code from filename parts.
-            - metadatas (dict): Parsed metadata mapping.
-    """
-    VALID_MAPPING = {
-        "site": {"CG": "casa_grande", "IL": "iceland"},
-        "dataset": {"AI": "aerial", "MC": "kh9mc", "PC": "kh9pc"},
-        "images": {"RA": "raw", "PP": "preprocessed"},
-        "camera_used": {"CY": True, "CN": False},
-        "gcp_used": {"GY": True, "GN": False},
-        "pointcloud_coregistration": {"PY": True, "PN": False},
-        "mtp_adjustment": {"MY": True, "MN": False},
-    }
-
-    filename = os.path.basename(file)
-    parts = filename.split("_")
-    code = parts[0]
-    metadatas = {"author": parts[0]}
-
-    # Normalize to uppercase for consistency
-    parts = [p.upper() for p in parts]
-
-    # Fix special handling of MN/MY
-    if parts[7].startswith("MN"):
-        parts[7] = "MN"
-    elif parts[7].startswith("MY"):
-        parts[7] = "MY"
-
-    # Check format length
-    expected_parts = len(VALID_MAPPING) + 1  # author + mappings
-    if len(parts) < expected_parts:
-        raise ValueError(f"File {file} has unexpected format (expected ≥ {expected_parts} parts)")
-
-    for i, (key, mapping) in enumerate(VALID_MAPPING.items()):
-        value = parts[i + 1]
-        if value not in mapping:
-            raise ValueError(f"{value} is not a known code for {key}.")
-        metadatas[key] = mapping[value]
-        code += "_" + value
-
-    return code, metadatas

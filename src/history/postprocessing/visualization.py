@@ -1,5 +1,6 @@
 import math
 import os
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -11,152 +12,106 @@ from rasterio.enums import Resampling
 from tqdm import tqdm
 
 
-def plot_postprocess_state(global_df: pd.DataFrame) -> None:
-    data = []
-    for code, row in global_df.iterrows():
-        row_dict = {
-            "code": code,
-            "Has pointcloud": not pd.isna(row["pointcloud_file"]),
-            "Has raw DEM": not pd.isna(row["raw_dem_file"]),
-            "Raw DEM valid": row["raw_dem_percent_nodata"] < 95,
-            "Has coregistered DEM": not pd.isna(row["coreg_dem_file"]),
+class PostProcessPlot:
+    def __init__(self, df: pd.DataFrame, output_dir: str | Path):
+        self._df = df
+        self._dir = Path(output_dir)
+        self._max_cols = {
+            ("aerial", "casa_grande"): 5,
+            ("aerial", "iceland"): 4,
+            ("kh9mc", "casa_gande"): 4,
+            ("kh9mc", "iceland"): 4,
+            ("kh9pc", "casa_grande"): 4,
+            ("kh9pc", "iceland"): 4,
         }
-        data.append(row_dict)
+        self._dir_stats = self._dir / "statistics"
+        self._dir_stats.mkdir(exist_ok=True, parents=True)
 
-    df = pd.DataFrame(data).set_index("code")
+    def generate_all_mosaics(self) -> None:
+        generate_dems_mosaic(self._df, self._dir / "mosaic-DEMs", self._max_cols)
+        generate_ddems_mosaic(self._df, self._dir / "mosaic-DDEMs", self._max_cols)
+        generate_hillshades_mosaic(self._df, self._dir / "mosaic-hillshades", self._max_cols)
+        generate_slopes_mosaic(self._df, self._dir / "mosaic-slopes", self._max_cols)
 
-    # Convertir en matrice 0/1
-    matrix = df.astype(int).values
-
-    fig, ax = plt.subplots(figsize=(12, 6))
-    im = ax.imshow(matrix, cmap="Greys", aspect="auto")
-
-    # Ajouter les ticks (labels)
-    ax.set_xticks(np.arange(len(df.columns)))
-    ax.set_yticks(np.arange(len(df.index)))
-    ax.set_xticklabels(df.columns)
-    ax.set_yticklabels(df.index)
-
-    # Lignes de grille pour simuler cases
-    ax.set_xticks(np.arange(-0.5, len(df.columns), 1), minor=True)
-    ax.set_yticks(np.arange(-0.5, len(df.index), 1), minor=True)
-    ax.grid(which="minor", color="black", linewidth=1)
-    ax.tick_params(which="minor", bottom=False, left=False)
-
-    plt.tight_layout()
-    plt.show()
+    def generate_all_stat_plots(self) -> None:
+        stat_dir = self._dir / "statistics"
+        generate_nmad_groupby(self._df, stat_dir / "nmad")
+        barplot_var(self._df, stat_dir, "dense_point_count", "Point count")
+        barplot_var(self._df, stat_dir, "nmad_before_coreg", "NMAD before coregistration")
+        plot_coregistration_shifts(self._df, stat_dir / "coreg_shifts")
 
 
-def generate_raw_dems_mosaic(
-    global_df: pd.DataFrame,
-    output_directory: str,
-    max_cols: int = 4,
+def generate_dems_mosaic(
+    df: pd.DataFrame, output_dir: str | Path, max_cols_dict: dict[tuple[str, str], int] = {}
 ) -> None:
-    df_without_void = global_df.dropna(subset=["raw_dem_file"]).loc[global_df["raw_dem_percent_nodata"] < 95]
+    mapping = [("raw_dem", "raw-DEMs"), ("coreg_dem", "coreg-DEMs")]
+    output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True, parents=True)
 
-    pbar = tqdm(total=len(df_without_void), desc="Mosaicing raw DEMs")
-    for (dataset, site), group in df_without_void.groupby(["dataset", "site"]):
-        vmin = group["raw_dem_min"].median()
-        vmax = group["raw_dem_max"].median()
-
-        # create the subplot with a good grid
-        n = len(group)
-        ncols = min(max_cols, n)
-        nrows = (n + max_cols - 1) // max_cols
-        fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows), constrained_layout=True)
-        axes = axes.flatten() if isinstance(axes, np.ndarray) else [axes]
-
-        for i, (code, row) in enumerate(group.iterrows()):
-            dem = _read_raster_with_max_size(row["raw_dem_file"])
-
-            axes[i].imshow(dem, cmap="terrain", vmin=vmin, vmax=vmax)
-            axes[i].axis("off")
-            axes[i].set_title(code)
-            pbar.update(1)
-
-        # hidden empty plot
-        for j in range(i + 1, len(axes)):
-            axes[j].axis("off")
-
-        # add the global color bar
-        cbar = fig.colorbar(
-            ScalarMappable(cmap="terrain", norm=plt.Normalize(vmin=vmin, vmax=vmax)),
-            ax=axes,
-            orientation="vertical",
-            fraction=0.03,
-            pad=0.02,
-        )
-        cbar.set_label("Altitude (m)")
-
-        plt.suptitle(f"raw - DEMs : {dataset} - {site}", fontsize=16)
-
-        # save or not and plot or not
-        os.makedirs(output_directory, exist_ok=True)
-        plt.savefig(os.path.join(output_directory, f"raw-DEMs-{dataset}-{site}.png"))
-        plt.close()
-
-    pbar.close()
-
-
-def generate_coregistered_dems_mosaic(
-    global_df: pd.DataFrame,
-    output_directory: str,
-    max_cols: int = 4,
-) -> None:
-    df_without_void = global_df.dropna(subset=["coreg_dem_file"]).loc[global_df["coreg_dem_percent_nodata"] < 95]
-
-    pbar = tqdm(total=len(df_without_void), desc="Mosaicing coregistered DEMs")
-    for (dataset, site), group in df_without_void.groupby(["dataset", "site"]):
-        vmin = group["coreg_dem_min"].median()
-        vmax = group["coreg_dem_max"].median()
-
-        # create the subplot with a good grid
-        n = len(group)
-        ncols = min(max_cols, n)
-        nrows = (n + max_cols - 1) // max_cols
-        fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows), constrained_layout=True)
-        axes = axes.flatten() if isinstance(axes, np.ndarray) else [axes]
-
-        for i, (code, row) in enumerate(group.iterrows()):
-            dem = _read_raster_with_max_size(row["coreg_dem_file"])
-
-            axes[i].imshow(dem, cmap="terrain", vmin=vmin, vmax=vmax)
-            axes[i].axis("off")
-            axes[i].set_title(code)
-            pbar.update(1)
-
-        # hidden empty plot
-        for j in range(i + 1, len(axes)):
-            axes[j].axis("off")
-
-        # add the global color bar
-        cbar = fig.colorbar(
-            ScalarMappable(cmap="terrain", norm=plt.Normalize(vmin=vmin, vmax=vmax)),
-            ax=axes,
-            orientation="vertical",
-            fraction=0.03,
-            pad=0.02,
-        )
-        cbar.set_label("Altitude (m)")
-
-        plt.suptitle(f"Coregistered - DEMs : {dataset} - {site}", fontsize=16)
-
-        # save the plot and don't show it
-        os.makedirs(output_directory, exist_ok=True)
-        plt.savefig(os.path.join(output_directory, f"coregisterd-DEMs-{dataset}-{site}.png"))
-        plt.close()
-    pbar.close()
-
-
-def generate_ddems_mosaic(
-    global_df: pd.DataFrame, output_directory: str, vmin: float = -10, vmax: float = 10, max_cols: int = 4
-) -> None:
-    mapping = [("ddem_before_file", "DDEM-before-coreg"), ("ddem_after_file", "DDEM-after-coreg")]
-    for colname, prefix in mapping:
-        df_dropped = global_df.dropna(subset=[colname])
+    for name, prefix in mapping:
+        df_dropped = df.dropna(subset=[f"{name}_file"]).loc[df[f"{name}_percent_nodata"] < 95]
         pbar = tqdm(total=len(df_dropped), desc=f"mosaicing {prefix}")
 
         for (dataset, site), group in df_dropped.groupby(["dataset", "site"]):
+            vmin = group[f"{name}_min"].median()
+            vmax = group[f"{name}_max"].median()
+            max_cols = max_cols_dict.get((dataset, site), 4)
+
+            # create the subplot with a good grid
+            n = len(group)
+            ncols = min(max_cols, n)
+            nrows = (n + max_cols - 1) // max_cols
+            fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows), constrained_layout=True)
+            axes = axes.flatten() if isinstance(axes, np.ndarray) else [axes]
+
+            for i, (code, row) in enumerate(group.iterrows()):
+                dem = _read_raster_with_max_size(row[f"{name}_file"])
+
+                axes[i].imshow(dem, cmap="terrain", vmin=vmin, vmax=vmax)
+                axes[i].axis("off")
+                axes[i].set_title(code)
+                pbar.update(1)
+
+            # hidden empty plot
+            for j in range(i + 1, len(axes)):
+                axes[j].axis("off")
+
+            # add the global color bar
+            cbar = fig.colorbar(
+                ScalarMappable(cmap="terrain", norm=plt.Normalize(vmin=vmin, vmax=vmax)),
+                ax=axes,
+                orientation="vertical",
+                fraction=0.03,
+                pad=0.02,
+            )
+            cbar.set_label("Altitude (m)")
+
+            plt.suptitle(f"{prefix} : {dataset} - {site}", fontsize=16)
+
+            # save or not and plot or not
+            plt.savefig(output_dir / f"{prefix}-mosaic-{dataset}-{site}.png")
+            plt.close()
+
+        pbar.close()
+
+
+def generate_ddems_mosaic(
+    df: pd.DataFrame,
+    output_dir: str | Path,
+    max_cols_dict: dict[tuple[str, str], int] = {},
+    vmin: float = -10,
+    vmax: float = 10,
+) -> None:
+    mapping = [("ddem_before_file", "DDEM-before-coreg"), ("ddem_after_file", "DDEM-after-coreg")]
+    output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True, parents=True)
+
+    for colname, prefix in mapping:
+        df_dropped = df.dropna(subset=[colname])
+        pbar = tqdm(total=len(df_dropped), desc=f"mosaicing {prefix}")
+
+        for (dataset, site), group in df_dropped.groupby(["dataset", "site"]):
+            max_cols = max_cols_dict.get((dataset, site), 4)
             # create the subplot with a good grid
             n = len(group)
             ncols = min(max_cols, n)
@@ -186,21 +141,28 @@ def generate_ddems_mosaic(
             cbar.set_label("Altitude difference (m)")
 
             plt.suptitle(f"{prefix} {dataset} - {site}", fontsize=16)
-            os.makedirs(output_directory, exist_ok=True)
-            plt.savefig(os.path.join(output_directory, f"{prefix}-{dataset}-{site}.png"))
+            plt.savefig(output_dir / f"{prefix}-{dataset}-{site}.png")
             plt.close()
         pbar.close()
 
 
 def generate_slopes_mosaic(
-    global_df: pd.DataFrame, output_directory: str, vmin: float = 0, vmax: float = 15, max_cols: int = 4
+    df: pd.DataFrame,
+    output_dir: str | Path,
+    max_cols_dict: dict[tuple[str, str], int] = {},
+    vmin: float = 0,
+    vmax: float = 15,
 ) -> None:
     mapping = [("ddem_before_file", "slope-before-coreg"), ("ddem_after_file", "slope-after-coreg")]
+    output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True, parents=True)
+
     for colname, prefix in mapping:
-        df_dropped = global_df.dropna(subset=[colname])
+        df_dropped = df.dropna(subset=[colname])
         pbar = tqdm(total=len(df_dropped), desc=f"mosaicing {prefix}")
 
         for (dataset, site), group in df_dropped.groupby(["dataset", "site"]):
+            max_cols = max_cols_dict.get((dataset, site), 4)
             # create the subplot with a good grid
             n = len(group)
             ncols = min(max_cols, n)
@@ -239,21 +201,27 @@ def generate_slopes_mosaic(
             cbar.set_label("Slope (Degree)")
 
             plt.suptitle(f"{prefix} {dataset} - {site}", fontsize=16)
-            os.makedirs(output_directory, exist_ok=True)
-            plt.savefig(os.path.join(output_directory, f"{prefix}-{dataset}-{site}.png"))
+            plt.savefig(output_dir / f"{prefix}-{dataset}-{site}.png")
             plt.close()
         pbar.close()
 
 
 def generate_hillshades_mosaic(
-    global_df: pd.DataFrame, output_directory: str, vmin: float = 0, vmax: float = 1, max_cols: int = 4
+    df: pd.DataFrame,
+    output_dir: str | Path,
+    max_cols_dict: dict[tuple[str, str], int] = {},
+    vmin: float = 0,
+    vmax: float = 1,
 ) -> None:
     mapping = [("ddem_before_file", "hillshades-before-coreg"), ("ddem_after_file", "hillshades-after-coreg")]
+    output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True, parents=True)
     for colname, prefix in mapping:
-        df_dropped = global_df.dropna(subset=[colname])
+        df_dropped = df.dropna(subset=[colname])
         pbar = tqdm(total=len(df_dropped), desc=f"mosaicing {prefix}")
 
         for (dataset, site), group in df_dropped.groupby(["dataset", "site"]):
+            max_cols = max_cols_dict.get((dataset, site), 4)
             # create the subplot with a good grid
             n = len(group)
             ncols = min(max_cols, n)
@@ -290,8 +258,7 @@ def generate_hillshades_mosaic(
             cbar.set_label("Hillshade")
             plt.suptitle(f"{prefix} {dataset} - {site}", fontsize=16)
 
-            os.makedirs(output_directory, exist_ok=True)
-            plt.savefig(os.path.join(output_directory, f"{prefix}-{dataset}-{site}.png"))
+            plt.savefig(output_dir / f"{prefix}-{dataset}-{site}.png")
             plt.close()
         pbar.close()
 
@@ -367,8 +334,10 @@ def generate_barplot_group_var(global_df: pd.DataFrame, output_directory: str, c
         plt.close(fig)
 
 
-def plot_coregistration_shifts(global_df: pd.DataFrame, output_directory: str) -> None:
+def plot_coregistration_shifts(global_df: pd.DataFrame, output_dir: str | Path) -> None:
     df_droped = global_df.dropna(subset=["coreg_shift_z"])
+    output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True, parents=True)
     for (dataset, site), group in df_droped.groupby(["dataset", "site"]):
         ordered_group = group.sort_values("coreg_shift_z")
         fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(15, 10), gridspec_kw={"height_ratios": [1, 3]})
@@ -403,7 +372,106 @@ def plot_coregistration_shifts(global_df: pd.DataFrame, output_directory: str) -
 
         plt.xticks(rotation=90)
         plt.tight_layout()
-        plt.savefig(os.path.join(output_directory, f"coregistration_shifts_{dataset}_{site}"))
+        plt.savefig(output_dir / f"coregistration_shifts_{dataset}_{site}")
+        plt.close()
+
+
+def plot_files_recap(filepaths_df: pd.DataFrame, output_path: str | None = None, show: bool = True) -> None:
+    data = []
+    for code, row in filepaths_df.iterrows():
+        row_dict = {
+            "code": code,
+            "Sparse pointcloud": not pd.isna(row["sparse_pointcloud_file"]),
+            "Dense pointcloud": not pd.isna(row["dense_pointcloud_file"]),
+            "Extrinsics": not pd.isna(row["extrinsics_camera_file"]),
+            "Intrinsics": not pd.isna(row["intrinsics_camera_file"]),
+            "Raw DEM": not pd.isna(row["raw_dem_file"]),
+            "Coregistered DEM": not pd.isna(row["coreg_dem_file"]),
+        }
+        data.append(row_dict)
+
+    new_df = pd.DataFrame(data).set_index("code")
+
+    # Convertir en matrice 0/1
+    matrix = new_df.astype(int).values
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    # Utiliser pcolormesh pour avoir un meilleur contrôle des bordures
+    cmap = plt.get_cmap("binary")  # blanc = 0, noir = 1
+    c = ax.pcolormesh(matrix, cmap=cmap, edgecolors="grey", linewidth=1, shading="auto")
+
+    # Ajouter ticks
+    ax.set_xticks(np.arange(matrix.shape[1]) + 0.5)
+    ax.set_yticks(np.arange(matrix.shape[0]) + 0.5)
+    ax.set_xticklabels(new_df.columns, rotation=30, ha="right", fontsize=9)
+    ax.set_yticklabels(new_df.index, fontsize=9)
+
+    # Grille (par-dessus pour rester visible même sur les cases noires)
+    ax.set_xticks(np.arange(matrix.shape[1]), minor=True)
+    ax.set_yticks(np.arange(matrix.shape[0]), minor=True)
+    ax.grid(which="minor", color="grey", linestyle="-", linewidth=0.8, alpha=0.7)
+    ax.tick_params(which="minor", bottom=False, left=False)
+
+    # Amélioration visuelle
+    ax.set_title("Files Recap", fontsize=14, weight="bold")
+    fig.tight_layout()
+    if output_path:
+        plt.savefig(output_path)
+
+    if show:
+        plt.show()
+    else:
+        plt.close()
+
+
+def generate_nmad_groupby(df: pd.DataFrame, output_dir: str | Path) -> None:
+    """
+    Generate grouped bar plots of NMAD before and after coregistration for each dataset and site.
+    Saves one plot per (dataset, site) combination.
+    """
+    droped_df = df.dropna(subset=["nmad_after_coreg", "nmad_before_coreg"])
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for (dataset, site), group in droped_df.groupby(["dataset", "site"]):
+        ordered_group = group.sort_values("nmad_before_coreg")
+
+        # Build the bar positions (one group per "code")
+        codes = ordered_group.index
+        x = range(len(codes))
+        width = 0.35
+
+        # Plot
+        fig, ax = plt.subplots(figsize=(15, 5))
+
+        bars_before = ax.bar(
+            [pos - width / 2 for pos in x],
+            ordered_group["nmad_before_coreg"],
+            width=width,
+            label="Before coregistration",
+        )
+        bars_after = ax.bar(
+            [pos + width / 2 for pos in x],
+            ordered_group["nmad_after_coreg"],
+            width=width,
+            label="After coregistration",
+        )
+
+        # Add value labels above bars
+        ax.bar_label(bars_before, fmt="%.2f", padding=3)
+        ax.bar_label(bars_after, fmt="%.2f", padding=3)
+
+        # Labels and style
+        ax.set_xticks(x)
+        ax.set_xticklabels(codes, rotation=90)
+        ax.set_ylabel("NMAD")
+        ax.set_title(f"NMAD Before/After Coregistration\nDataset: {dataset}, Site: {site}")
+        ax.legend()
+
+        # Save figure
+        plt.tight_layout()
+        plt.savefig(output_dir / f"nmad_{dataset}_{site}.png", dpi=300)
         plt.close()
 
 

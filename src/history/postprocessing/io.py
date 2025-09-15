@@ -1,13 +1,14 @@
+import os
 import shutil
 import tarfile
+import warnings
 import zipfile
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
 import pandas as pd
 import py7zr
-
-from .io import *
 
 
 def check_disk_space_and_estimate(archive_files: List[Path], output_dir: Path) -> Dict[str, float]:
@@ -799,3 +800,204 @@ def filter_experiment_data(
         filtered_df = filtered_df[filtered_df["multi-temporal"] == multi_temporal]
 
     return filtered_df
+
+
+def parse_filename(file: str) -> tuple[str, dict]:
+    """Parse a file name into a code string and metadata dictionary.
+
+    Args:
+        file (str): Path or filename to parse.
+
+    Returns:
+        tuple[str, dict]: A tuple containing:
+            - code (str): Reconstructed code from filename parts.
+            - metadatas (dict): Parsed metadata mapping.
+    """
+    VALID_MAPPING = {
+        "site": {"CG": "casa_grande", "IL": "iceland"},
+        "dataset": {"AI": "aerial", "MC": "kh9mc", "PC": "kh9pc"},
+        "images": {"RA": "raw", "PP": "preprocessed"},
+        "camera_used": {"CY": True, "CN": False},
+        "gcp_used": {"GY": True, "GN": False},
+        "pointcloud_coregistration": {"PY": True, "PN": False},
+        "mtp_adjustment": {"MY": True, "MN": False},
+    }
+
+    filename = os.path.basename(file)
+    parts = filename.split("_")
+    code = parts[0]
+    metadatas = {"author": parts[0]}
+
+    # Normalize to uppercase for consistency
+    parts = [p.upper() for p in parts]
+
+    # Fix special handling of MN/MY
+    if parts[7].startswith("MN"):
+        parts[7] = "MN"
+    elif parts[7].startswith("MY"):
+        parts[7] = "MY"
+
+    # Check format length
+    expected_parts = len(VALID_MAPPING) + 1  # author + mappings
+    if len(parts) < expected_parts:
+        raise ValueError(f"File {file} has unexpected format (expected ≥ {expected_parts} parts)")
+
+    for i, (key, mapping) in enumerate(VALID_MAPPING.items()):
+        value = parts[i + 1]
+        if value not in mapping:
+            raise ValueError(f"{value} is not a known code for {key}.")
+        metadatas[key] = mapping[value]
+        code += "_" + value
+
+    return code, metadatas
+
+
+class PathsManager:
+    def __init__(
+        self,
+        base_dir: Path | str,
+        custom_paths: dict[str, Path] | None = None,
+    ):
+        self.base_dir = Path(base_dir)
+        custom_paths = custom_paths or {}
+
+        # Core directories
+        processing_dir = Path(custom_paths.get("processing_dir", self.base_dir / "processing"))
+        ref_dem_dir = Path(custom_paths.get("ref_dem_dir", processing_dir / "ref_dems"))
+
+        # Default paths
+        defaults: dict[str, Path] = {
+            "raw_submissions_dir": self.base_dir / "raw",
+            "extracted_submissions_dir": self.base_dir / "extracted",
+            "processing_dir": processing_dir,
+            "raw_dems_dir": processing_dir / "raw_dems",
+            "coreg_dems_dir": processing_dir / "coreg_dems",
+            "ddems_dir": processing_dir / "ddems",
+            "postproc_csv": processing_dir / "postprocessing.csv",
+            "plots_dir": processing_dir / "plots",
+            "iceland_ref_dem_zoom": ref_dem_dir / "iceland_ref_dem_zoom.tif",
+            "iceland_ref_dem_large": ref_dem_dir / "iceland_ref_dem_large.tif",
+            "casagrande_ref_dem_zoom": ref_dem_dir / "casagrande_ref_dem_zoom.tif",
+            "casagrande_ref_dem_large": ref_dem_dir / "casagrande_ref_dem_large.tif",
+        }
+        # Validate custom_paths keys
+        unknown_keys = set(custom_paths) - set(defaults)
+        if unknown_keys:
+            raise KeyError(f"Invalid custom_paths keys: {unknown_keys}. Allowed keys are: {set(defaults)}")
+
+        # Merge defaults with overrides
+        self._paths: dict[str, Path] = defaults | {k: Path(v) for k, v in custom_paths.items()}
+
+    def get_path(self, key: str) -> Path:
+        """
+        Get a path from the dictionary by key.
+
+        Raises
+        ------
+        KeyError
+            If the key does not exist in the dictionary.
+        ValueError
+            If the key exists but its value is None.
+        """
+        if key not in self._paths:
+            raise KeyError(f"Key '{key}' not found in PathsManager paths.")
+
+        path = self._paths[key]
+        if path is None:
+            raise ValueError(f"Path for key '{key}' is set to None.")
+
+        return path
+
+    def get_ref_dem_and_mask(self, site: str, dataset: str) -> tuple[Path, Path]:
+        """
+        Retrieve the reference DEM and corresponding mask file for a given site and dataset.
+
+        This method uses a predefined mapping of (site, dataset) pairs to locate the
+        appropriate reference DEM and its mask within the project directory.
+
+        Args:
+            site (str): Name of the study site (e.g., "casa_grande", "iceland").
+            dataset (str): Dataset type associated with the site (e.g., "aerial", "kh9mc", "kh9pc").
+
+        Returns:
+            tuple[str, str]: A tuple containing the file paths to the reference DEM and its mask.
+        """
+        mapping = {
+            ("casa_grande", "aerial"): "casagrande_ref_dem_zoom",
+            ("casa_grande", "kh9mc"): "casagrande_ref_dem_large",
+            ("casa_grande", "kh9pc"): "casagrande_ref_dem_large",
+            ("iceland", "aerial"): "iceland_ref_dem_zoom",
+            ("iceland", "kh9mc"): "iceland_ref_dem_large",
+            ("iceland", "kh9pc"): "iceland_ref_dem_large",
+        }
+        ref_dem_path = self.get_path(mapping[(site, dataset)])
+        ref_mask_path = ref_dem_path.with_name(f"{ref_dem_path.stem}_mask.tif")
+
+        for path in [ref_dem_path, ref_mask_path]:
+            if not path.exists():
+                raise FileNotFoundError(f"{path} doesn't exists.")
+
+        return ref_dem_path, ref_mask_path
+
+    def get_filepaths_df(self) -> pd.DataFrame:
+        """
+        Build a DataFrame mapping codes to their corresponding file paths.
+        If no file is found for a category, a warning is raised and the column is still added with NaN values.
+
+        Returns:
+            pd.DataFrame: DataFrame indexed by 'code', containing file paths and metadata.
+        """
+        mapping = {
+            "dense_pointcloud_file": self.dense_pointcloud_files,
+            "sparse_pointcloud_file": self.sparse_pointcloud_files,
+            "extrinsics_camera_file": self.extrinsics_camera_files,
+            "intrinsics_camera_file": self.intrinsics_camera_files,
+            "raw_dem_file": self.raw_dem_files,
+            "coreg_dem_file": list(self.get_path("coreg_dems_dir").glob("*-DEM_coreg.tif")),
+            "ddem_before_file": list(self.get_path("ddems_dir").glob("*-DDEM_before.tif")),
+            "ddem_after_file": list(self.get_path("ddems_dir").glob("*-DDEM_after.tif")),
+        }
+
+        nested_dict = defaultdict(dict)
+
+        for key, files in mapping.items():
+            if not files:
+                warnings.warn(f"No files found for '{key}', column will be filled with NaN.", UserWarning)
+
+            for file in files:
+                code, metadatas = parse_filename(file)
+                nested_dict[code]["code"] = code
+                nested_dict[code].update(metadatas)
+                nested_dict[code][key] = file
+
+        # Build DataFrame
+        df = pd.DataFrame(list(nested_dict.values())).set_index("code")
+
+        # Ensure all expected columns exist (even if empty)
+        for key in mapping.keys():
+            if key not in df.columns:
+                df[key] = pd.NA
+
+        return df
+
+    @property
+    def dense_pointcloud_files(self) -> list[Path]:
+        d = self.get_path("extracted_submissions_dir")
+        return list(d.rglob("*_dense_pointcloud.las")) + list(d.rglob("*_dense_pointcloud.laz"))
+
+    @property
+    def sparse_pointcloud_files(self) -> list[Path]:
+        d = self.get_path("extracted_submissions_dir")
+        return list(d.rglob("*_sparse_pointcloud.las")) + list(d.rglob("*_sparse_pointcloud.laz"))
+
+    @property
+    def raw_dem_files(self) -> list[Path]:
+        return list(self.get_path("raw_dems_dir").glob("*-DEM.tif"))
+
+    @property
+    def extrinsics_camera_files(self) -> list[Path]:
+        return list(self.get_path("extracted_submissions_dir").rglob("*_extrinsics.csv"))
+
+    @property
+    def intrinsics_camera_files(self) -> list[Path]:
+        return list(self.get_path("extracted_submissions_dir").rglob("*_intrinsics.csv"))
