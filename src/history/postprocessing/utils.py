@@ -3,7 +3,6 @@ from pathlib import Path
 import laspy
 import pandas as pd
 import rasterio
-from rasterio.enums import Resampling
 
 
 def get_pointcloud_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -107,7 +106,7 @@ def load_coreg_results(coreg_dir: Path | str) -> pd.DataFrame:
     return df
 
 
-def get_dem_informations(file, reduction_factor: int = 20) -> dict:
+def get_dem_informations(file) -> dict:
     """
     Extract summary information from a DEM file with optional downsampling.
 
@@ -131,16 +130,11 @@ def get_dem_informations(file, reduction_factor: int = 20) -> dict:
 
     res = {}
     with rasterio.open(file) as src:
-        new_height = src.height // reduction_factor
-        new_width = src.width // reduction_factor
-
         dem = src.read(
             1,
-            out_shape=(new_height, new_width),
-            resampling=Resampling.nearest,  # conserve les voids
             masked=True,
         )
-        res["percent_nodata"] = (dem.mask.sum() / dem.size) * 100
+        res["percent_nodata"] = dem.mask.mean() * 100
         res["min"] = float(dem.min()) if dem.count() > 0 else None
         res["max"] = float(dem.max()) if dem.count() > 0 else None
         res["crs"] = src.crs

@@ -11,34 +11,7 @@ from matplotlib.colors import LightSource
 from rasterio.enums import Resampling
 from tqdm import tqdm
 
-
-class PostProcessPlot:
-    def __init__(self, df: pd.DataFrame, output_dir: str | Path):
-        self._df = df
-        self._dir = Path(output_dir)
-        self._max_cols = {
-            ("aerial", "casa_grande"): 5,
-            ("aerial", "iceland"): 4,
-            ("kh9mc", "casa_gande"): 4,
-            ("kh9mc", "iceland"): 4,
-            ("kh9pc", "casa_grande"): 4,
-            ("kh9pc", "iceland"): 4,
-        }
-        self._dir_stats = self._dir / "statistics"
-        self._dir_stats.mkdir(exist_ok=True, parents=True)
-
-    def generate_all_mosaics(self) -> None:
-        generate_dems_mosaic(self._df, self._dir / "mosaic-DEMs", self._max_cols)
-        generate_ddems_mosaic(self._df, self._dir / "mosaic-DDEMs", self._max_cols)
-        generate_hillshades_mosaic(self._df, self._dir / "mosaic-hillshades", self._max_cols)
-        generate_slopes_mosaic(self._df, self._dir / "mosaic-slopes", self._max_cols)
-
-    def generate_all_stat_plots(self) -> None:
-        stat_dir = self._dir / "statistics"
-        generate_nmad_groupby(self._df, stat_dir / "nmad")
-        barplot_var(self._df, stat_dir, "dense_point_count", "Point count")
-        barplot_var(self._df, stat_dir, "nmad_before_coreg", "NMAD before coregistration")
-        plot_coregistration_shifts(self._df, stat_dir / "coreg_shifts")
+from history.postprocessing.statistics import create_std_dem
 
 
 def generate_dems_mosaic(
@@ -261,6 +234,173 @@ def generate_hillshades_mosaic(
             plt.savefig(output_dir / f"{prefix}-{dataset}-{site}.png")
             plt.close()
         pbar.close()
+
+
+def generate_coregistration_individual_plots(
+    global_df: pd.DataFrame, output_directory: str | Path, overwrite: bool = True, vmin: float = -10, vmax: float = 10
+) -> None:
+    """
+    Generate and save before/after coregistration plots for each DEM pair in the provided dataset.
+
+    This function iterates over all entries in the input DataFrame that contain valid coregistered DEM files.
+    For each entry, it loads both the pre- and post-coregistration dDEM rasters, creates a side-by-side
+    comparison plot, and saves the figure as a PNG file in the specified output directory.
+
+    Parameters
+    ----------
+    global_df : pandas.DataFrame
+        Input DataFrame containing metadata and file paths for DEM coregistration results.
+        Must include the following columns:
+        - "coreg_dem_file"
+        - "ddem_before_file"
+        - "ddem_after_file"
+        - "mean_before_coreg"
+        - "median_before_coreg"
+        - "nmad_before_coreg"
+        - "mean_after_coreg"
+        - "median_after_coreg"
+        - "nmad_after_coreg"
+    output_directory : str or Path
+        Directory where the generated PNG plots will be saved.
+    overwrite : bool, optional
+        If True, existing plots will be overwritten. Default is True.
+    vmin : float, optional
+        Minimum value for the color scale in the plots. Default is -10.
+    vmax : float, optional
+        Maximum value for the color scale in the plots. Default is 10.
+
+    Returns
+    -------
+    None
+        The function does not return anything. It writes plot files to disk.
+
+    Notes
+    -----
+    - Each plot shows two panels: the dDEM before and after coregistration, with a shared colorbar.
+    - The filenames of the plots are derived from the DataFrame index (e.g., "<index>_coreg_plot.png").
+    - A progress bar is displayed using `tqdm` to indicate processing progress.
+
+    Examples
+    --------
+    >>> generate_coregistration_individual_plots(global_df, "outputs/plots", overwrite=False)
+    Generating coregistration plots:  45%|████▌     | 9/20 [00:04<00:05,  2.10it/s]
+    """
+    # create the output directory if needed
+    output_directory = Path(output_directory)
+    output_directory.mkdir(exist_ok=True, parents=True)
+
+    # filter every row with a valid coregistered dems
+    filtered_df = global_df.loc[~global_df["coreg_dem_file"].isna()]
+
+    for code, row in tqdm(filtered_df.iterrows(), desc="Generating coregistration plots", total=len(filtered_df)):
+        output_path = output_directory / f"{code}_coreg_plot.png"
+
+        if not output_path.exists() or overwrite:
+            # open the raw dDEM and the coregistered dDEM
+            ddem_before = _read_raster_with_max_size(row["ddem_before_file"])
+            ddem_after = _read_raster_with_max_size(row["ddem_after_file"])
+
+            # create the figure
+            fig, axes = plt.subplots(1, 2, figsize=(10, 5), constrained_layout=True)
+
+            # add the dDEMs and their titles
+            axes[0].imshow(ddem_before, cmap="coolwarm", vmin=vmin, vmax=vmax)
+            axes[0].axis("off")
+            axes[0].set_title(
+                f"dDEM before coregistration \n(mean: {row['mean_before_coreg']:.3f}, med: {row['median_before_coreg']:.3f}, nmad: {row['nmad_before_coreg']:.3f})"
+            )
+
+            axes[1].imshow(ddem_after, cmap="coolwarm", vmin=vmin, vmax=vmax)
+            axes[1].axis("off")
+            axes[1].set_title(
+                f"dDEM after coregistration \n(mean: {row['mean_after_coreg']:.3f}, med: {row['median_after_coreg']:.3f}, nmad: {row['nmad_after_coreg']:.3f})"
+            )
+
+            # add a global color bar
+            cbar = fig.colorbar(
+                ScalarMappable(cmap="coolwarm", norm=plt.Normalize(vmin=vmin, vmax=vmax)),
+                ax=axes,
+                orientation="vertical",
+                fraction=0.03,
+                pad=0.02,
+            )
+            cbar.set_label("Altitude difference(m)")
+
+            plt.savefig(output_path)
+            plt.close()
+
+
+def generate_std_dems_by_dataset_site(global_df: pd.DataFrame, output_directory: str | Path) -> None:
+    """
+    Generate per-pixel standard deviation DEMs and corresponding plots
+    for each (dataset, site) pair in the provided dataframe.
+
+    This function groups input DEMs by their 'dataset' and 'site' identifiers,
+    computes a standard deviation (STD) DEM for each group using the
+    `create_std_dem` function, and generates a visualization of the resulting
+    STD raster. The resulting GeoTIFF and PNG files are saved in the specified
+    output directory.
+
+    Parameters
+    ----------
+    global_df : pandas.DataFrame
+        A dataframe containing metadata for DEMs, including at least the columns:
+        - 'dataset' : Name of the dataset or campaign.
+        - 'site' : Name or ID of the geographic site.
+        - 'coreg_dem_file' : Path to each coregistered DEM file.
+    output_directory : str or Path
+        Path to the directory where the STD DEMs and plots will be saved.
+        The directory is created if it does not exist.
+
+    Returns
+    -------
+    None
+        The function writes the standard deviation DEMs (.tif) and
+        corresponding visualization plots (.png) to the output directory.
+
+    Notes
+    -----
+    - Each group of DEMs (same dataset and site) is used to compute a pixel-wise
+      standard deviation raster via `create_std_dem`.
+    - A plot of the standard deviation map is generated using a 90th percentile
+      color scale cap (`vmax = np.nanquantile(std_dem, 0.9)`).
+    - The colorbar indicates elevation variability in meters.
+
+    Example
+    -------
+    >>> generate_std_dems_by_dataset_site(global_df, "outputs/std_dems/")
+    >>> # Produces files like:
+    >>> # outputs/std_dems/std-dem-datasetA-site1.tif
+    >>> # outputs/std_dems/std-plot-datasetA-site1.png
+    """
+    # create the output directory if needed
+    output_directory = Path(output_directory)
+    output_directory.mkdir(exist_ok=True, parents=True)
+
+    # drop empty raw_dem_file rows
+    df_dropped = global_df.dropna(subset=["coreg_dem_file"])
+    for (dataset, site), group in df_dropped.groupby(["dataset", "site"]):
+        mnt_files = group["coreg_dem_file"].tolist()
+        output_dem_file = output_directory / f"std-dem-{dataset}-{site}.tif"
+        output_plot_file = output_directory / f"std-plot-{dataset}-{site}.png"
+
+        # create the std tif
+        create_std_dem(mnt_files, output_dem_file)
+
+        # open the previously created dem
+        std_dem = _read_raster_with_max_size(output_dem_file)
+
+        # create the plot and save them at output_plot_file
+        vmax = np.nanquantile(std_dem, 0.9)
+        plt.imshow(std_dem, cmap="viridis", vmax=vmax)
+        plt.title(f"DEM Standard Deviation Map for ({dataset}-{site})")
+        plt.axis("off")
+
+        cbar = plt.colorbar()
+        cbar.set_label("Elevation standard deviation (m)", rotation=270, labelpad=15)
+
+        plt.savefig(output_plot_file)
+        plt.close()
 
 
 def barplot_var(global_df: pd.DataFrame, output_directory: str, colname: str, title: str = "") -> None:
