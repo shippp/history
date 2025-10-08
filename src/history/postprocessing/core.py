@@ -386,32 +386,35 @@ def coregister_dem(
 ) -> dict:
     result = {}
 
-    # Cause to point2dem ASP function which round bounds the dem
-    # is not perfectly align with the ref DEM
-    # so we reproject align dem with the reference dem
+    # Because ASP's point2dem rounds the bounds, output DEM is not perfectly aligned with the ref DEM
+    # so we reproject the source dem with the reference dem
     dem_ref = gu.Raster(ref_dem_path)
     dem_ref_mask = gu.Raster(ref_dem_mask_path)
     dem = gu.Raster(dem_path).reproject(dem_ref)
 
-    # ensure all dem to be aligned
+    # check all dems are on the same grid
     assert dem.shape == dem_ref.shape == dem_ref_mask.shape
     assert dem.transform == dem_ref.transform == dem_ref_mask.transform
 
     # get the dem ref mask
-    inlier_mask = dem_ref_mask.data.astype(bool)
+    inlier_mask_vert = dem_ref_mask.data.astype(bool)
+
+    # For horizontal coregistration, also remove very low slopes as they bias the shift estimate
+    slope = xdem.terrain.slope(dem_ref)
+    inlier_mask_hori = inlier_mask_vert & (slope > 1)
 
     # Running coregistration
     coreg_hori = xdem.coreg.NuthKaab(vertical_shift=False)
     coreg_vert = xdem.coreg.VerticalShift(vshift_reduc_func=np.median)
-    dem_coreg_tmp = coreg_hori.fit_and_apply(dem_ref, dem, inlier_mask=inlier_mask)
-    dem_coreg = coreg_vert.fit_and_apply(dem_ref, dem_coreg_tmp, inlier_mask=inlier_mask)
+    dem_coreg_tmp = coreg_hori.fit_and_apply(dem_ref, dem, inlier_mask=inlier_mask_hori)
+    dem_coreg = coreg_vert.fit_and_apply(dem_ref, dem_coreg_tmp, inlier_mask=inlier_mask_vert)
 
     # save coregistration shift
     result["coreg_shift_x"] = coreg_hori.meta["outputs"]["affine"]["shift_x"]
     result["coreg_shift_y"] = coreg_hori.meta["outputs"]["affine"]["shift_y"]
     result["coreg_shift_z"] = coreg_vert.meta["outputs"]["affine"]["shift_z"]
 
-    # save the coregister dem
+    # save the coregistered dem
     if os.path.dirname(output_dem_path):
         os.makedirs(os.path.dirname(output_dem_path), exist_ok=True)
     dem_coreg.save(output_dem_path, tiled=True)
@@ -419,8 +422,8 @@ def coregister_dem(
     # Print statistics
     ddem_before = dem - dem_ref
     ddem_after = dem_coreg - dem_ref
-    ddem_bef_inlier = ddem_before[inlier_mask].compressed()
-    ddem_aft_inlier = ddem_after[inlier_mask].compressed()
+    ddem_bef_inlier = ddem_before[inlier_mask_vert].compressed()
+    ddem_aft_inlier = ddem_after[inlier_mask_vert].compressed()
     result["mean_before_coreg"] = np.mean(ddem_bef_inlier)
     result["median_before_coreg"] = np.median(ddem_bef_inlier)
     result["nmad_before_coreg"] = gu.stats.nmad(ddem_bef_inlier)
