@@ -263,7 +263,7 @@ def generate_hillshades_mosaic(
         pbar.close()
 
 
-def barplot_var(global_df: pd.DataFrame, output_directory: str, colname: str, title: str = "") -> None:
+def barplot_var(global_df: pd.DataFrame, output_directory: str, colname: str, title: str = "", filter_outliers: bool = False) -> None:
     df = global_df.dropna(subset=[colname]).copy(True)
 
     # Créer la colonne groupe
@@ -271,6 +271,10 @@ def barplot_var(global_df: pd.DataFrame, output_directory: str, colname: str, ti
 
     # Trier par groupe puis point_count
     df_sorted = df.sort_values(["group", colname], ascending=[True, True])
+
+    # Filter large outliers
+    if filter_outliers:
+        df_sorted = outlier_filtering(df_sorted, colname)
 
     # Couleurs par groupe
     unique_groups = df_sorted["group"].unique()
@@ -333,6 +337,22 @@ def generate_barplot_group_var(global_df: pd.DataFrame, output_directory: str, c
         # Close figure to avoid displaying and consuming memory
         plt.close(fig)
 
+
+def outlier_filtering(df: pd.DataFrame, colname: str) -> pd.DataFrame:
+    """
+    Filter outliers in the df DataFrame.
+     
+    Lines are considered as outliers when the value of colname is more than mean + 2*std of the group\
+    as defined in the "group" column.
+    """
+    df_filtered = df.copy()
+    for i in range(3):
+        group_mean = df_filtered.groupby("group")[colname].mean()
+        group_std = df_filtered.groupby("group")[colname].std()
+        outlier_threshold = group_mean + 2 * group_std
+        outlier_threshold_df = df_filtered["group"].map(outlier_threshold)
+        df_filtered = df_filtered[df_filtered[colname] <= outlier_threshold_df]
+    return df_filtered
 
 def plot_coregistration_shifts(global_df: pd.DataFrame, output_dir: str | Path) -> None:
     df_droped = global_df.dropna(subset=["coreg_shift_z"])
