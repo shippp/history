@@ -480,6 +480,110 @@ def generate_barplot_group_var(global_df: pd.DataFrame, output_directory: str, c
         plt.close(fig)
 
 
+def generate_landcover_boxplot_by_dataset_site(landcover_df: pd.DataFrame, output_directory: str | Path) -> None:
+    """
+    Generate and save boxplots of landcover-based raster statistics for each (dataset, site) pair.
+
+    This function groups the provided landcover statistics DataFrame by dataset and site,
+    then computes summary statistics (median, Q1, Q3) for each landcover class within that group.
+    Using these aggregated values, it generates boxplots representing the distribution of
+    raster-derived metrics (e.g., elevation difference) by landcover class. Each boxplot is
+    saved as a PNG image in the specified output directory.
+
+    Steps:
+        1. Ensure the output directory exists.
+        2. Group the DataFrame by (dataset, site).
+        3. For each subgroup:
+            - Compute mean values of median, Q1, and Q3 for each landcover class.
+            - Create a Matplotlib boxplot using precomputed statistics.
+            - Annotate x-axis labels with landcover names and coverage percentage.
+            - Save the resulting figure as a PNG file named:
+              'landcover-boxplot-{dataset}-{site}.png'.
+
+    Args:
+        landcover_df (pd.DataFrame):
+            A DataFrame containing per-landcover statistics.
+            Expected columns include:
+            ['dataset', 'site', 'code', 'landcover_label', 'median', 'q1', 'q3', 'percent'].
+        output_directory (str | Path):
+            Path to the folder where the boxplot images will be saved.
+            The directory will be created if it does not exist.
+
+    Returns:
+        None
+        The function saves one PNG file per (dataset, site) combination in the output directory.
+
+    Notes:
+        - The boxplots are built from pre-aggregated statistics (not raw pixel values).
+        - Outliers are not displayed (`showfliers=False`).
+        - Each plot title includes the dataset, site, and number of rasters considered.
+
+    Example:
+        >>> generate_landcover_boxplot_by_dataset_site(landcover_df, "outputs/plots/")
+        # Generates PNG boxplots grouped by dataset and site in the specified directory.
+    """
+    output_directory = Path(output_directory)
+    output_directory.mkdir(parents=True, exist_ok=True)
+
+    for (dataset, site), group in landcover_df.groupby(["dataset", "site"]):
+        box_data = []
+        labels = []
+        for lc_label, lc_group in group.groupby("landcover_label"):
+            box_data.append(
+                {
+                    "med": lc_group["median"].mean(),
+                    "q1": lc_group["q1"].mean(),
+                    "q3": lc_group["q3"].mean(),
+                    "whislo": None,
+                    "whishi": None,
+                    "fliers": [],
+                }
+            )
+            labels.append(f"{lc_label} ({lc_group['percent'].mean():.2f}%)")
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.bxp(box_data, showfliers=False)
+        ax.set_xticks(range(1, len(labels) + 1))
+        ax.set_xticklabels(labels, rotation=45, ha="right")
+        ax.set_ylabel("Altitude difference (m)")
+        ax.set_title(
+            f"Boxplot of mean values from {len(group['code'].unique())} raster(s) by landcover class ({dataset}-{site})"
+        )
+        plt.tight_layout()
+        plt.savefig(output_directory / f"landcover-boxplot-{dataset}-{site}.png")
+        plt.close()
+
+
+def generate_landcover_nmad_by_dataset_site(landcover_df: pd.DataFrame, output_directory: str | Path) -> None:
+    output_directory = Path(output_directory)
+    output_directory.mkdir(parents=True, exist_ok=True)
+
+    for (dataset, site), group in landcover_df.groupby(["dataset", "site"]):
+        df_plot = group.pivot_table(
+            index="landcover_label",  # x axe
+            columns="code",  # one color per bar
+            values="nmad",  # values to show
+            aggfunc="mean",  # aff func in case
+        )
+        # Compute mean percent per landcover_label
+        percent_means = group.groupby("landcover_label")["percent"].mean()
+
+        # Replace index labels with label + mean percent
+        df_plot.index = [f"{label} ({percent_means[label]:.2f}%)" for label in df_plot.index]
+
+        # plot the grouped barplot
+        df_plot.plot(kind="bar", figsize=(10, 6))
+
+        plt.ylabel("NMAD")
+        plt.title(f"NMAD by landcover class and raster code ({dataset}-{site})")
+        plt.xticks(rotation=45, ha="right")
+        plt.legend(title="Code", bbox_to_anchor=(1.05, 1), loc="upper left")
+        plt.grid(axis="y", linestyle="--", alpha=0.5)
+        plt.tight_layout()
+
+        plt.savefig(output_directory / f"barplot-nmad-{dataset}-{site}.png")
+        plt.close()
+
+
 def outlier_filtering(df: pd.DataFrame, colname: str) -> pd.DataFrame:
     """
     Filter outliers in the df DataFrame.

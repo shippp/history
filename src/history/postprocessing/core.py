@@ -28,6 +28,7 @@ import xdem
 from tqdm import tqdm
 
 from history.postprocessing.io import PathsManager, parse_filename, uncompress_all_submissions
+from history.postprocessing.statistics import compute_raster_stats_by_landcover
 from history.postprocessing.utils import get_dems_df, get_pointcloud_df, load_coreg_results
 from history.postprocessing.visualization import plot_files_recap
 
@@ -307,6 +308,77 @@ class PostProcessing:
             and coregistration results for all processed datasets.
         """
         return pd.read_csv(self.paths_manager.get_path("postproc_csv"), index_col="code")
+
+    def compute_landcover_stats(self) -> None:
+        """
+        Compute per-landcover statistics for each DEM raster available in the dataset.
+
+        This method iterates over all valid raster files (filtered by the 'ddem_after_file' column),
+        computes raster statistics for each (dataset, site) combination using the associated landcover map,
+        and aggregates the results into a single DataFrame. The resulting table is then saved as a CSV file.
+
+        Steps:
+            1. Retrieve all file paths from the PathsManager.
+            2. Drop entries with missing 'ddem_after_file' values.
+            3. For each (dataset, site) pair:
+                - Open the raster and landcover files.
+                - Compute per-landcover statistics (mean, median, nmad, etc.).
+                - Add metadata columns (dataset, site, code, file_code).
+            4. Concatenate all intermediate DataFrames into a final DataFrame.
+            5. Save the aggregated statistics to a CSV file.
+
+        Returns:
+            None
+            The function writes the final DataFrame to disk at the path specified by
+            `self.paths_manager.get_path("landcover_csv")`.
+
+        Notes:
+            - The computation progress is tracked using a tqdm progress bar.
+            - If no valid raster is found, the function prints a warning and returns early.
+            - Each landcover class in a raster is associated with its computed statistics,
+              such as count, percent, mean, median, NMAD, min, max, std, Q1, and Q3.
+
+        Example:
+            >>> processor.compute_landcover_stats()
+            # Generates and saves a 'landcover_csv' file with statistics for all datasets/sites.
+        """
+        filepaths_df = self.paths_manager.get_filepaths_df()
+        df_dropped = filepaths_df.dropna(subset="ddem_after_file")
+
+        all_stats = []  # list to store temporary DataFrames
+        with tqdm(desc="landcover computing", total=len(df_dropped)) as pbar:
+            for (dataset, site), group in df_dropped.groupby(["dataset", "site"]):
+                for code, row in group.iterrows():
+                    raster_file = row["ddem_after_file"]
+                    landcover_file = self.paths_manager.get_landcover(site, dataset)
+
+                    # Compute stats for this raster/landcover pair
+                    tmp_df = compute_raster_stats_by_landcover(raster_file, landcover_file)
+
+                    # Add identifier columns
+                    tmp_df.insert(0, "file_code", "ddem_after_file")  # insert at left
+                    tmp_df.insert(0, "dataset", dataset)
+                    tmp_df.insert(0, "site", site)
+                    tmp_df.insert(0, "code", code)
+
+                    # Append to list
+                    all_stats.append(tmp_df)
+
+                    # update the pbar
+                    pbar.update()
+
+        # Concatenate all temporary DataFrames
+        if all_stats:
+            final_df = pd.concat(all_stats, ignore_index=True)
+        else:
+            print("⚠️ No valid ddem_after_file found.")
+            return
+
+        # save to csv
+        final_df.to_csv(self.paths_manager.get_path("landcover_csv"), index=False)
+
+    def get_landcover_stats(self) -> pd.DataFrame:
+        return pd.read_csv(self.paths_manager.get_path("landcover_csv"))
 
 
 #######################################################################################################################

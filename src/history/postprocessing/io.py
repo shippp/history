@@ -863,7 +863,7 @@ class PathsManager:
 
         # Core directories
         processing_dir = Path(custom_paths.get("processing_dir", self.base_dir / "processing"))
-        ref_dem_dir = Path(custom_paths.get("ref_dem_dir", processing_dir / "ref_dems"))
+        aux_data = Path(custom_paths.get("ref_dem_dir", processing_dir / "aux_data"))
 
         # Default paths
         defaults: dict[str, Path] = {
@@ -874,11 +874,16 @@ class PathsManager:
             "coreg_dems_dir": processing_dir / "coreg_dems",
             "ddems_dir": processing_dir / "ddems",
             "postproc_csv": processing_dir / "postprocessing.csv",
+            "landcover_csv": processing_dir / "landcover_statistics.csv",
             "plots_dir": processing_dir / "plots",
-            "iceland_ref_dem_zoom": ref_dem_dir / "iceland_ref_dem_zoom.tif",
-            "iceland_ref_dem_large": ref_dem_dir / "iceland_ref_dem_large.tif",
-            "casagrande_ref_dem_zoom": ref_dem_dir / "casagrande_ref_dem_zoom.tif",
-            "casagrande_ref_dem_large": ref_dem_dir / "casagrande_ref_dem_large.tif",
+            "iceland_ref_dem_zoom": aux_data / "iceland_ref_dem_zoom.tif",
+            "iceland_ref_dem_large": aux_data / "iceland_ref_dem_large.tif",
+            "casagrande_ref_dem_zoom": aux_data / "casagrande_ref_dem_zoom.tif",
+            "casagrande_ref_dem_large": aux_data / "casagrande_ref_dem_large.tif",
+            "iceland_landcover_zoom": aux_data / "iceland_landcover_zoom.tif",
+            "iceland_landcover_large": aux_data / "iceland_landcover_large.tif",
+            "casagrande_landcover_zoom": aux_data / "casagrande_landcover_zoom.tif",
+            "casagrande_landcover_large": aux_data / "casagrande_landcover_large.tif",
         }
         # Validate custom_paths keys
         unknown_keys = set(custom_paths) - set(defaults)
@@ -938,6 +943,17 @@ class PathsManager:
                 raise FileNotFoundError(f"{path} doesn't exists.")
 
         return ref_dem_path, ref_mask_path
+
+    def get_landcover(self, site: str, dataset: str) -> Path:
+        mapping = {
+            ("casa_grande", "aerial"): "casagrande_landcover_zoom",
+            ("casa_grande", "kh9mc"): "casagrande_landcover_large",
+            ("casa_grande", "kh9pc"): "casagrande_landcover_large",
+            ("iceland", "aerial"): "iceland_landcover_zoom",
+            ("iceland", "kh9mc"): "iceland_landcover_large",
+            ("iceland", "kh9pc"): "iceland_landcover_large",
+        }
+        return self.get_path(mapping[(site, dataset)])
 
     def get_filepaths_df(self) -> pd.DataFrame:
         """
