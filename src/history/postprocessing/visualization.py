@@ -8,10 +8,15 @@ import pandas as pd
 import rasterio
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import LightSource
+from matplotlib.patches import Patch
 from rasterio.enums import Resampling
 from tqdm import tqdm
 
 from history.postprocessing.statistics import create_std_dem
+
+#######################################################################################################################
+##                                                  MOSAIC VISUALIZATION
+#######################################################################################################################
 
 
 def generate_dems_mosaic(
@@ -236,101 +241,7 @@ def generate_hillshades_mosaic(
         pbar.close()
 
 
-def generate_coregistration_individual_plots(
-    global_df: pd.DataFrame, output_directory: str | Path, overwrite: bool = True, vmin: float = -10, vmax: float = 10
-) -> None:
-    """
-    Generate and save before/after coregistration plots for each DEM pair in the provided dataset.
-
-    This function iterates over all entries in the input DataFrame that contain valid coregistered DEM files.
-    For each entry, it loads both the pre- and post-coregistration dDEM rasters, creates a side-by-side
-    comparison plot, and saves the figure as a PNG file in the specified output directory.
-
-    Parameters
-    ----------
-    global_df : pandas.DataFrame
-        Input DataFrame containing metadata and file paths for DEM coregistration results.
-        Must include the following columns:
-        - "coreg_dem_file"
-        - "ddem_before_file"
-        - "ddem_after_file"
-        - "mean_before_coreg"
-        - "median_before_coreg"
-        - "nmad_before_coreg"
-        - "mean_after_coreg"
-        - "median_after_coreg"
-        - "nmad_after_coreg"
-    output_directory : str or Path
-        Directory where the generated PNG plots will be saved.
-    overwrite : bool, optional
-        If True, existing plots will be overwritten. Default is True.
-    vmin : float, optional
-        Minimum value for the color scale in the plots. Default is -10.
-    vmax : float, optional
-        Maximum value for the color scale in the plots. Default is 10.
-
-    Returns
-    -------
-    None
-        The function does not return anything. It writes plot files to disk.
-
-    Notes
-    -----
-    - Each plot shows two panels: the dDEM before and after coregistration, with a shared colorbar.
-    - The filenames of the plots are derived from the DataFrame index (e.g., "<index>_coreg_plot.png").
-    - A progress bar is displayed using `tqdm` to indicate processing progress.
-
-    Examples
-    --------
-    >>> generate_coregistration_individual_plots(global_df, "outputs/plots", overwrite=False)
-    Generating coregistration plots:  45%|████▌     | 9/20 [00:04<00:05,  2.10it/s]
-    """
-    # create the output directory if needed
-    output_directory = Path(output_directory)
-    output_directory.mkdir(exist_ok=True, parents=True)
-
-    # filter every row with a valid coregistered dems
-    filtered_df = global_df.loc[~global_df["coreg_dem_file"].isna()]
-
-    for code, row in tqdm(filtered_df.iterrows(), desc="Generating coregistration plots", total=len(filtered_df)):
-        output_path = output_directory / f"{code}_coreg_plot.png"
-
-        if not output_path.exists() or overwrite:
-            # open the raw dDEM and the coregistered dDEM
-            ddem_before = _read_raster_with_max_size(row["ddem_before_file"])
-            ddem_after = _read_raster_with_max_size(row["ddem_after_file"])
-
-            # create the figure
-            fig, axes = plt.subplots(1, 2, figsize=(10, 5), constrained_layout=True)
-
-            # add the dDEMs and their titles
-            axes[0].imshow(ddem_before, cmap="coolwarm", vmin=vmin, vmax=vmax)
-            axes[0].axis("off")
-            axes[0].set_title(
-                f"dDEM before coregistration \n(mean: {row['mean_before_coreg']:.3f}, med: {row['median_before_coreg']:.3f}, nmad: {row['nmad_before_coreg']:.3f})"
-            )
-
-            axes[1].imshow(ddem_after, cmap="coolwarm", vmin=vmin, vmax=vmax)
-            axes[1].axis("off")
-            axes[1].set_title(
-                f"dDEM after coregistration \n(mean: {row['mean_after_coreg']:.3f}, med: {row['median_after_coreg']:.3f}, nmad: {row['nmad_after_coreg']:.3f})"
-            )
-
-            # add a global color bar
-            cbar = fig.colorbar(
-                ScalarMappable(cmap="coolwarm", norm=plt.Normalize(vmin=vmin, vmax=vmax)),
-                ax=axes,
-                orientation="vertical",
-                fraction=0.03,
-                pad=0.02,
-            )
-            cbar.set_label("Altitude difference(m)")
-
-            plt.savefig(output_path)
-            plt.close()
-
-
-def generate_std_dems_by_dataset_site(global_df: pd.DataFrame, output_directory: str | Path) -> None:
+def generate_mosaic_std_dems(global_df: pd.DataFrame, output_directory: str | Path) -> None:
     """
     Generate per-pixel standard deviation DEMs and corresponding plots
     for each (dataset, site) pair in the provided dataframe.
@@ -381,14 +292,17 @@ def generate_std_dems_by_dataset_site(global_df: pd.DataFrame, output_directory:
     df_dropped = global_df.dropna(subset=["coreg_dem_file"])
     for (dataset, site), group in df_dropped.groupby(["dataset", "site"]):
         mnt_files = group["coreg_dem_file"].tolist()
-        output_dem_file = output_directory / f"std-dem-{dataset}-{site}.tif"
+        tmp_dem_file = output_directory / "tmp-dem.tif"
         output_plot_file = output_directory / f"std-plot-{dataset}-{site}.png"
 
         # create the std tif
-        create_std_dem(mnt_files, output_dem_file)
+        create_std_dem(mnt_files, tmp_dem_file)
 
         # open the previously created dem
-        std_dem = _read_raster_with_max_size(output_dem_file)
+        std_dem = _read_raster_with_max_size(tmp_dem_file)
+
+        # remove the tmp dem
+        tmp_dem_file.unlink()
 
         # create the plot and save them at output_plot_file
         vmax = np.nanquantile(std_dem, 0.9)
@@ -403,9 +317,12 @@ def generate_std_dems_by_dataset_site(global_df: pd.DataFrame, output_directory:
         plt.close()
 
 
-def barplot_var(
-    global_df: pd.DataFrame, output_directory: str, colname: str, title: str = "", filter_outliers: bool = False
-) -> None:
+#######################################################################################################################
+##                                                  STATISTICS VISUALIZATION
+#######################################################################################################################
+
+
+def barplot_var(global_df: pd.DataFrame, output_directory: str, colname: str, title: str = "") -> None:
     df = global_df.dropna(subset=[colname]).copy(True)
 
     # Créer la colonne groupe
@@ -413,10 +330,6 @@ def barplot_var(
 
     # Trier par groupe puis point_count
     df_sorted = df.sort_values(["group", colname], ascending=[True, True])
-
-    # Filter large outliers
-    if filter_outliers:
-        df_sorted = outlier_filtering(df_sorted, colname)
 
     # Couleurs par groupe
     unique_groups = df_sorted["group"].unique()
@@ -478,6 +391,211 @@ def generate_barplot_group_var(global_df: pd.DataFrame, output_directory: str, c
 
         # Close figure to avoid displaying and consuming memory
         plt.close(fig)
+
+
+def plot_coregistration_shifts(global_df: pd.DataFrame, output_dir: str | Path) -> None:
+    df_droped = global_df.dropna(subset=["coreg_shift_z"])
+    output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True, parents=True)
+    for (dataset, site), group in df_droped.groupby(["dataset", "site"]):
+        ordered_group = group.sort_values("coreg_shift_z")
+        fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(15, 10), gridspec_kw={"height_ratios": [1, 3]})
+
+        colors = ["red", "green", "blue"]
+        labels = ["shift x", "shift y", "shift z"]
+
+        for col, color, label in zip(["coreg_shift_x", "coreg_shift_y", "coreg_shift_z"], colors, labels):
+            ax1.scatter(ordered_group.index, ordered_group[col], color=color, s=50, label=label)
+            ax2.scatter(ordered_group.index, ordered_group[col], color=color, s=50, label=label)
+
+        ax1.set_ylim(20, 100)  # upper zone = outliers
+        ax2.set_ylim(-20, 20)
+
+        # break the axes
+        ax1.spines["bottom"].set_visible(False)
+        ax2.spines["top"].set_visible(False)
+        ax1.tick_params(bottom=False)
+
+        # add zigzags for the cut
+        d = 0.5  # zigzag prop
+        kwargs = dict(
+            marker=[(-1, -d), (1, d)], markersize=12, linestyle="none", color="k", mec="k", mew=1, clip_on=False
+        )
+
+        ax1.plot([0, 1], [0, 0], transform=ax1.transAxes, **kwargs)
+        ax2.plot([0, 1], [1, 1], transform=ax2.transAxes, **kwargs)
+
+        # add a grid for the 2 axes
+        for ax in (ax1, ax2):
+            ax.grid(True, linestyle="--", alpha=0.6)
+
+        plt.xticks(rotation=90)
+        plt.tight_layout()
+        plt.savefig(output_dir / f"coregistration_shifts_{dataset}_{site}")
+        plt.close()
+
+
+def generate_nmad_groupby(df: pd.DataFrame, output_dir: str | Path) -> None:
+    """
+    Generate grouped bar plots of NMAD before and after coregistration for each dataset and site.
+    Saves one plot per (dataset, site) combination.
+    """
+    droped_df = df.dropna(subset=["nmad_after_coreg", "nmad_before_coreg"])
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for (dataset, site), group in droped_df.groupby(["dataset", "site"]):
+        ordered_group = group.sort_values("nmad_before_coreg")
+
+        # Build the bar positions (one group per "code")
+        codes = ordered_group.index
+        x = range(len(codes))
+        width = 0.35
+
+        # Plot
+        fig, ax = plt.subplots(figsize=(15, 5))
+
+        bars_before = ax.bar(
+            [pos - width / 2 for pos in x],
+            ordered_group["nmad_before_coreg"],
+            width=width,
+            label="Before coregistration",
+        )
+        bars_after = ax.bar(
+            [pos + width / 2 for pos in x],
+            ordered_group["nmad_after_coreg"],
+            width=width,
+            label="After coregistration",
+        )
+
+        # Add value labels above bars
+        ax.bar_label(bars_before, fmt="%.2f", padding=3)
+        ax.bar_label(bars_after, fmt="%.2f", padding=3)
+
+        # Labels and style
+        ax.set_xticks(x)
+        ax.set_xticklabels(codes, rotation=90)
+        ax.set_ylabel("NMAD")
+        ax.set_title(f"NMAD Before/After Coregistration\nDataset: {dataset}, Site: {site}")
+        ax.legend()
+
+        # Save figure
+        plt.tight_layout()
+        plt.savefig(output_dir / f"nmad_{dataset}_{site}.png", dpi=300)
+        plt.close()
+
+
+#######################################################################################################################
+##                                                  STATISTICS LANDCOVER VISUALIZATION
+#######################################################################################################################
+
+
+def generate_landcover_grouped_boxplot_by_dataset_site(
+    landcover_df: pd.DataFrame, output_directory: str | Path
+) -> None:
+    """
+    Generate grouped boxplots of precomputed landcover statistics by dataset and site.
+
+    This function creates grouped boxplots for each (dataset, site) pair in the provided
+    DataFrame. Each group of boxes corresponds to a landcover class, and each box within a group
+    represents a different raster code. The plot uses precomputed summary statistics (median,
+    Q1, Q3) instead of raw pixel data.
+
+    Steps:
+        1. Group the input DataFrame by (dataset, site).
+        2. Within each subgroup:
+            - Sort raster codes by their mean NMAD value (ascending order).
+            - Compute average Q1, Q3, and median for each (landcover_label, code) pair.
+            - Build grouped boxplots (one color per code).
+            - Annotate each x-axis label with the mean percentage of landcover coverage.
+        3. Save one PNG file per (dataset, site) combination.
+
+    Args:
+        landcover_df (pd.DataFrame):
+            A DataFrame containing precomputed statistics per landcover class and raster.
+            Expected columns include:
+            ['dataset', 'site', 'code', 'landcover_label', 'median', 'q1', 'q3', 'percent', 'nmad'].
+        output_directory (str | Path):
+            Directory where the resulting boxplot figures will be saved.
+            It will be created if it does not already exist.
+
+    Returns:
+        None
+        The function saves one grouped boxplot per (dataset, site) as PNG files in the output directory.
+
+    Notes:
+        - The boxplots are based on aggregated statistics, not raw pixel data.
+        - Raster codes are sorted by their mean NMAD value for better comparison.
+        - Colors are automatically assigned per code and reflected in the legend.
+        - Outliers are not displayed (`showfliers=False`).
+
+    Example:
+        >>> generate_landcover_grouped_boxplot_by_dataset_site(landcover_df, "outputs/plots/")
+        # Produces grouped boxplots comparing elevation differences across landcover classes
+        # and raster codes, saved in the 'outputs/plots/' directory.
+    """
+    output_directory = Path(output_directory)
+    output_directory.mkdir(parents=True, exist_ok=True)
+
+    for (dataset, site), group in landcover_df.groupby(["dataset", "site"]):
+        # order group with the mean of nmad
+        code_order = group.groupby("code")["nmad"].mean().sort_values().index
+        group = group.set_index("code").loc[code_order].reset_index()
+
+        landcover_labels = group["landcover_label"].unique()
+        codes = group["code"].unique()
+        n_labels = len(landcover_labels)
+        n_codes = len(codes)
+        width = 0.8 / n_codes
+        x_base = np.arange(n_labels)
+
+        fig, ax = plt.subplots(figsize=(12, 6))
+
+        color_map = {code: f"C{i}" for i, code in enumerate(codes)}  # assign colors
+
+        for i, code in enumerate(codes):
+            positions = x_base - 0.4 + i * width + width / 2
+            box_data = []
+            for lc_label in landcover_labels:
+                lc_group = group[(group["landcover_label"] == lc_label) & (group["code"] == code)]
+                if lc_group.empty:
+                    box_data.append({"med": 0, "q1": 0, "q3": 0, "whislo": 0, "whishi": 0, "fliers": []})
+                else:
+                    box_data.append(
+                        {
+                            "med": lc_group["median"].mean(),
+                            "q1": lc_group["q1"].mean(),
+                            "q3": lc_group["q3"].mean(),
+                            "whislo": lc_group["q1"].mean(),
+                            "whishi": lc_group["q3"].mean(),
+                            "fliers": [],
+                        }
+                    )
+            ax.bxp(
+                box_data,
+                positions=positions,
+                widths=width,
+                showfliers=False,
+                patch_artist=True,
+                boxprops=dict(facecolor=color_map[code]),
+            )
+
+        # X-axis labels
+        percent_means = group.groupby("landcover_label")["percent"].mean()
+        ax.set_xticks(x_base)
+        ax.set_xticklabels([f"{lc} ({percent_means[lc]:.1f}%)" for lc in landcover_labels], rotation=45, ha="right")
+
+        ax.set_ylabel("Altitude difference (m)")
+        ax.set_title(f"Grouped boxplot by landcover and code ({dataset}-{site})")
+
+        # Create custom legend
+        legend_handles = [Patch(facecolor=color_map[code], label=str(code)) for code in codes]
+        ax.legend(handles=legend_handles, title="Code", bbox_to_anchor=(1.05, 1), loc="upper left")
+
+        plt.grid(axis="y", linestyle="--", alpha=0.5)
+        plt.tight_layout()
+        plt.savefig(output_directory / f"grouped-boxplot-{dataset}-{site}.png")
+        plt.close()
 
 
 def generate_landcover_boxplot_by_dataset_site(landcover_df: pd.DataFrame, output_directory: str | Path) -> None:
@@ -584,63 +702,9 @@ def generate_landcover_nmad_by_dataset_site(landcover_df: pd.DataFrame, output_d
         plt.close()
 
 
-def outlier_filtering(df: pd.DataFrame, colname: str) -> pd.DataFrame:
-    """
-    Filter outliers in the df DataFrame.
-     
-    Lines are considered as outliers when the value of colname is more than mean + 2*std of the group\
-    as defined in the "group" column.
-    """
-    df_filtered = df.copy()
-    for i in range(3):
-        group_mean = df_filtered.groupby("group")[colname].mean()
-        group_std = df_filtered.groupby("group")[colname].std()
-        outlier_threshold = group_mean + 2 * group_std
-        outlier_threshold_df = df_filtered["group"].map(outlier_threshold)
-        df_filtered = df_filtered[df_filtered[colname] <= outlier_threshold_df]
-    return df_filtered
-
-
-def plot_coregistration_shifts(global_df: pd.DataFrame, output_dir: str | Path) -> None:
-    df_droped = global_df.dropna(subset=["coreg_shift_z"])
-    output_dir = Path(output_dir)
-    output_dir.mkdir(exist_ok=True, parents=True)
-    for (dataset, site), group in df_droped.groupby(["dataset", "site"]):
-        ordered_group = group.sort_values("coreg_shift_z")
-        fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(15, 10), gridspec_kw={"height_ratios": [1, 3]})
-
-        colors = ["red", "green", "blue"]
-        labels = ["shift x", "shift y", "shift z"]
-
-        for col, color, label in zip(["coreg_shift_x", "coreg_shift_y", "coreg_shift_z"], colors, labels):
-            ax1.scatter(ordered_group.index, ordered_group[col], color=color, s=50, label=label)
-            ax2.scatter(ordered_group.index, ordered_group[col], color=color, s=50, label=label)
-
-        ax1.set_ylim(20, 100)  # upper zone = outliers
-        ax2.set_ylim(-20, 20)
-
-        # break the axes
-        ax1.spines["bottom"].set_visible(False)
-        ax2.spines["top"].set_visible(False)
-        ax1.tick_params(bottom=False)
-
-        # add zigzags for the cut
-        d = 0.5  # zigzag prop
-        kwargs = dict(
-            marker=[(-1, -d), (1, d)], markersize=12, linestyle="none", color="k", mec="k", mew=1, clip_on=False
-        )
-
-        ax1.plot([0, 1], [0, 0], transform=ax1.transAxes, **kwargs)
-        ax2.plot([0, 1], [1, 1], transform=ax2.transAxes, **kwargs)
-
-        # add a grid for the 2 axes
-        for ax in (ax1, ax2):
-            ax.grid(True, linestyle="--", alpha=0.6)
-
-        plt.xticks(rotation=90)
-        plt.tight_layout()
-        plt.savefig(output_dir / f"coregistration_shifts_{dataset}_{site}")
-        plt.close()
+#######################################################################################################################
+##                                                  OTHER VISUALIZATION
+#######################################################################################################################
 
 
 def plot_files_recap(filepaths_df: pd.DataFrame, output_path: str | None = None, show: bool = True) -> None:
@@ -692,54 +756,103 @@ def plot_files_recap(filepaths_df: pd.DataFrame, output_path: str | None = None,
         plt.close()
 
 
-def generate_nmad_groupby(df: pd.DataFrame, output_dir: str | Path) -> None:
+def generate_coregistration_individual_plots(
+    global_df: pd.DataFrame, output_directory: str | Path, overwrite: bool = True, vmin: float = -10, vmax: float = 10
+) -> None:
     """
-    Generate grouped bar plots of NMAD before and after coregistration for each dataset and site.
-    Saves one plot per (dataset, site) combination.
+    Generate and save before/after coregistration plots for each DEM pair in the provided dataset.
+
+    This function iterates over all entries in the input DataFrame that contain valid coregistered DEM files.
+    For each entry, it loads both the pre- and post-coregistration dDEM rasters, creates a side-by-side
+    comparison plot, and saves the figure as a PNG file in the specified output directory.
+
+    Parameters
+    ----------
+    global_df : pandas.DataFrame
+        Input DataFrame containing metadata and file paths for DEM coregistration results.
+        Must include the following columns:
+        - "coreg_dem_file"
+        - "ddem_before_file"
+        - "ddem_after_file"
+        - "mean_before_coreg"
+        - "median_before_coreg"
+        - "nmad_before_coreg"
+        - "mean_after_coreg"
+        - "median_after_coreg"
+        - "nmad_after_coreg"
+    output_directory : str or Path
+        Directory where the generated PNG plots will be saved.
+    overwrite : bool, optional
+        If True, existing plots will be overwritten. Default is True.
+    vmin : float, optional
+        Minimum value for the color scale in the plots. Default is -10.
+    vmax : float, optional
+        Maximum value for the color scale in the plots. Default is 10.
+
+    Returns
+    -------
+    None
+        The function does not return anything. It writes plot files to disk.
+
+    Notes
+    -----
+    - Each plot shows two panels: the dDEM before and after coregistration, with a shared colorbar.
+    - The filenames of the plots are derived from the DataFrame index (e.g., "<index>_coreg_plot.png").
+    - A progress bar is displayed using `tqdm` to indicate processing progress.
+
+    Examples
+    --------
+    >>> generate_coregistration_individual_plots(global_df, "outputs/plots", overwrite=False)
+    Generating coregistration plots:  45%|████▌     | 9/20 [00:04<00:05,  2.10it/s]
     """
-    droped_df = df.dropna(subset=["nmad_after_coreg", "nmad_before_coreg"])
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # create the output directory if needed
+    output_directory = Path(output_directory)
+    output_directory.mkdir(exist_ok=True, parents=True)
 
-    for (dataset, site), group in droped_df.groupby(["dataset", "site"]):
-        ordered_group = group.sort_values("nmad_before_coreg")
+    # filter every row with a valid coregistered dems
+    filtered_df = global_df.loc[~global_df["coreg_dem_file"].isna()]
 
-        # Build the bar positions (one group per "code")
-        codes = ordered_group.index
-        x = range(len(codes))
-        width = 0.35
+    for code, row in tqdm(filtered_df.iterrows(), desc="Generating coregistration plots", total=len(filtered_df)):
+        output_path = output_directory / f"{code}_coreg_plot.png"
 
-        # Plot
-        fig, ax = plt.subplots(figsize=(15, 5))
+        if not output_path.exists() or overwrite:
+            # open the raw dDEM and the coregistered dDEM
+            ddem_before = _read_raster_with_max_size(row["ddem_before_file"])
+            ddem_after = _read_raster_with_max_size(row["ddem_after_file"])
 
-        bars_before = ax.bar(
-            [pos - width / 2 for pos in x],
-            ordered_group["nmad_before_coreg"],
-            width=width,
-            label="Before coregistration",
-        )
-        bars_after = ax.bar(
-            [pos + width / 2 for pos in x],
-            ordered_group["nmad_after_coreg"],
-            width=width,
-            label="After coregistration",
-        )
+            # create the figure
+            fig, axes = plt.subplots(1, 2, figsize=(10, 5), constrained_layout=True)
 
-        # Add value labels above bars
-        ax.bar_label(bars_before, fmt="%.2f", padding=3)
-        ax.bar_label(bars_after, fmt="%.2f", padding=3)
+            # add the dDEMs and their titles
+            axes[0].imshow(ddem_before, cmap="coolwarm", vmin=vmin, vmax=vmax)
+            axes[0].axis("off")
+            axes[0].set_title(
+                f"dDEM before coregistration \n(mean: {row['mean_before_coreg']:.3f}, med: {row['median_before_coreg']:.3f}, nmad: {row['nmad_before_coreg']:.3f})"
+            )
 
-        # Labels and style
-        ax.set_xticks(x)
-        ax.set_xticklabels(codes, rotation=90)
-        ax.set_ylabel("NMAD")
-        ax.set_title(f"NMAD Before/After Coregistration\nDataset: {dataset}, Site: {site}")
-        ax.legend()
+            axes[1].imshow(ddem_after, cmap="coolwarm", vmin=vmin, vmax=vmax)
+            axes[1].axis("off")
+            axes[1].set_title(
+                f"dDEM after coregistration \n(mean: {row['mean_after_coreg']:.3f}, med: {row['median_after_coreg']:.3f}, nmad: {row['nmad_after_coreg']:.3f})"
+            )
 
-        # Save figure
-        plt.tight_layout()
-        plt.savefig(output_dir / f"nmad_{dataset}_{site}.png", dpi=300)
-        plt.close()
+            # add a global color bar
+            cbar = fig.colorbar(
+                ScalarMappable(cmap="coolwarm", norm=plt.Normalize(vmin=vmin, vmax=vmax)),
+                ax=axes,
+                orientation="vertical",
+                fraction=0.03,
+                pad=0.02,
+            )
+            cbar.set_label("Altitude difference(m)")
+
+            plt.savefig(output_path)
+            plt.close()
+
+
+#######################################################################################################################
+##                                                  PRIVATE FUNCTION
+#######################################################################################################################
 
 
 def _read_raster_with_max_size(file: str, maxsize: int = 2000):
