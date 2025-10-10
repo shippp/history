@@ -27,7 +27,7 @@ import pandas as pd
 import xdem
 from tqdm import tqdm
 
-from history.postprocessing.io import PathsManager, parse_filename, uncompress_all_submissions
+from history.postprocessing.io import PathsManager, uncompress_all_submissions
 from history.postprocessing.statistics import compute_raster_stats_by_landcover
 from history.postprocessing.utils import get_dems_df, get_pointcloud_df, load_coreg_results
 from history.postprocessing.visualization import plot_files_recap
@@ -115,28 +115,39 @@ class PostProcessing:
         # here hide the output of each command multiple command are running
         stdout = None if max_concurrent_commands == 1 else subprocess.DEVNULL
 
+        # open the filepaths df with only valid dense pointcloud files
+        filepaths_df = self.paths_manager.get_filepaths_df().dropna(subset="dense_pointcloud_file")
+        print(f"{len(filepaths_df)} dense point cloud file(s) found.")
+
+        if not overwrite:
+            mask = filepaths_df["raw_dem_file"].isna()
+            filepaths_df = filepaths_df[mask]
+            if sum(~mask) > 0:
+                print(f"Skipping {sum(~mask)} existing Poind2Dem result(s) (overwrite disabled).")
+
         with ProcessPoolExecutor(max_workers=max_concurrent_commands) as executor:
             futures = []
-            for file in self.paths_manager.dense_pointcloud_files:
-                code, metadatas = parse_filename(file)
+            for code, row in filepaths_df.iterrows():
+                # check the overwrite
                 output_dem = output_dir / code
 
-                # check the overwrite
-                if os.path.exists(f"{output_dem}-DEM.tif") and not overwrite:
-                    print(f"Skip {code} : {output_dem}-DEM.tif already exist.")
-                    continue
-
-                # skip if no reference DEM is provided
-                try:
-                    ref_dem_file, _ = self.paths_manager.get_ref_dem_and_mask(metadatas["site"], metadatas["dataset"])
-                except Exception as e:
-                    print(f"Error {code} : {e}")
+                # skip if the referecne DEM doesn't exists
+                ref_dem_file = row["ref_dem_file"]
+                if not os.path.exists(ref_dem_file):
+                    print(f"Error {code} : Reference dem not found at {ref_dem_file}")
                     continue
 
                 # start a process of point2dem function
                 futures.append(
                     executor.submit(
-                        point2dem, file, output_dem, ref_dem_file, dry_run, asp_path, max_threads_per_command, stdout
+                        point2dem,
+                        row["dense_pointcloud_file"],
+                        output_dem,
+                        ref_dem_file,
+                        dry_run,
+                        asp_path,
+                        max_threads_per_command,
+                        stdout,
                     )
                 )
 
@@ -183,34 +194,40 @@ class PostProcessing:
         """
 
         data = []
-        for file in self.paths_manager.raw_dem_files:
-            code, metadatas = parse_filename(file)
+        filepaths_df = self.paths_manager.get_filepaths_df().dropna(subset="raw_dem_file")
+        print(f"{len(filepaths_df)} raw DEM file(s) found.")
 
+        # manage to not overwrite existing coregistered files
+        if not overwrite:
+            mask = filepaths_df["coreg_dem_file"].isna()
+            filepaths_df = filepaths_df[mask]
+            if sum(~mask) > 0:
+                print(f"Skipping {sum(~mask)} existing coregistered result(s) (overwrite disabled).")
+
+        for code, row in filepaths_df.iterrows():
+            input_file = row["raw_dem_file"]
             output_dem_path = self.paths_manager.get_path("coreg_dems_dir") / f"{code}-DEM_coreg.tif"
 
-            # not overwrite existing files
-            if output_dem_path.exists() and not overwrite:
-                print(f"Skip {code} : {output_dem_path} already exist.")
+            # read the corresponding mask and dem references
+            ref_dem_file = row["ref_dem_file"]
+            if not os.path.exists(ref_dem_file):
+                print(f"Error {code} : Reference dem not found at {ref_dem_file}")
                 continue
 
-            # read the corresponding mask and dem references
-            try:
-                ref_dem_file, ref_dem_mask_file = self.paths_manager.get_ref_dem_and_mask(
-                    metadatas["site"], metadatas["dataset"]
-                )
-            except Exception as e:
-                print(f"Error {code} : {e}")
+            ref_dem_mask_file = row["ref_dem_mask_file"]
+            if not os.path.exists(ref_dem_mask_file):
+                print(f"Error {code} : Reference mask dem not found at {ref_dem_mask_file}")
                 continue
 
             output_ddem_before_path = self.paths_manager.get_path("ddems_dir") / f"{code}-DDEM_before.tif"
             output_ddem_after_path = self.paths_manager.get_path("ddems_dir") / f"{code}-DDEM_after.tif"
 
             if verbose:
-                print(f"coregister_dem({file}, {ref_dem_file}, {ref_dem_mask_file}, {output_dem_path})")
+                print(f"coregister_dem({input_file}, {ref_dem_file}, {ref_dem_mask_file}, {output_dem_path})")
             if not dry_run:
                 try:
                     res = coregister_dem(
-                        file,
+                        input_file,
                         ref_dem_file,
                         ref_dem_mask_file,
                         output_dem_path,

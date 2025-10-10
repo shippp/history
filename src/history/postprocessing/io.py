@@ -938,10 +938,6 @@ class PathsManager:
         ref_dem_path = self.get_path(mapping[(site, dataset)])
         ref_mask_path = ref_dem_path.with_name(f"{ref_dem_path.stem}_mask.tif")
 
-        for path in [ref_dem_path, ref_mask_path]:
-            if not path.exists():
-                raise FileNotFoundError(f"{path} doesn't exists.")
-
         return ref_dem_path, ref_mask_path
 
     def get_landcover(self, site: str, dataset: str) -> Path:
@@ -985,6 +981,14 @@ class PathsManager:
                 nested_dict[code]["code"] = code
                 nested_dict[code].update(metadatas)
                 nested_dict[code][key] = file
+
+        # add ref dems and ref landcover
+        for code, metadata in nested_dict.items():
+            ref_dem_file, ref_dem_mask_file = self.get_ref_dem_and_mask(metadata["site"], metadata["dataset"])
+            ref_landcover_file = self.get_landcover(metadata["site"], metadata["dataset"])
+            nested_dict[code]["ref_dem_file"] = ref_dem_file
+            nested_dict[code]["ref_dem_mask_file"] = ref_dem_mask_file
+            nested_dict[code]["ref_landcover_file"] = ref_landcover_file
 
         # Build DataFrame
         df = pd.DataFrame(list(nested_dict.values())).set_index("code")

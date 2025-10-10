@@ -89,7 +89,7 @@ def cumulative_mask_filled(raster_files: list[str]) -> gu.Raster:
     return mask_raster
 
 
-def create_std_dem(mnt_files: list[str | Path], output_path: str | Path) -> None:
+def create_std_dem(dem_files: list[str | Path], output_path: str | Path) -> None:
     """
     Compute a per-pixel standard deviation (STD) digital elevation model (DEM)
     from a list of aligned input DEMs.
@@ -127,13 +127,13 @@ def create_std_dem(mnt_files: list[str | Path], output_path: str | Path) -> None
     ... )
     """
     # first open the first raster of the list to have a reference profile
-    with rasterio.open(mnt_files[0]) as src:
+    with rasterio.open(dem_files[0]) as src:
         ref_profile = src.profile.copy()
         ref_shape = (src.count, src.height, src.width)
 
     # loop on every raster to open the masked array with nodata filled with np.nan
     dems = []
-    for f in mnt_files:
+    for f in dem_files:
         with rasterio.open(f) as src:
             assert src.transform == ref_profile["transform"]
             assert src.crs == ref_profile["crs"]
@@ -150,7 +150,7 @@ def create_std_dem(mnt_files: list[str | Path], output_path: str | Path) -> None
         dst.write(std_array, 1)
 
 
-def compute_raster_stats_by_landcover(raster_file: str | Path, landcover_file: str | Path) -> None:
+def compute_raster_stats_by_landcover(raster_file: str | Path, landcover_file: str | Path) -> pd.DataFrame:
     """
     Compute descriptive statistics of a raster variable for each landcover class.
 
@@ -244,3 +244,18 @@ def compute_raster_stats_by_landcover(raster_file: str | Path, landcover_file: s
         )
 
     return pd.DataFrame(stats).sort_values("landcover_class").reset_index(drop=True)
+
+
+def generate_std_dems_by_site_dataset(
+    global_df: pd.DataFrame, output_directory: str | Path, colname: str = "coreg_dem_file"
+) -> None:
+    # create the output directory if it not exist
+    output_directory = Path(output_directory)
+    output_directory.mkdir(parents=True, exist_ok=True)
+
+    dropped_df = global_df.dropna(subset=colname)
+    for (dataset, site), group in dropped_df.groupby(["dataset", "site"]):
+        dem_files = group[colname].tolist()
+        output_file = output_directory / f"std-dem-{dataset}-{site}.tif"
+
+        create_std_dem(dem_files, output_file)
