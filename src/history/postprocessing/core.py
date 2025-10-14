@@ -19,17 +19,15 @@ Intended Use:
 import os
 import subprocess
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from datetime import datetime
+from pathlib import Path
 
 import geoutils as gu
 import numpy as np
-import pandas as pd
+import rasterio
 import xdem
 from tqdm import tqdm
 
 from history.postprocessing.io import PathsManager, uncompress_all_submissions
-from history.postprocessing.statistics import compute_raster_stats_by_landcover
-from history.postprocessing.utils import get_dems_df, get_pointcloud_df, load_coreg_results
 from history.postprocessing.visualization import plot_files_recap
 
 
@@ -69,7 +67,6 @@ class PostProcessing:
         >>> pp.uncompress_all_submissions()
         >>> pp.iter_point2dem(overwrite=False)
         >>> coreg_df = pp.iter_coregister_dems()
-        >>> pp.compute_global_df()
         >>> pp.plot_files_recap()
     """
 
@@ -163,37 +160,43 @@ class PostProcessing:
                 except Exception as e:
                     print(f"[!] Error: {e}")
 
-    def iter_coregister_dems(
-        self, overwrite: bool = False, dry_run: bool = False, verbose: bool = True
-    ) -> pd.DataFrame:
+    def iter_coregister_dems(self, overwrite: bool = False, dry_run: bool = False, verbose: bool = True) -> None:
         """
-        Coregister raw DEMs against reference DEMs and generate diagnostic outputs.
+        Iterate over all DEMs listed in the filepaths table and perform coregistration
+        with their corresponding reference DEMs and masks.
 
-        This method processes all available raw DEM files by aligning them to
-        reference DEMs using the `coregister_dem` function. It produces:
-            - Coregistered DEMs
-            - Difference DEMs (before and after correction)
-            - Diagnostic plots
-
-        For each DEM, overwrite conditions are checked, reference DEMs and masks are
-        retrieved, and coregistration is applied unless `dry_run` is enabled. A
-        summary of coregistration results is saved as a timestamped CSV file in
-        `coreg_dems_dir`.
+        This function automates batch DEM alignment by calling `coregister_dem()` for each entry.
+        It manages overwriting behavior, supports dry-run mode, and prints progress
+        information when verbose mode is enabled.
 
         Args:
-            overwrite (bool, optional): If True, overwrite existing coregistered DEMs.
-                Defaults to False.
-            dry_run (bool, optional): If True, simulate coregistration without
-                performing computations. Defaults to False.
-            verbose (bool, optional): If True, print detailed progress information.
-                Defaults to True.
+            overwrite (bool, optional):
+                If True, overwrite existing coregistered DEMs.
+                If False, skip DEMs that already have a coregistered output.
+                Default is False.
+            dry_run (bool, optional):
+                If True, simulate the process without performing any coregistration
+                (useful for debugging or checking setup). Default is False.
+            verbose (bool, optional):
+                If True, print detailed progress and executed commands. Default is True.
 
         Returns:
-            pd.DataFrame or None: DataFrame of coregistration results indexed by code,
-            or None if no DEMs were processed.
-        """
+            None
 
-        data = []
+        Notes:
+            - The method expects valid paths for each DEM entry in the filepaths table:
+              `raw_dem_file`, `ref_dem_file`, and `ref_dem_mask_file`.
+            - Output files are written to the `coreg_dems_dir` defined by `self.paths_manager`.
+            - Coregistration errors are caught per DEM to ensure uninterrupted iteration.
+            - The function does not modify the input DataFrame or return any results.
+
+        Example:
+            >>> pipeline.iter_coregister_dems(
+            ...     overwrite=False,
+            ...     dry_run=False,
+            ...     verbose=True
+            ... )
+        """
         filepaths_df = self.paths_manager.get_filepaths_df().dropna(subset="raw_dem_file")
         print(f"{len(filepaths_df)} raw DEM file(s) found.")
 
@@ -207,26 +210,24 @@ class PostProcessing:
         for code, row in filepaths_df.iterrows():
             input_file = row["raw_dem_file"]
             output_dem_path = self.paths_manager.get_path("coreg_dems_dir") / f"{code}-DEM_coreg.tif"
+            output_ddem_before_path = self.paths_manager.get_path("ddems_before_dir") / f"{code}-DDEM.tif"
+            output_ddem_after_path = self.paths_manager.get_path("ddems_after_dir") / f"{code}-DDEM.tif"
 
             # read the corresponding mask and dem references
             ref_dem_file = row["ref_dem_file"]
             if not os.path.exists(ref_dem_file):
                 print(f"Error {code} : Reference dem not found at {ref_dem_file}")
                 continue
-
             ref_dem_mask_file = row["ref_dem_mask_file"]
             if not os.path.exists(ref_dem_mask_file):
                 print(f"Error {code} : Reference mask dem not found at {ref_dem_mask_file}")
                 continue
 
-            output_ddem_before_path = self.paths_manager.get_path("ddems_dir") / f"{code}-DDEM_before.tif"
-            output_ddem_after_path = self.paths_manager.get_path("ddems_dir") / f"{code}-DDEM_after.tif"
-
             if verbose:
                 print(f"coregister_dem({input_file}, {ref_dem_file}, {ref_dem_mask_file}, {output_dem_path})")
             if not dry_run:
                 try:
-                    res = coregister_dem(
+                    coregister_dem(
                         input_file,
                         ref_dem_file,
                         ref_dem_mask_file,
@@ -234,44 +235,36 @@ class PostProcessing:
                         output_ddem_before_path,
                         output_ddem_after_path,
                     )
-                    res["code"] = code
-                    data.append(res)
                 except Exception as e:
                     print(f"Skip {code} : {e}")
 
-        if data:
-            df = pd.DataFrame(data).set_index("code")
-            datetime_str = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
-            filename = f"coreg_res_{datetime_str}.csv"
-            df.to_csv(self.paths_manager.get_path("coreg_dems_dir") / filename)
-            return df
-        else:
-            return None
+    def generate_ddems(self, overwrite: bool = False, verbose: bool = True) -> None:
+        filepaths_df = self.paths_manager.get_filepaths_df()
 
-    def compute_global_df(self) -> None:
-        """
-        Build and save a global DataFrame combining metadata from point clouds, DEMs,
-        and coregistration results.
+        # generate ddem before coregistration
+        for input_colname, output_colname, output_dir_key in [
+            ("raw_dem_file", "ddem_before_file", "ddems_before_dir"),
+            ("coreg_dem_file", "ddem_after_file", "ddems_after_dir"),
+        ]:
+            droped_df = filepaths_df.dropna(subset=input_colname)
 
-        This method collects filepaths and metadata from multiple sources, merges them
-        into a single DataFrame, and exports the result as a CSV file for further
-        analysis.
+            if verbose:
+                print(f"{len(droped_df)} {input_colname} found(s)")
 
-        Steps:
-            1. Load base filepaths DataFrame from the paths manager.
-            2. Join point cloud metadata.
-            3. Join DEM metadata.
-            4. Join coregistration results.
-            5. Save the consolidated DataFrame to disk.
+            # manage to not overwrite existing coregistered files
+            if not overwrite:
+                mask = droped_df[output_colname].isna()
+                droped_df = droped_df[mask]
+                if sum(~mask) > 0 and verbose:
+                    print(f"Skipping {sum(~mask)} existing dDEMs result(s) (overwrite disabled).")
 
-        Returns:
-            None
-        """
-        df = self.paths_manager.get_filepaths_df()
-        df = df.join(get_pointcloud_df(df), how="outer")
-        df = df.join(get_dems_df(df), how="outer")
-        df = df.join(load_coreg_results(self.paths_manager.get_path("coreg_dems_dir")), how="outer")
-        df.to_csv(self.paths_manager.get_path("postproc_csv"))
+            for code, row in droped_df.iterrows():
+                output_dem_path = self.paths_manager.get_path(output_dir_key) / f"{code}-DDEM.tif"
+                dem1_path = row[input_colname]
+                dem2_path = row["ref_dem_file"]
+                mask_path = row["ref_dem_mask_file"]
+
+                generate_ddem(dem1_path, dem2_path, output_dem_path, mask_path)
 
     def uncompress_all_submissions(
         self, overwrite: bool = False, dry_run: bool = False, verbose: bool = False
@@ -312,90 +305,6 @@ class PostProcessing:
             None
         """
         plot_files_recap(self.paths_manager.get_filepaths_df(), output_path, show)
-
-    def get_global_df(self) -> pd.DataFrame:
-        """
-        Load the consolidated post-processing DataFrame from disk.
-
-        This method reads the global CSV file previously generated by
-        `compute_global_df` and returns it as a pandas DataFrame, indexed by code.
-
-        Returns:
-            pd.DataFrame: The consolidated DataFrame containing filepaths, metadata,
-            and coregistration results for all processed datasets.
-        """
-        return pd.read_csv(self.paths_manager.get_path("postproc_csv"), index_col="code")
-
-    def compute_landcover_stats(self) -> None:
-        """
-        Compute per-landcover statistics for each DEM raster available in the dataset.
-
-        This method iterates over all valid raster files (filtered by the 'ddem_after_file' column),
-        computes raster statistics for each (dataset, site) combination using the associated landcover map,
-        and aggregates the results into a single DataFrame. The resulting table is then saved as a CSV file.
-
-        Steps:
-            1. Retrieve all file paths from the PathsManager.
-            2. Drop entries with missing 'ddem_after_file' values.
-            3. For each (dataset, site) pair:
-                - Open the raster and landcover files.
-                - Compute per-landcover statistics (mean, median, nmad, etc.).
-                - Add metadata columns (dataset, site, code, file_code).
-            4. Concatenate all intermediate DataFrames into a final DataFrame.
-            5. Save the aggregated statistics to a CSV file.
-
-        Returns:
-            None
-            The function writes the final DataFrame to disk at the path specified by
-            `self.paths_manager.get_path("landcover_csv")`.
-
-        Notes:
-            - The computation progress is tracked using a tqdm progress bar.
-            - If no valid raster is found, the function prints a warning and returns early.
-            - Each landcover class in a raster is associated with its computed statistics,
-              such as count, percent, mean, median, NMAD, min, max, std, Q1, and Q3.
-
-        Example:
-            >>> processor.compute_landcover_stats()
-            # Generates and saves a 'landcover_csv' file with statistics for all datasets/sites.
-        """
-        filepaths_df = self.paths_manager.get_filepaths_df()
-        df_dropped = filepaths_df.dropna(subset="ddem_after_file")
-
-        all_stats = []  # list to store temporary DataFrames
-        with tqdm(desc="landcover computing", total=len(df_dropped)) as pbar:
-            for (dataset, site), group in df_dropped.groupby(["dataset", "site"]):
-                for code, row in group.iterrows():
-                    raster_file = row["ddem_after_file"]
-                    landcover_file = self.paths_manager.get_landcover(site, dataset)
-
-                    # Compute stats for this raster/landcover pair
-                    tmp_df = compute_raster_stats_by_landcover(raster_file, landcover_file)
-
-                    # Add identifier columns
-                    tmp_df.insert(0, "file_code", "ddem_after_file")  # insert at left
-                    tmp_df.insert(0, "dataset", dataset)
-                    tmp_df.insert(0, "site", site)
-                    tmp_df.insert(0, "code", code)
-
-                    # Append to list
-                    all_stats.append(tmp_df)
-
-                    # update the pbar
-                    pbar.update()
-
-        # Concatenate all temporary DataFrames
-        if all_stats:
-            final_df = pd.concat(all_stats, ignore_index=True)
-        else:
-            print("⚠️ No valid ddem_after_file found.")
-            return
-
-        # save to csv
-        final_df.to_csv(self.paths_manager.get_path("landcover_csv"), index=False)
-
-    def get_landcover_stats(self) -> pd.DataFrame:
-        return pd.read_csv(self.paths_manager.get_path("landcover_csv"))
 
 
 #######################################################################################################################
@@ -470,16 +379,53 @@ def coregister_dem(
     ref_dem_path: str,
     ref_dem_mask_path: str,
     output_dem_path: str,
-    output_ddem_before_path: str | None = None,
-    output_ddem_after_path: str | None = None,
-) -> dict:
-    result = {}
+    output_ddem_before_path: str | None,
+    output_ddem_after_path: str | None,
+) -> None:
+    """
+    Coregister a DEM to a reference DEM using combined horizontal and vertical corrections.
 
+    This function performs a two-step DEM coregistration:
+        1. Horizontal correction using the Nuth & Kääb (2011) algorithm.
+        2. Vertical correction using a median-based vertical shift model.
+
+    Both corrections are applied sequentially to minimize systematic elevation differences
+    between the input DEM and a reference DEM. The function also computes differential DEMs
+    (dDEMs) before and after coregistration if requested.
+
+    A reference mask is used to exclude invalid or unreliable pixels (e.g., nodata, clouds, water).
+    For the horizontal coregistration, an additional slope-based filter is applied to remove
+    nearly flat terrain areas that can bias the shift estimation.
+
+    The resulting coregistered DEM is saved to disk and annotated with metadata tags
+    describing the applied coregistration method and estimated translation parameters.
+
+    Args:
+        dem_path (str): Path to the input DEM to be coregistered.
+        ref_dem_path (str): Path to the reference DEM used as spatial and vertical reference.
+        ref_dem_mask_path (str): Path to the binary mask indicating valid reference DEM pixels.
+        output_dem_path (str): Path where the coregistered DEM will be saved.
+        output_ddem_before_path (str | None): Optional path to save the differential DEM
+            before coregistration (input DEM - reference DEM).
+        output_ddem_after_path (str | None): Optional path to save the differential DEM
+            after coregistration (coregistered DEM - reference DEM).
+
+    Returns:
+        None
+
+    Notes:
+        - The function assumes all DEMs and the mask share the same spatial resolution,
+          projection, and extent. DEMs are reprojected to the reference grid if necessary.
+        - The horizontal correction uses the Nuth & Kääb (2011) algorithm implemented in xDEM.
+        - The vertical correction is applied via a median-based shift to minimize vertical bias.
+        - Coregistration shifts are stored as raster tags (`coreg_shift_x`, `coreg_shift_y`, `coreg_shift_z`).
+        - If dDEMs are saved, they are masked using the same valid-pixel mask as the reference DEM.
+    """
     # Because ASP's point2dem rounds the bounds, output DEM is not perfectly aligned with the ref DEM
     # so we reproject the source dem with the reference dem
     dem_ref = gu.Raster(ref_dem_path)
     dem_ref_mask = gu.Raster(ref_dem_mask_path)
-    dem = gu.Raster(dem_path).reproject(dem_ref)
+    dem = gu.Raster(dem_path).reproject(dem_ref, silent=True)
 
     # check all dems are on the same grid
     assert dem.shape == dem_ref.shape == dem_ref_mask.shape
@@ -498,38 +444,90 @@ def coregister_dem(
     dem_coreg_tmp = coreg_hori.fit_and_apply(dem_ref, dem, inlier_mask=inlier_mask_hori)
     dem_coreg = coreg_vert.fit_and_apply(dem_ref, dem_coreg_tmp, inlier_mask=inlier_mask_vert)
 
-    # save coregistration shift
-    result["coreg_shift_x"] = coreg_hori.meta["outputs"]["affine"]["shift_x"]
-    result["coreg_shift_y"] = coreg_hori.meta["outputs"]["affine"]["shift_y"]
-    result["coreg_shift_z"] = coreg_vert.meta["outputs"]["affine"]["shift_z"]
-
     # save the coregistered dem
-    if os.path.dirname(output_dem_path):
-        os.makedirs(os.path.dirname(output_dem_path), exist_ok=True)
+    Path(output_dem_path).parent.mkdir(parents=True, exist_ok=True)
     dem_coreg.save(output_dem_path, tiled=True)
 
-    # Print statistics
-    ddem_before = dem - dem_ref
-    ddem_after = dem_coreg - dem_ref
-    ddem_bef_inlier = ddem_before[inlier_mask_vert].compressed()
-    ddem_aft_inlier = ddem_after[inlier_mask_vert].compressed()
-    result["mean_before_coreg"] = np.mean(ddem_bef_inlier)
-    result["median_before_coreg"] = np.median(ddem_bef_inlier)
-    result["nmad_before_coreg"] = gu.stats.nmad(ddem_bef_inlier)
-    result["mean_after_coreg"] = np.mean(ddem_aft_inlier)
-    result["median_after_coreg"] = np.median(ddem_aft_inlier)
-    result["nmad_after_coreg"] = gu.stats.nmad(ddem_aft_inlier)
+    # --- Add metadata tags using rasterio ---
+    with rasterio.open(output_dem_path, "r+") as dst:
+        dst.update_tags(
+            1,
+            coreg_method="NuthKaab+VerticalShift",
+            coreg_shift_x=coreg_hori.meta["outputs"]["affine"]["shift_x"],
+            coreg_shift_y=coreg_hori.meta["outputs"]["affine"]["shift_y"],
+            coreg_shift_z=coreg_vert.meta["outputs"]["affine"]["shift_z"],
+        )
 
-    # if the output_ddem_before_path is set save the ddem before coreg
-    if output_ddem_before_path:
-        if os.path.dirname(output_ddem_before_path):
-            os.makedirs(os.path.dirname(output_ddem_before_path), exist_ok=True)
-        ddem_before.save(output_ddem_before_path, tiled=True)
+    if output_ddem_before_path is not None:
+        ddem_before = dem - dem_ref
+        Path(output_ddem_before_path).parent.mkdir(exist_ok=True, parents=True)
+        ddem_before.save(output_ddem_before_path)
 
-    # if the output_ddem_after_path is set save the ddem after coreg
-    if output_ddem_after_path:
-        if os.path.dirname(output_ddem_after_path):
-            os.makedirs(os.path.dirname(output_ddem_after_path), exist_ok=True)
-        ddem_after.save(output_ddem_after_path, tiled=True)
+    if output_ddem_after_path is not None:
+        ddem_after = dem_coreg - dem_ref
+        Path(output_ddem_after_path).parent.mkdir(exist_ok=True, parents=True)
+        ddem_after.save(output_ddem_after_path)
 
-    return result
+
+def generate_ddem(dem1_path: str, dem2_path: str, output_dem_path: str, mask_path: str | None = None) -> None:
+    """
+    Generate a differential DEM (dDEM = DEM1 - DEM2), optionally applying a mask.
+
+    This function loads two DEM rasters, reprojects DEM1 onto the grid of DEM2,
+    computes their difference, and saves the result as a new GeoTIFF.
+    If a binary mask is provided, pixels outside the mask are set to NaN in the output.
+
+    Parameters
+    ----------
+    dem1_path : str
+        Path to the first DEM (typically the "before" DEM).
+    dem2_path : str
+        Path to the second DEM (typically the "after" or reference DEM).
+    output_dem_path : str
+        Path where the differential DEM (dDEM) will be saved.
+    mask_path : str or None, optional
+        Optional path to a binary mask raster. If provided, only pixels where the
+        mask is True (nonzero) will be retained in the output; others will be set to NaN.
+
+    Returns
+    -------
+    None
+        The resulting differential DEM is written to disk.
+
+    Notes
+    -----
+    - The function ensures that DEM1 is reprojected to match DEM2 (extent, CRS, resolution).
+    - The mask, if provided, is also reprojected to DEM2’s grid for consistency.
+    - Output is saved as a tiled GeoTIFF using GeoUtils' `Raster.save()` method.
+
+    Examples
+    --------
+    >>> generate_ddem(
+    ...     dem1_path="before_dem.tif",
+    ...     dem2_path="after_dem.tif",
+    ...     output_dem_path="ddem.tif",
+    ...     mask_path="inlier_mask.tif"
+    ... )
+    """
+    # Load reference DEM
+    dem2 = gu.Raster(dem2_path)
+
+    # Load and reproject the first DEM to match dem2
+    dem1 = gu.Raster(dem1_path).reproject(dem2, silent=True)
+
+    # Compute the differential DEM
+    ddem = dem1 - dem2
+
+    # Apply mask if provided
+    if mask_path is not None:
+        mask_raster = gu.Raster(mask_path).reproject(dem2, silent=True)
+        mask = mask_raster.data.astype(bool)
+        # Apply mask: keep valid pixels only
+        ddem.data[~mask] = np.nan
+
+    # Ensure output directory exists
+    output_path = Path(output_dem_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Save the dDEM
+    ddem.save(output_path, tiled=True)

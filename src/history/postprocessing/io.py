@@ -1,7 +1,6 @@
 import os
 import shutil
 import tarfile
-import warnings
 import zipfile
 from collections import defaultdict
 from pathlib import Path
@@ -872,7 +871,8 @@ class PathsManager:
             "processing_dir": processing_dir,
             "raw_dems_dir": processing_dir / "raw_dems",
             "coreg_dems_dir": processing_dir / "coreg_dems",
-            "ddems_dir": processing_dir / "ddems",
+            "ddems_before_dir": processing_dir / "ddems" / "before_coregistration",
+            "ddems_after_dir": processing_dir / "ddems" / "after_coregistration",
             "postproc_csv": processing_dir / "postprocessing.csv",
             "landcover_csv": processing_dir / "landcover_statistics.csv",
             "plots_dir": processing_dir / "plots",
@@ -966,16 +966,13 @@ class PathsManager:
             "intrinsics_camera_file": self.intrinsics_camera_files,
             "raw_dem_file": self.raw_dem_files,
             "coreg_dem_file": list(self.get_path("coreg_dems_dir").glob("*-DEM_coreg.tif")),
-            "ddem_before_file": list(self.get_path("ddems_dir").glob("*-DDEM_before.tif")),
-            "ddem_after_file": list(self.get_path("ddems_dir").glob("*-DDEM_after.tif")),
+            "ddem_before_file": list(self.get_path("ddems_before_dir").glob("*-DDEM.tif")),
+            "ddem_after_file": list(self.get_path("ddems_after_dir").glob("*-DDEM.tif")),
         }
 
         nested_dict = defaultdict(dict)
 
         for key, files in mapping.items():
-            if not files:
-                warnings.warn(f"No files found for '{key}', column will be filled with NaN.", UserWarning)
-
             for file in files:
                 code, metadatas = parse_filename(file)
                 nested_dict[code]["code"] = code

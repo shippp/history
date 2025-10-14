@@ -12,8 +12,6 @@ from matplotlib.patches import Patch
 from rasterio.enums import Resampling
 from tqdm import tqdm
 
-from history.postprocessing.statistics import create_std_dem
-
 #######################################################################################################################
 ##                                                  MOSAIC VISUALIZATION
 #######################################################################################################################
@@ -241,79 +239,23 @@ def generate_hillshades_mosaic(
         pbar.close()
 
 
-def generate_mosaic_std_dems(global_df: pd.DataFrame, output_directory: str | Path) -> None:
-    """
-    Generate per-pixel standard deviation DEMs and corresponding plots
-    for each (dataset, site) pair in the provided dataframe.
-
-    This function groups input DEMs by their 'dataset' and 'site' identifiers,
-    computes a standard deviation (STD) DEM for each group using the
-    `create_std_dem` function, and generates a visualization of the resulting
-    STD raster. The resulting GeoTIFF and PNG files are saved in the specified
-    output directory.
-
-    Parameters
-    ----------
-    global_df : pandas.DataFrame
-        A dataframe containing metadata for DEMs, including at least the columns:
-        - 'dataset' : Name of the dataset or campaign.
-        - 'site' : Name or ID of the geographic site.
-        - 'coreg_dem_file' : Path to each coregistered DEM file.
-    output_directory : str or Path
-        Path to the directory where the STD DEMs and plots will be saved.
-        The directory is created if it does not exist.
-
-    Returns
-    -------
-    None
-        The function writes the standard deviation DEMs (.tif) and
-        corresponding visualization plots (.png) to the output directory.
-
-    Notes
-    -----
-    - Each group of DEMs (same dataset and site) is used to compute a pixel-wise
-      standard deviation raster via `create_std_dem`.
-    - A plot of the standard deviation map is generated using a 90th percentile
-      color scale cap (`vmax = np.nanquantile(std_dem, 0.9)`).
-    - The colorbar indicates elevation variability in meters.
-
-    Example
-    -------
-    >>> generate_std_dems_by_dataset_site(global_df, "outputs/std_dems/")
-    >>> # Produces files like:
-    >>> # outputs/std_dems/std-dem-datasetA-site1.tif
-    >>> # outputs/std_dems/std-plot-datasetA-site1.png
-    """
+def generate_std_dem_plots(input_dir: str | Path) -> None:
     # create the output directory if needed
-    output_directory = Path(output_directory)
-    output_directory.mkdir(exist_ok=True, parents=True)
+    input_dir = Path(input_dir)
 
-    # drop empty raw_dem_file rows
-    df_dropped = global_df.dropna(subset=["coreg_dem_file"])
-    for (dataset, site), group in df_dropped.groupby(["dataset", "site"]):
-        mnt_files = group["coreg_dem_file"].tolist()
-        tmp_dem_file = output_directory / "tmp-dem.tif"
-        output_plot_file = output_directory / f"std-plot-{dataset}-{site}.png"
-
-        # create the std tif
-        create_std_dem(mnt_files, tmp_dem_file)
-
-        # open the previously created dem
-        std_dem = _read_raster_with_max_size(tmp_dem_file)
-
-        # remove the tmp dem
-        tmp_dem_file.unlink()
+    for p in input_dir.glob("std-dem-*.tif"):
+        std_dem = _read_raster_with_max_size(p)
 
         # create the plot and save them at output_plot_file
         vmax = np.nanquantile(std_dem, 0.9)
         plt.imshow(std_dem, cmap="viridis", vmax=vmax)
-        plt.title(f"DEM Standard Deviation Map for ({dataset}-{site})")
+        plt.title(f"{p.stem}")
         plt.axis("off")
 
         cbar = plt.colorbar()
         cbar.set_label("Elevation standard deviation (m)", rotation=270, labelpad=15)
 
-        plt.savefig(output_plot_file)
+        plt.savefig(p.with_suffix(".png"))
         plt.close()
 
 
@@ -440,12 +382,12 @@ def generate_nmad_groupby(df: pd.DataFrame, output_dir: str | Path) -> None:
     Generate grouped bar plots of NMAD before and after coregistration for each dataset and site.
     Saves one plot per (dataset, site) combination.
     """
-    droped_df = df.dropna(subset=["nmad_after_coreg", "nmad_before_coreg"])
+    droped_df = df.dropna(subset=["ddem_after_nmad", "ddem_before_nmad"])
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for (dataset, site), group in droped_df.groupby(["dataset", "site"]):
-        ordered_group = group.sort_values("nmad_before_coreg")
+        ordered_group = group.sort_values("ddem_before_nmad")
 
         # Build the bar positions (one group per "code")
         codes = ordered_group.index
@@ -457,13 +399,13 @@ def generate_nmad_groupby(df: pd.DataFrame, output_dir: str | Path) -> None:
 
         bars_before = ax.bar(
             [pos - width / 2 for pos in x],
-            ordered_group["nmad_before_coreg"],
+            ordered_group["ddem_before_nmad"],
             width=width,
             label="Before coregistration",
         )
         bars_after = ax.bar(
             [pos + width / 2 for pos in x],
-            ordered_group["nmad_after_coreg"],
+            ordered_group["ddem_after_nmad"],
             width=width,
             label="After coregistration",
         )
@@ -542,58 +484,18 @@ def generate_landcover_grouped_boxplot_by_dataset_site(
         code_order = group.groupby("code")["nmad"].mean().sort_values().index
         group = group.set_index("code").loc[code_order].reset_index()
 
-        landcover_labels = group["landcover_label"].unique()
-        codes = group["code"].unique()
-        n_labels = len(landcover_labels)
-        n_codes = len(codes)
-        width = 0.8 / n_codes
-        x_base = np.arange(n_labels)
+        percent_means = group.groupby("landcover_label")["percent"].transform("mean")
+        group["landcover_label"] = (
+            group["landcover_label"].astype(str) + " (" + percent_means.round(2).astype(str) + " %)"
+        )
 
-        fig, ax = plt.subplots(figsize=(12, 6))
-
-        color_map = {code: f"C{i}" for i, code in enumerate(codes)}  # assign colors
-
-        for i, code in enumerate(codes):
-            positions = x_base - 0.4 + i * width + width / 2
-            box_data = []
-            for lc_label in landcover_labels:
-                lc_group = group[(group["landcover_label"] == lc_label) & (group["code"] == code)]
-                if lc_group.empty:
-                    box_data.append({"med": 0, "q1": 0, "q3": 0, "whislo": 0, "whishi": 0, "fliers": []})
-                else:
-                    box_data.append(
-                        {
-                            "med": lc_group["median"].mean(),
-                            "q1": lc_group["q1"].mean(),
-                            "q3": lc_group["q3"].mean(),
-                            "whislo": lc_group["q1"].mean(),
-                            "whishi": lc_group["q3"].mean(),
-                            "fliers": [],
-                        }
-                    )
-            ax.bxp(
-                box_data,
-                positions=positions,
-                widths=width,
-                showfliers=False,
-                patch_artist=True,
-                boxprops=dict(facecolor=color_map[code]),
-            )
-
-        # X-axis labels
-        percent_means = group.groupby("landcover_label")["percent"].mean()
-        ax.set_xticks(x_base)
-        ax.set_xticklabels([f"{lc} ({percent_means[lc]:.1f}%)" for lc in landcover_labels], rotation=45, ha="right")
-
-        ax.set_ylabel("Altitude difference (m)")
-        ax.set_title(f"Grouped boxplot by landcover and code ({dataset}-{site})")
-
-        # Create custom legend
-        legend_handles = [Patch(facecolor=color_map[code], label=str(code)) for code in codes]
-        ax.legend(handles=legend_handles, title="Code", bbox_to_anchor=(1.05, 1), loc="upper left")
-
-        plt.grid(axis="y", linestyle="--", alpha=0.5)
-        plt.tight_layout()
+        _plot_grouped_boxplot(
+            group,
+            "landcover_label",
+            "code",
+            y_label="Altitude difference (m)",
+            title=f"Grouped boxplot by landcover and code ({dataset}-{site})",
+        )
         plt.savefig(output_directory / f"grouped-boxplot-{dataset}-{site}.png")
         plt.close()
 
@@ -672,6 +574,32 @@ def generate_landcover_boxplot_by_dataset_site(landcover_df: pd.DataFrame, outpu
 
 
 def generate_landcover_nmad_by_dataset_site(landcover_df: pd.DataFrame, output_directory: str | Path) -> None:
+    """
+    Generate and save grouped bar plots of NMAD (Normalized Median Absolute Deviation)
+    per landcover class and raster code, grouped by (dataset, site).
+
+    For each (dataset, site) pair, this function:
+    - Computes a pivot table of NMAD values per landcover class (x-axis) and raster code (bar colors).
+    - Calculates the mean percentage of each landcover class across all samples.
+    - Appends the mean percentage to the landcover class labels.
+    - Generates and saves a grouped bar plot representing NMAD values for each class and code.
+
+    The output plot is saved as a PNG file in the specified output directory,
+    with filenames formatted as: `barplot-nmad-{dataset}-{site}.png`.
+
+    Args:
+        landcover_df (pd.DataFrame): DataFrame containing the following required columns:
+            - 'dataset': Dataset identifier.
+            - 'site': Site identifier.
+            - 'landcover_label': Name or label of the landcover class.
+            - 'code': Raster code or class ID (used for color grouping).
+            - 'nmad': NMAD value for the given class and code.
+            - 'percent': Percentage of pixels belonging to the landcover class.
+        output_directory (str | Path): Directory where the bar plot images will be saved.
+
+    Returns:
+        None
+    """
     output_directory = Path(output_directory)
     output_directory.mkdir(parents=True, exist_ok=True)
 
@@ -702,6 +630,62 @@ def generate_landcover_nmad_by_dataset_site(landcover_df: pd.DataFrame, output_d
         plt.close()
 
 
+def generate_landcover_grouped_boxplot_from_std_dems(landcover_df: pd.DataFrame, output_path: str | Path) -> None:
+    """
+    Generate and save a grouped boxplot of altitude standard deviations (STD)
+    by landcover class across dataset–site combinations.
+
+    This function:
+    - Combines 'dataset' and 'site' columns into a single 'dataset_site' identifier.
+    - Sorts dataset–site groups by their mean NMAD values for consistent ordering.
+    - Appends the mean percentage of each landcover class to its label for clarity.
+    - Plots a grouped boxplot using `_plot_grouped_boxplot()` to visualize
+      the distribution of altitude STD values per landcover class and dataset–site group.
+    - Saves the resulting figure to the specified output path.
+
+    Args:
+        landcover_df (pd.DataFrame): DataFrame containing landcover and DEM statistics.
+            Required columns:
+                - 'dataset': Dataset identifier.
+                - 'site': Site identifier.
+                - 'landcover_label': Name of the landcover class.
+                - 'percent': Percentage of the landcover class area.
+                - 'nmad': NMAD (Normalized Median Absolute Deviation) or STD metric.
+        output_path (str | Path): File path where the generated boxplot image will be saved.
+
+    Returns:
+        None
+
+    Notes:
+        - The function relies on `_plot_grouped_boxplot()` for the visualization.
+        - The y-axis represents altitude standard deviation in meters.
+        - The landcover labels include mean percentage values for readability.
+    """
+    df = landcover_df.copy()
+
+    # first group the dataset + site
+    df["dataset_site"] = df["dataset"].astype(str) + " " + df["site"].astype(str)
+
+    # next order the df with nmad mean per group of dataset + site
+    order = df.groupby("dataset_site")["nmad"].mean().sort_values().index
+    df = df.set_index("dataset_site").loc[order].reset_index()
+
+    # add the percent to each landcover_label
+    percent_means = df.groupby("landcover_label")["percent"].transform("mean")
+    df["landcover_label"] = df["landcover_label"].astype(str) + " (" + percent_means.round(2).astype(str) + " %)"
+
+    # plot the bgrouped boxplot
+    _plot_grouped_boxplot(
+        df,
+        "landcover_label",
+        "dataset_site",
+        y_label="Altitude STD (m)",
+        title="Boxplot of altitude STD by landcover class for each dataset + site groups",
+    )
+    plt.savefig(output_path)
+    plt.close()
+
+
 #######################################################################################################################
 ##                                                  OTHER VISUALIZATION
 #######################################################################################################################
@@ -730,7 +714,7 @@ def plot_files_recap(filepaths_df: pd.DataFrame, output_path: str | None = None,
 
     # Utiliser pcolormesh pour avoir un meilleur contrôle des bordures
     cmap = plt.get_cmap("binary")  # blanc = 0, noir = 1
-    c = ax.pcolormesh(matrix, cmap=cmap, edgecolors="grey", linewidth=1, shading="auto")
+    ax.pcolormesh(matrix, cmap=cmap, edgecolors="grey", linewidth=1, shading="auto")
 
     # Ajouter ticks
     ax.set_xticks(np.arange(matrix.shape[1]) + 0.5)
@@ -759,52 +743,6 @@ def plot_files_recap(filepaths_df: pd.DataFrame, output_path: str | None = None,
 def generate_coregistration_individual_plots(
     global_df: pd.DataFrame, output_directory: str | Path, overwrite: bool = True, vmin: float = -10, vmax: float = 10
 ) -> None:
-    """
-    Generate and save before/after coregistration plots for each DEM pair in the provided dataset.
-
-    This function iterates over all entries in the input DataFrame that contain valid coregistered DEM files.
-    For each entry, it loads both the pre- and post-coregistration dDEM rasters, creates a side-by-side
-    comparison plot, and saves the figure as a PNG file in the specified output directory.
-
-    Parameters
-    ----------
-    global_df : pandas.DataFrame
-        Input DataFrame containing metadata and file paths for DEM coregistration results.
-        Must include the following columns:
-        - "coreg_dem_file"
-        - "ddem_before_file"
-        - "ddem_after_file"
-        - "mean_before_coreg"
-        - "median_before_coreg"
-        - "nmad_before_coreg"
-        - "mean_after_coreg"
-        - "median_after_coreg"
-        - "nmad_after_coreg"
-    output_directory : str or Path
-        Directory where the generated PNG plots will be saved.
-    overwrite : bool, optional
-        If True, existing plots will be overwritten. Default is True.
-    vmin : float, optional
-        Minimum value for the color scale in the plots. Default is -10.
-    vmax : float, optional
-        Maximum value for the color scale in the plots. Default is 10.
-
-    Returns
-    -------
-    None
-        The function does not return anything. It writes plot files to disk.
-
-    Notes
-    -----
-    - Each plot shows two panels: the dDEM before and after coregistration, with a shared colorbar.
-    - The filenames of the plots are derived from the DataFrame index (e.g., "<index>_coreg_plot.png").
-    - A progress bar is displayed using `tqdm` to indicate processing progress.
-
-    Examples
-    --------
-    >>> generate_coregistration_individual_plots(global_df, "outputs/plots", overwrite=False)
-    Generating coregistration plots:  45%|████▌     | 9/20 [00:04<00:05,  2.10it/s]
-    """
     # create the output directory if needed
     output_directory = Path(output_directory)
     output_directory.mkdir(exist_ok=True, parents=True)
@@ -827,13 +765,13 @@ def generate_coregistration_individual_plots(
             axes[0].imshow(ddem_before, cmap="coolwarm", vmin=vmin, vmax=vmax)
             axes[0].axis("off")
             axes[0].set_title(
-                f"dDEM before coregistration \n(mean: {row['mean_before_coreg']:.3f}, med: {row['median_before_coreg']:.3f}, nmad: {row['nmad_before_coreg']:.3f})"
+                f"dDEM before coregistration \n(mean: {row['ddem_before_mean']:.3f}, med: {row['ddem_before_median']:.3f}, nmad: {row['ddem_before_nmad']:.3f})"
             )
 
             axes[1].imshow(ddem_after, cmap="coolwarm", vmin=vmin, vmax=vmax)
             axes[1].axis("off")
             axes[1].set_title(
-                f"dDEM after coregistration \n(mean: {row['mean_after_coreg']:.3f}, med: {row['median_after_coreg']:.3f}, nmad: {row['nmad_after_coreg']:.3f})"
+                f"dDEM after coregistration \n(mean: {row['ddem_after_mean']:.3f}, med: {row['ddem_after_median']:.3f}, nmad: {row['ddem_after_nmad']:.3f})"
             )
 
             # add a global color bar
@@ -853,6 +791,89 @@ def generate_coregistration_individual_plots(
 #######################################################################################################################
 ##                                                  PRIVATE FUNCTIONS
 #######################################################################################################################
+
+
+def _plot_grouped_boxplot(df: pd.DataFrame, category_col: str, hue_col: str, y_label: str = "", title: str = ""):
+    """
+    Create a grouped boxplot showing median and quartile statistics per category and hue group.
+
+    This function generates a custom boxplot layout where each category (x-axis) is subdivided
+    by hue groups (color-coded boxes). It expects precomputed statistics in the input DataFrame,
+    including columns for `median`, `q1`, and `q3`. The whiskers (`whislo` and `whishi`) are
+    set to `None` since only quartiles and medians are used.
+
+    Args:
+        df (pd.DataFrame): Input DataFrame containing the following required columns:
+            - category_col: The categorical variable for the x-axis.
+            - hue_col: The grouping variable that defines different box colors.
+            - 'median': Median value for each category–hue pair.
+            - 'q1': First quartile (25th percentile).
+            - 'q3': Third quartile (75th percentile).
+        category_col (str): Column name defining the categories shown along the x-axis.
+        hue_col (str): Column name defining subgroups (hues) within each category.
+        y_label (str, optional): Label for the y-axis. Default is an empty string.
+        title (str, optional): Title of the plot. Default is an empty string.
+
+    Returns:
+        None
+
+    Notes:
+        - The function uses matplotlib’s `bxp()` method to manually draw boxes from precomputed
+          statistics, rather than using raw data directly.
+        - Colors are automatically assigned based on the number of unique hue groups.
+        - A custom legend is created to match the hue color mapping.
+    """
+    category_labels = df[category_col].unique()
+    hues = df[hue_col].unique()
+    n_category = len(category_labels)
+    n_hue = len(hues)
+    width = 0.8 / n_hue
+    x_base = np.arange(n_category)
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    color_map = {hue: f"C{i}" for i, hue in enumerate(hues)}  # assign colors
+
+    for i, hue in enumerate(hues):
+        positions = x_base - 0.4 + i * width + width / 2
+        box_data = []
+        for lc_label in category_labels:
+            lc_group = df[(df[category_col] == lc_label) & (df[hue_col] == hue)]
+            if lc_group.empty:
+                box_data.append({"med": 0, "q1": 0, "q3": 0, "whislo": 0, "whishi": 0, "fliers": []})
+            else:
+                box_data.append(
+                    {
+                        "med": lc_group["median"].mean(),
+                        "q1": lc_group["q1"].mean(),
+                        "q3": lc_group["q3"].mean(),
+                        "whislo": None,
+                        "whishi": None,
+                        "fliers": [],
+                    }
+                )
+        ax.bxp(
+            box_data,
+            positions=positions,
+            widths=width,
+            showfliers=False,
+            patch_artist=True,
+            boxprops=dict(facecolor=color_map[hue]),
+        )
+
+    # X-axis category labels
+    ax.set_xticks(x_base)
+    ax.set_xticklabels(category_labels, rotation=45, ha="right")
+
+    ax.set_ylabel(y_label)
+    ax.set_title(title)
+
+    # Create custom legend
+    legend_handles = [Patch(facecolor=color_map[hue], label=str(hue)) for hue in hues]
+    ax.legend(handles=legend_handles, title=hue_col, bbox_to_anchor=(1.05, 1), loc="upper left")
+
+    plt.grid(axis="y", linestyle="--", alpha=0.5)
+    plt.tight_layout()
 
 
 def _read_raster_with_max_size(file: str, maxsize: int = 2000):
