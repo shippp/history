@@ -16,19 +16,21 @@ Intended Use:
     are required.
 """
 
+import json
 import os
 import subprocess
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from datetime import datetime
+from pathlib import Path
 
 import geoutils as gu
+import laspy
 import numpy as np
-import pandas as pd
+import rasterio
 import xdem
 from tqdm import tqdm
 
-from history.postprocessing.io import PathsManager, parse_filename, uncompress_all_submissions
-from history.postprocessing.utils import get_dems_df, get_pointcloud_df, load_coreg_results
+from history.postprocessing.io import PathsManager, uncompress_all_submissions
 from history.postprocessing.visualization import plot_files_recap
 
 
@@ -68,7 +70,6 @@ class PostProcessing:
         >>> pp.uncompress_all_submissions()
         >>> pp.iter_point2dem(overwrite=False)
         >>> coreg_df = pp.iter_coregister_dems()
-        >>> pp.compute_global_df()
         >>> pp.plot_files_recap()
     """
 
@@ -114,28 +115,39 @@ class PostProcessing:
         # here hide the output of each command multiple command are running
         stdout = None if max_concurrent_commands == 1 else subprocess.DEVNULL
 
+        # open the filepaths df with only valid dense pointcloud files
+        filepaths_df = self.paths_manager.get_filepaths_df().dropna(subset="dense_pointcloud_file")
+        print(f"{len(filepaths_df)} dense point cloud file(s) found.")
+
+        if not overwrite:
+            mask = filepaths_df["raw_dem_file"].isna()
+            filepaths_df = filepaths_df[mask]
+            if sum(~mask) > 0:
+                print(f"Skipping {sum(~mask)} existing Poind2Dem result(s) (overwrite disabled).")
+
         with ProcessPoolExecutor(max_workers=max_concurrent_commands) as executor:
             futures = []
-            for file in self.paths_manager.dense_pointcloud_files:
-                code, metadatas = parse_filename(file)
+            for code, row in filepaths_df.iterrows():
+                # check the overwrite
                 output_dem = output_dir / code
 
-                # check the overwrite
-                if os.path.exists(f"{output_dem}-DEM.tif") and not overwrite:
-                    print(f"Skip {code} : {output_dem}-DEM.tif already exist.")
-                    continue
-
-                # skip if no reference DEM is provided
-                try:
-                    ref_dem_file, _ = self.paths_manager.get_ref_dem_and_mask(metadatas["site"], metadatas["dataset"])
-                except Exception as e:
-                    print(f"Error {code} : {e}")
+                # skip if the referecne DEM doesn't exists
+                ref_dem_file = row["ref_dem_file"]
+                if not os.path.exists(ref_dem_file):
+                    print(f"Error {code} : Reference dem not found at {ref_dem_file}")
                     continue
 
                 # start a process of point2dem function
                 futures.append(
                     executor.submit(
-                        point2dem, file, output_dem, ref_dem_file, dry_run, asp_path, max_threads_per_command, stdout
+                        point2dem,
+                        row["dense_pointcloud_file"],
+                        output_dem,
+                        ref_dem_file,
+                        dry_run,
+                        asp_path,
+                        max_threads_per_command,
+                        stdout,
                     )
                 )
 
@@ -151,109 +163,196 @@ class PostProcessing:
                 except Exception as e:
                     print(f"[!] Error: {e}")
 
-    def iter_coregister_dems(
-        self, overwrite: bool = False, dry_run: bool = False, verbose: bool = True
-    ) -> pd.DataFrame:
+    def iter_convert_pointcloud_to_dem(
+        self,
+        overwrite: bool = False,
+        pdal_exec_path: str = "pdal",
+        max_workers: int = 4,
+        dry_run: bool = False,
+    ) -> None:
         """
-        Coregister raw DEMs against reference DEMs and generate diagnostic outputs.
+        Batch conversion of dense point cloud files to DEM rasters using PDAL pipelines.
 
-        This method processes all available raw DEM files by aligning them to
-        reference DEMs using the `coregister_dem` function. It produces:
-            - Coregistered DEMs
-            - Difference DEMs (before and after correction)
-            - Diagnostic plots
+        This method iterates over all valid dense point cloud files listed in the
+        `filepaths_df` managed by `paths_manager`, and converts each one into a raster DEM
+        using the `convert_pointcloud_to_dem()` function. Each point cloud is processed in
+        parallel using a process pool executor.
 
-        For each DEM, overwrite conditions are checked, reference DEMs and masks are
-        retrieved, and coregistration is applied unless `dry_run` is enabled. A
-        summary of coregistration results is saved as a timestamped CSV file in
-        `coreg_dems_dir`.
+        The method automatically:
+          1. Validates PDAL installation.
+          2. Retrieves available point clouds and their reference DEMs.
+          3. Skips already processed DEMs if `overwrite=False`.
+          4. Executes multiple PDAL pipelines concurrently (up to `max_workers`).
+
+        Parameters
+        ----------
+        overwrite : bool, optional
+            If False, existing DEMs will be skipped. Default is False.
+        pdal_exec_path : str, optional
+            Path to the PDAL executable (default is "pdal").
+            Used to validate that PDAL is installed and available.
+        max_workers : int, optional
+            Maximum number of worker processes to use for parallel DEM generation.
+            Default is 4.
+        dry_run : bool, optional
+            If True, the function will only generate PDAL pipeline JSONs
+            without executing them. Default is False.
+
+        Returns
+        -------
+        None
+            The function does not return anything. It writes DEM GeoTIFF files and
+            PDAL pipeline JSONs to disk.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the PDAL executable is not found or not accessible.
+        subprocess.CalledProcessError
+            If the PDAL version check fails or if a PDAL process terminates abnormally.
+        Exception
+            For any other unexpected processing error during parallel execution.
+
+        Notes
+        -----
+        - Each dense point cloud must have a corresponding reference DEM path (`ref_dem_file`)
+          defined in the `filepaths_df` managed by `paths_manager`.
+        - The output DEMs are written to the directory defined by
+          `self.paths_manager.get_path("raw_dems_dir")`.
+        - Parallelization is handled using `concurrent.futures.ProcessPoolExecutor`.
+
+        Examples
+        --------
+        >>> processor.iter_convert_pointcloud_to_dem(
+        ...     overwrite=False,
+        ...     pdal_exec_path="/usr/local/bin/pdal",
+        ...     max_workers=8,
+        ...     dry_run=True
+        ... )
+        42 dense point cloud file(s) found.
+        Skipping 10 existing Point2DEM results (overwrite disabled).
+        """
+        # run the version command juste to ensure pdal is correctly setup
+        subprocess.run([pdal_exec_path, "--version"], check=True)
+
+        output_dir = self.paths_manager.get_path("raw_dems_dir")
+
+        # open the filepaths df with only valid dense pointcloud files
+        filepaths_df = self.paths_manager.get_filepaths_df().dropna(subset="dense_pointcloud_file")
+        print(f"{len(filepaths_df)} dense point cloud file(s) found.")
+
+        if not overwrite:
+            mask = filepaths_df["raw_dem_file"].isna()
+            filepaths_df = filepaths_df[mask]
+            if sum(~mask) > 0:
+                print(f"Skipping {sum(~mask)} existing Poind2Dem result(s) (overwrite disabled).")
+
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            for code, row in filepaths_df.iterrows():
+                # check the overwrite
+                output_dem = output_dir / f"{code}-DEM.tif"
+
+                # skip if the referecne DEM doesn't exists
+                ref_dem_file = row["ref_dem_file"]
+                if not os.path.exists(ref_dem_file):
+                    print(f"Error {code} : Reference dem not found at {ref_dem_file}")
+                    continue
+
+                # start a process of point2dem function
+                futures.append(
+                    executor.submit(
+                        convert_pointcloud_to_dem,
+                        row["dense_pointcloud_file"],
+                        ref_dem_file,
+                        output_dem,
+                        pdal_exec_path=pdal_exec_path,
+                        dry_run=dry_run,
+                    )
+                )
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    print(f"[!] Error: {e}")
+
+    def iter_coregister_dems(self, overwrite: bool = False, dry_run: bool = False, verbose: bool = True) -> None:
+        """
+        Iterate over all DEMs listed in the filepaths table and perform coregistration
+        with their corresponding reference DEMs and masks.
+
+        This function automates batch DEM alignment by calling `coregister_dem()` for each entry.
+        It manages overwriting behavior, supports dry-run mode, and prints progress
+        information when verbose mode is enabled.
 
         Args:
-            overwrite (bool, optional): If True, overwrite existing coregistered DEMs.
-                Defaults to False.
-            dry_run (bool, optional): If True, simulate coregistration without
-                performing computations. Defaults to False.
-            verbose (bool, optional): If True, print detailed progress information.
-                Defaults to True.
+            overwrite (bool, optional):
+                If True, overwrite existing coregistered DEMs.
+                If False, skip DEMs that already have a coregistered output.
+                Default is False.
+            dry_run (bool, optional):
+                If True, simulate the process without performing any coregistration
+                (useful for debugging or checking setup). Default is False.
+            verbose (bool, optional):
+                If True, print detailed progress and executed commands. Default is True.
 
         Returns:
-            pd.DataFrame or None: DataFrame of coregistration results indexed by code,
-            or None if no DEMs were processed.
+            None
+
+        Notes:
+            - The method expects valid paths for each DEM entry in the filepaths table:
+              `raw_dem_file`, `ref_dem_file`, and `ref_dem_mask_file`.
+            - Output files are written to the `coreg_dems_dir` defined by `self.paths_manager`.
+            - Coregistration errors are caught per DEM to ensure uninterrupted iteration.
+            - The function does not modify the input DataFrame or return any results.
+
+        Example:
+            >>> pipeline.iter_coregister_dems(
+            ...     overwrite=False,
+            ...     dry_run=False,
+            ...     verbose=True
+            ... )
         """
+        filepaths_df = self.paths_manager.get_filepaths_df().dropna(subset="raw_dem_file")
+        print(f"{len(filepaths_df)} raw DEM file(s) found.")
 
-        data = []
-        for file in self.paths_manager.raw_dem_files:
-            code, metadatas = parse_filename(file)
+        # manage to not overwrite existing coregistered files
+        if not overwrite:
+            mask = filepaths_df["coreg_dem_file"].isna()
+            filepaths_df = filepaths_df[mask]
+            if sum(~mask) > 0:
+                print(f"Skipping {sum(~mask)} existing coregistered result(s) (overwrite disabled).")
 
+        for code, row in filepaths_df.iterrows():
+            input_file = row["raw_dem_file"]
             output_dem_path = self.paths_manager.get_path("coreg_dems_dir") / f"{code}-DEM_coreg.tif"
-
-            # not overwrite existing files
-            if output_dem_path.exists() and not overwrite:
-                print(f"Skip {code} : {output_dem_path} already exist.")
-                continue
+            output_ddem_before_path = self.paths_manager.get_path("ddems_before_dir") / f"{code}-DDEM.tif"
+            output_ddem_after_path = self.paths_manager.get_path("ddems_after_dir") / f"{code}-DDEM.tif"
 
             # read the corresponding mask and dem references
-            try:
-                ref_dem_file, ref_dem_mask_file = self.paths_manager.get_ref_dem_and_mask(
-                    metadatas["site"], metadatas["dataset"]
-                )
-            except Exception as e:
-                print(f"Error {code} : {e}")
+            ref_dem_file = row["ref_dem_file"]
+            if not os.path.exists(ref_dem_file):
+                print(f"Error {code} : Reference dem not found at {ref_dem_file}")
+                continue
+            ref_dem_mask_file = row["ref_dem_mask_file"]
+            if not os.path.exists(ref_dem_mask_file):
+                print(f"Error {code} : Reference mask dem not found at {ref_dem_mask_file}")
                 continue
 
-            output_ddem_before_path = self.paths_manager.get_path("ddems_dir") / f"{code}-DDEM_before.tif"
-            output_ddem_after_path = self.paths_manager.get_path("ddems_dir") / f"{code}-DDEM_after.tif"
-
             if verbose:
-                print(f"coregister_dem({file}, {ref_dem_file}, {ref_dem_mask_file}, {output_dem_path})")
+                print(f"coregister_dem({input_file}, {ref_dem_file}, {ref_dem_mask_file}, {output_dem_path})")
             if not dry_run:
                 try:
-                    res = coregister_dem(
-                        file,
+                    coregister_dem(
+                        input_file,
                         ref_dem_file,
                         ref_dem_mask_file,
                         output_dem_path,
                         output_ddem_before_path,
                         output_ddem_after_path,
                     )
-                    res["code"] = code
-                    data.append(res)
                 except Exception as e:
                     print(f"Skip {code} : {e}")
-
-        if data:
-            df = pd.DataFrame(data).set_index("code")
-            datetime_str = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
-            filename = f"coreg_res_{datetime_str}.csv"
-            df.to_csv(self.paths_manager.get_path("coreg_dems_dir") / filename)
-            return df
-        else:
-            return None
-
-    def compute_global_df(self) -> None:
-        """
-        Build and save a global DataFrame combining metadata from point clouds, DEMs,
-        and coregistration results.
-
-        This method collects filepaths and metadata from multiple sources, merges them
-        into a single DataFrame, and exports the result as a CSV file for further
-        analysis.
-
-        Steps:
-            1. Load base filepaths DataFrame from the paths manager.
-            2. Join point cloud metadata.
-            3. Join DEM metadata.
-            4. Join coregistration results.
-            5. Save the consolidated DataFrame to disk.
-
-        Returns:
-            None
-        """
-        df = self.paths_manager.get_filepaths_df()
-        df = df.join(get_pointcloud_df(df), how="outer")
-        df = df.join(get_dems_df(df), how="outer")
-        df = df.join(load_coreg_results(self.paths_manager.get_path("coreg_dems_dir")), how="outer")
-        df.to_csv(self.paths_manager.get_path("postproc_csv"))
 
     def uncompress_all_submissions(
         self, overwrite: bool = False, dry_run: bool = False, verbose: bool = False
@@ -294,19 +393,6 @@ class PostProcessing:
             None
         """
         plot_files_recap(self.paths_manager.get_filepaths_df(), output_path, show)
-
-    def get_global_df(self) -> pd.DataFrame:
-        """
-        Load the consolidated post-processing DataFrame from disk.
-
-        This method reads the global CSV file previously generated by
-        `compute_global_df` and returns it as a pandas DataFrame, indexed by code.
-
-        Returns:
-            pd.DataFrame: The consolidated DataFrame containing filepaths, metadata,
-            and coregistration results for all processed datasets.
-        """
-        return pd.read_csv(self.paths_manager.get_path("postproc_csv"), index_col="code")
 
 
 #######################################################################################################################
@@ -376,21 +462,183 @@ def point2dem(
         subprocess.run(command, shell=True, check=True, stdout=stdout)
 
 
+def convert_pointcloud_to_dem(
+    pointcloud_path: str | Path,
+    reference_dem_path: str | Path,
+    output_dem_path: str | Path,
+    pdal_exec_path: str = "pdal",
+    output_pipeline_path: str | Path | None = None,
+    default_pointcloud_crs: str = "EPSG:4326",
+    dry_run: bool = False,
+    verbose: bool = True,
+) -> None:
+    """
+    Convert a point cloud (LAS/LAZ) file to a raster Digital Elevation Model (DEM)
+    using a PDAL pipeline based on a reference DEM for spatial extent, resolution,
+    and coordinate reference system.
+
+    This function automatically builds a PDAL pipeline that:
+      1. Reads the input point cloud.
+      2. Reprojects it to match the reference DEM CRS.
+      3. Crops it to the reference DEM bounds.
+      4. Interpolates the points into a raster (using IDW).
+      5. Writes the resulting DEM to GeoTIFF format.
+
+    Parameters
+    ----------
+    pointcloud_path : str or Path
+        Path to the input point cloud file (.las or .laz).
+    reference_dem_path : str or Path
+        Path to the reference DEM used to extract bounds, CRS, and resolution.
+    output_dem_path : str or Path
+        Path to the output DEM file (.tif) to be created.
+    pdal_exec_path : str, optional
+        Path to the PDAL executable (default is "pdal").
+    output_pipeline_path : str or Path, optional
+        Path to save the generated PDAL pipeline JSON. If None, it will be created
+        in a "processing_pipelines" subdirectory next to the output DEM.
+    default_pointcloud_crs : str, optional
+        CRS to use if the input point cloud has no embedded CRS (default "EPSG:4326").
+    dry_run : bool, optional
+        If True, the function only writes the pipeline JSON without executing it.
+    verbose : bool, optional
+        If True, prints progress messages and execution time.
+
+    Returns
+    -------
+    None
+        The function does not return anything. It writes a GeoTIFF DEM file and a
+        PDAL pipeline JSON on disk.
+
+    Raises
+    ------
+    ValueError
+        If the reference DEM has no CRS defined.
+    subprocess.CalledProcessError
+        If PDAL execution fails.
+
+    Notes
+    -----
+    - The output DEM is generated using inverse distance weighting (IDW) interpolation.
+    - The interpolation resolution and extent are derived from the reference DEM.
+    - If performance is an issue for large point clouds, consider splitting the area
+      into tiles and processing them in parallel using PDAL and GDAL tools.
+    """
+    pointcloud_path = Path(pointcloud_path)
+    output_dem_path = Path(output_dem_path)
+    output_pipeline_path = (
+        output_dem_path.parent / "processing_pipelines" / f"pdal_pipeline_{output_dem_path.stem}.json"
+        if output_pipeline_path is None
+        else Path(output_pipeline_path)
+    )
+    output_pipeline_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # --- Get CRS from LAS/LAZ ---
+    with laspy.open(pointcloud_path) as fh:
+        header = fh.header
+        in_crs = header.parse_crs()
+    used_in_crs = str(in_crs) if in_crs else str(default_pointcloud_crs)
+
+    # --- Reference DEM info ---
+    reference_dem = gu.Raster(reference_dem_path)
+    if reference_dem.crs is None:
+        raise ValueError("Reference DEM has no CRS; cannot perform reprojection.")
+
+    bounds = reference_dem.bounds
+    out_crs = str(reference_dem.crs)
+    resolution = reference_dem.res[0]
+
+    # --- PDAL pipeline definition ---
+    pipeline_dict = {
+        "pipeline": [
+            {"type": "readers.las", "filename": str(pointcloud_path)},
+            {
+                "type": "filters.reprojection",
+                "in_srs": used_in_crs,
+                "out_srs": out_crs,
+            },
+            {"type": "filters.crop", "bounds": f"([{bounds.left},{bounds.right}],[{bounds.bottom},{bounds.top}])"},
+            {
+                "type": "writers.gdal",
+                "filename": str(output_dem_path),
+                "resolution": resolution,
+                "output_type": "idw",  # Interpolation like point2dem
+                "data_type": "float32",
+                "gdaldriver": "GTiff",
+                "nodata": -9999,
+                "window_size": 0,
+            },
+        ]
+    }
+
+    # write the pipeline in a json file
+    with open(output_pipeline_path, "w", encoding="utf-8") as f:
+        json.dump(pipeline_dict, f, ensure_ascii=False, indent=4)
+
+    if not dry_run:
+        start_time = time.time()
+        if verbose:
+            print(f"Start processing {pointcloud_path.name}.")
+        cmd = [pdal_exec_path, "pipeline", output_pipeline_path]
+        subprocess.run(cmd, check=True)
+
+        elapsed = time.time() - start_time
+        if verbose:
+            print(f"Finish processing of {pointcloud_path.name} in {elapsed:.1f} seconds")
+
+
 def coregister_dem(
     dem_path: str,
     ref_dem_path: str,
     ref_dem_mask_path: str,
     output_dem_path: str,
-    output_ddem_before_path: str | None = None,
-    output_ddem_after_path: str | None = None,
-) -> dict:
-    result = {}
+    output_ddem_before_path: str | None,
+    output_ddem_after_path: str | None,
+) -> None:
+    """
+    Coregister a DEM to a reference DEM using combined horizontal and vertical corrections.
 
+    This function performs a two-step DEM coregistration:
+        1. Horizontal correction using the Nuth & Kääb (2011) algorithm.
+        2. Vertical correction using a median-based vertical shift model.
+
+    Both corrections are applied sequentially to minimize systematic elevation differences
+    between the input DEM and a reference DEM. The function also computes differential DEMs
+    (dDEMs) before and after coregistration if requested.
+
+    A reference mask is used to exclude invalid or unreliable pixels (e.g., nodata, clouds, water).
+    For the horizontal coregistration, an additional slope-based filter is applied to remove
+    nearly flat terrain areas that can bias the shift estimation.
+
+    The resulting coregistered DEM is saved to disk and annotated with metadata tags
+    describing the applied coregistration method and estimated translation parameters.
+
+    Args:
+        dem_path (str): Path to the input DEM to be coregistered.
+        ref_dem_path (str): Path to the reference DEM used as spatial and vertical reference.
+        ref_dem_mask_path (str): Path to the binary mask indicating valid reference DEM pixels.
+        output_dem_path (str): Path where the coregistered DEM will be saved.
+        output_ddem_before_path (str | None): Optional path to save the differential DEM
+            before coregistration (input DEM - reference DEM).
+        output_ddem_after_path (str | None): Optional path to save the differential DEM
+            after coregistration (coregistered DEM - reference DEM).
+
+    Returns:
+        None
+
+    Notes:
+        - The function assumes all DEMs and the mask share the same spatial resolution,
+          projection, and extent. DEMs are reprojected to the reference grid if necessary.
+        - The horizontal correction uses the Nuth & Kääb (2011) algorithm implemented in xDEM.
+        - The vertical correction is applied via a median-based shift to minimize vertical bias.
+        - Coregistration shifts are stored as raster tags (`coreg_shift_x`, `coreg_shift_y`, `coreg_shift_z`).
+        - If dDEMs are saved, they are masked using the same valid-pixel mask as the reference DEM.
+    """
     # Because ASP's point2dem rounds the bounds, output DEM is not perfectly aligned with the ref DEM
     # so we reproject the source dem with the reference dem
     dem_ref = gu.Raster(ref_dem_path)
     dem_ref_mask = gu.Raster(ref_dem_mask_path)
-    dem = gu.Raster(dem_path).reproject(dem_ref)
+    dem = gu.Raster(dem_path).reproject(dem_ref, silent=True)
 
     # check all dems are on the same grid
     assert dem.shape == dem_ref.shape == dem_ref_mask.shape
@@ -409,38 +657,26 @@ def coregister_dem(
     dem_coreg_tmp = coreg_hori.fit_and_apply(dem_ref, dem, inlier_mask=inlier_mask_hori)
     dem_coreg = coreg_vert.fit_and_apply(dem_ref, dem_coreg_tmp, inlier_mask=inlier_mask_vert)
 
-    # save coregistration shift
-    result["coreg_shift_x"] = coreg_hori.meta["outputs"]["affine"]["shift_x"]
-    result["coreg_shift_y"] = coreg_hori.meta["outputs"]["affine"]["shift_y"]
-    result["coreg_shift_z"] = coreg_vert.meta["outputs"]["affine"]["shift_z"]
-
     # save the coregistered dem
-    if os.path.dirname(output_dem_path):
-        os.makedirs(os.path.dirname(output_dem_path), exist_ok=True)
+    Path(output_dem_path).parent.mkdir(parents=True, exist_ok=True)
     dem_coreg.save(output_dem_path, tiled=True)
 
-    # Print statistics
-    ddem_before = dem - dem_ref
-    ddem_after = dem_coreg - dem_ref
-    ddem_bef_inlier = ddem_before[inlier_mask_vert].compressed()
-    ddem_aft_inlier = ddem_after[inlier_mask_vert].compressed()
-    result["mean_before_coreg"] = np.mean(ddem_bef_inlier)
-    result["median_before_coreg"] = np.median(ddem_bef_inlier)
-    result["nmad_before_coreg"] = gu.stats.nmad(ddem_bef_inlier)
-    result["mean_after_coreg"] = np.mean(ddem_aft_inlier)
-    result["median_after_coreg"] = np.median(ddem_aft_inlier)
-    result["nmad_after_coreg"] = gu.stats.nmad(ddem_aft_inlier)
+    # --- Add metadata tags using rasterio ---
+    with rasterio.open(output_dem_path, "r+") as dst:
+        dst.update_tags(
+            1,
+            coreg_method="NuthKaab+VerticalShift",
+            coreg_shift_x=coreg_hori.meta["outputs"]["affine"]["shift_x"],
+            coreg_shift_y=coreg_hori.meta["outputs"]["affine"]["shift_y"],
+            coreg_shift_z=coreg_vert.meta["outputs"]["affine"]["shift_z"],
+        )
 
-    # if the output_ddem_before_path is set save the ddem before coreg
-    if output_ddem_before_path:
-        if os.path.dirname(output_ddem_before_path):
-            os.makedirs(os.path.dirname(output_ddem_before_path), exist_ok=True)
-        ddem_before.save(output_ddem_before_path, tiled=True)
+    if output_ddem_before_path is not None:
+        ddem_before = dem - dem_ref
+        Path(output_ddem_before_path).parent.mkdir(exist_ok=True, parents=True)
+        ddem_before.save(output_ddem_before_path)
 
-    # if the output_ddem_after_path is set save the ddem after coreg
-    if output_ddem_after_path:
-        if os.path.dirname(output_ddem_after_path):
-            os.makedirs(os.path.dirname(output_ddem_after_path), exist_ok=True)
-        ddem_after.save(output_ddem_after_path, tiled=True)
-
-    return result
+    if output_ddem_after_path is not None:
+        ddem_after = dem_coreg - dem_ref
+        Path(output_ddem_after_path).parent.mkdir(exist_ok=True, parents=True)
+        ddem_after.save(output_ddem_after_path)

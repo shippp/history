@@ -1,7 +1,6 @@
 import os
 import shutil
 import tarfile
-import warnings
 import zipfile
 from collections import defaultdict
 from pathlib import Path
@@ -863,7 +862,7 @@ class PathsManager:
 
         # Core directories
         processing_dir = Path(custom_paths.get("processing_dir", self.base_dir / "processing"))
-        ref_dem_dir = Path(custom_paths.get("ref_dem_dir", processing_dir / "ref_dems"))
+        aux_data = Path(custom_paths.get("ref_dem_dir", processing_dir / "aux_data"))
 
         # Default paths
         defaults: dict[str, Path] = {
@@ -872,13 +871,19 @@ class PathsManager:
             "processing_dir": processing_dir,
             "raw_dems_dir": processing_dir / "raw_dems",
             "coreg_dems_dir": processing_dir / "coreg_dems",
-            "ddems_dir": processing_dir / "ddems",
+            "ddems_before_dir": processing_dir / "ddems" / "before_coregistration",
+            "ddems_after_dir": processing_dir / "ddems" / "after_coregistration",
             "postproc_csv": processing_dir / "postprocessing.csv",
+            "landcover_csv": processing_dir / "landcover_statistics.csv",
             "plots_dir": processing_dir / "plots",
-            "iceland_ref_dem_zoom": ref_dem_dir / "iceland_ref_dem_zoom.tif",
-            "iceland_ref_dem_large": ref_dem_dir / "iceland_ref_dem_large.tif",
-            "casagrande_ref_dem_zoom": ref_dem_dir / "casagrande_ref_dem_zoom.tif",
-            "casagrande_ref_dem_large": ref_dem_dir / "casagrande_ref_dem_large.tif",
+            "iceland_ref_dem_zoom": aux_data / "iceland_ref_dem_zoom.tif",
+            "iceland_ref_dem_large": aux_data / "iceland_ref_dem_large.tif",
+            "casagrande_ref_dem_zoom": aux_data / "casagrande_ref_dem_zoom.tif",
+            "casagrande_ref_dem_large": aux_data / "casagrande_ref_dem_large.tif",
+            "iceland_landcover_zoom": aux_data / "iceland_landcover_zoom.tif",
+            "iceland_landcover_large": aux_data / "iceland_landcover_large.tif",
+            "casagrande_landcover_zoom": aux_data / "casagrande_landcover_zoom.tif",
+            "casagrande_landcover_large": aux_data / "casagrande_landcover_large.tif",
         }
         # Validate custom_paths keys
         unknown_keys = set(custom_paths) - set(defaults)
@@ -933,11 +938,18 @@ class PathsManager:
         ref_dem_path = self.get_path(mapping[(site, dataset)])
         ref_mask_path = ref_dem_path.with_name(f"{ref_dem_path.stem}_mask.tif")
 
-        for path in [ref_dem_path, ref_mask_path]:
-            if not path.exists():
-                raise FileNotFoundError(f"{path} doesn't exists.")
-
         return ref_dem_path, ref_mask_path
+
+    def get_landcover(self, site: str, dataset: str) -> Path:
+        mapping = {
+            ("casa_grande", "aerial"): "casagrande_landcover_zoom",
+            ("casa_grande", "kh9mc"): "casagrande_landcover_large",
+            ("casa_grande", "kh9pc"): "casagrande_landcover_large",
+            ("iceland", "aerial"): "iceland_landcover_zoom",
+            ("iceland", "kh9mc"): "iceland_landcover_large",
+            ("iceland", "kh9pc"): "iceland_landcover_large",
+        }
+        return self.get_path(mapping[(site, dataset)])
 
     def get_filepaths_df(self) -> pd.DataFrame:
         """
@@ -954,21 +966,26 @@ class PathsManager:
             "intrinsics_camera_file": self.intrinsics_camera_files,
             "raw_dem_file": self.raw_dem_files,
             "coreg_dem_file": list(self.get_path("coreg_dems_dir").glob("*-DEM_coreg.tif")),
-            "ddem_before_file": list(self.get_path("ddems_dir").glob("*-DDEM_before.tif")),
-            "ddem_after_file": list(self.get_path("ddems_dir").glob("*-DDEM_after.tif")),
+            "ddem_before_file": list(self.get_path("ddems_before_dir").glob("*-DDEM.tif")),
+            "ddem_after_file": list(self.get_path("ddems_after_dir").glob("*-DDEM.tif")),
         }
 
         nested_dict = defaultdict(dict)
 
         for key, files in mapping.items():
-            if not files:
-                warnings.warn(f"No files found for '{key}', column will be filled with NaN.", UserWarning)
-
             for file in files:
                 code, metadatas = parse_filename(file)
                 nested_dict[code]["code"] = code
                 nested_dict[code].update(metadatas)
                 nested_dict[code][key] = file
+
+        # add ref dems and ref landcover
+        for code, metadata in nested_dict.items():
+            ref_dem_file, ref_dem_mask_file = self.get_ref_dem_and_mask(metadata["site"], metadata["dataset"])
+            ref_landcover_file = self.get_landcover(metadata["site"], metadata["dataset"])
+            nested_dict[code]["ref_dem_file"] = ref_dem_file
+            nested_dict[code]["ref_dem_mask_file"] = ref_dem_mask_file
+            nested_dict[code]["ref_landcover_file"] = ref_landcover_file
 
         # Build DataFrame
         df = pd.DataFrame(list(nested_dict.values())).set_index("code")
