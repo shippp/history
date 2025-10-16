@@ -16,12 +16,15 @@ Intended Use:
     are required.
 """
 
+import json
 import os
 import subprocess
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import geoutils as gu
+import laspy
 import numpy as np
 import rasterio
 import xdem
@@ -160,6 +163,119 @@ class PostProcessing:
                 except Exception as e:
                     print(f"[!] Error: {e}")
 
+    def iter_convert_pointcloud_to_dem(
+        self,
+        overwrite: bool = False,
+        pdal_exec_path: str = "pdal",
+        max_workers: int = 4,
+        dry_run: bool = False,
+    ) -> None:
+        """
+        Batch conversion of dense point cloud files to DEM rasters using PDAL pipelines.
+
+        This method iterates over all valid dense point cloud files listed in the
+        `filepaths_df` managed by `paths_manager`, and converts each one into a raster DEM
+        using the `convert_pointcloud_to_dem()` function. Each point cloud is processed in
+        parallel using a process pool executor.
+
+        The method automatically:
+          1. Validates PDAL installation.
+          2. Retrieves available point clouds and their reference DEMs.
+          3. Skips already processed DEMs if `overwrite=False`.
+          4. Executes multiple PDAL pipelines concurrently (up to `max_workers`).
+
+        Parameters
+        ----------
+        overwrite : bool, optional
+            If False, existing DEMs will be skipped. Default is False.
+        pdal_exec_path : str, optional
+            Path to the PDAL executable (default is "pdal").
+            Used to validate that PDAL is installed and available.
+        max_workers : int, optional
+            Maximum number of worker processes to use for parallel DEM generation.
+            Default is 4.
+        dry_run : bool, optional
+            If True, the function will only generate PDAL pipeline JSONs
+            without executing them. Default is False.
+
+        Returns
+        -------
+        None
+            The function does not return anything. It writes DEM GeoTIFF files and
+            PDAL pipeline JSONs to disk.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the PDAL executable is not found or not accessible.
+        subprocess.CalledProcessError
+            If the PDAL version check fails or if a PDAL process terminates abnormally.
+        Exception
+            For any other unexpected processing error during parallel execution.
+
+        Notes
+        -----
+        - Each dense point cloud must have a corresponding reference DEM path (`ref_dem_file`)
+          defined in the `filepaths_df` managed by `paths_manager`.
+        - The output DEMs are written to the directory defined by
+          `self.paths_manager.get_path("raw_dems_dir")`.
+        - Parallelization is handled using `concurrent.futures.ProcessPoolExecutor`.
+
+        Examples
+        --------
+        >>> processor.iter_convert_pointcloud_to_dem(
+        ...     overwrite=False,
+        ...     pdal_exec_path="/usr/local/bin/pdal",
+        ...     max_workers=8,
+        ...     dry_run=True
+        ... )
+        42 dense point cloud file(s) found.
+        Skipping 10 existing Point2DEM results (overwrite disabled).
+        """
+        # run the version command juste to ensure pdal is correctly setup
+        subprocess.run([pdal_exec_path, "--version"], check=True)
+
+        output_dir = self.paths_manager.get_path("raw_dems_dir")
+
+        # open the filepaths df with only valid dense pointcloud files
+        filepaths_df = self.paths_manager.get_filepaths_df().dropna(subset="dense_pointcloud_file")
+        print(f"{len(filepaths_df)} dense point cloud file(s) found.")
+
+        if not overwrite:
+            mask = filepaths_df["raw_dem_file"].isna()
+            filepaths_df = filepaths_df[mask]
+            if sum(~mask) > 0:
+                print(f"Skipping {sum(~mask)} existing Poind2Dem result(s) (overwrite disabled).")
+
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            for code, row in filepaths_df.iterrows():
+                # check the overwrite
+                output_dem = output_dir / f"{code}-DEM.tif"
+
+                # skip if the referecne DEM doesn't exists
+                ref_dem_file = row["ref_dem_file"]
+                if not os.path.exists(ref_dem_file):
+                    print(f"Error {code} : Reference dem not found at {ref_dem_file}")
+                    continue
+
+                # start a process of point2dem function
+                futures.append(
+                    executor.submit(
+                        convert_pointcloud_to_dem,
+                        row["dense_pointcloud_file"],
+                        ref_dem_file,
+                        output_dem,
+                        pdal_exec_path=pdal_exec_path,
+                        dry_run=dry_run,
+                    )
+                )
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    print(f"[!] Error: {e}")
+
     def iter_coregister_dems(self, overwrite: bool = False, dry_run: bool = False, verbose: bool = True) -> None:
         """
         Iterate over all DEMs listed in the filepaths table and perform coregistration
@@ -237,34 +353,6 @@ class PostProcessing:
                     )
                 except Exception as e:
                     print(f"Skip {code} : {e}")
-
-    def generate_ddems(self, overwrite: bool = False, verbose: bool = True) -> None:
-        filepaths_df = self.paths_manager.get_filepaths_df()
-
-        # generate ddem before coregistration
-        for input_colname, output_colname, output_dir_key in [
-            ("raw_dem_file", "ddem_before_file", "ddems_before_dir"),
-            ("coreg_dem_file", "ddem_after_file", "ddems_after_dir"),
-        ]:
-            droped_df = filepaths_df.dropna(subset=input_colname)
-
-            if verbose:
-                print(f"{len(droped_df)} {input_colname} found(s)")
-
-            # manage to not overwrite existing coregistered files
-            if not overwrite:
-                mask = droped_df[output_colname].isna()
-                droped_df = droped_df[mask]
-                if sum(~mask) > 0 and verbose:
-                    print(f"Skipping {sum(~mask)} existing dDEMs result(s) (overwrite disabled).")
-
-            for code, row in droped_df.iterrows():
-                output_dem_path = self.paths_manager.get_path(output_dir_key) / f"{code}-DDEM.tif"
-                dem1_path = row[input_colname]
-                dem2_path = row["ref_dem_file"]
-                mask_path = row["ref_dem_mask_file"]
-
-                generate_ddem(dem1_path, dem2_path, output_dem_path, mask_path)
 
     def uncompress_all_submissions(
         self, overwrite: bool = False, dry_run: bool = False, verbose: bool = False
@@ -374,6 +462,131 @@ def point2dem(
         subprocess.run(command, shell=True, check=True, stdout=stdout)
 
 
+def convert_pointcloud_to_dem(
+    pointcloud_path: str | Path,
+    reference_dem_path: str | Path,
+    output_dem_path: str | Path,
+    pdal_exec_path: str = "pdal",
+    output_pipeline_path: str | Path | None = None,
+    default_pointcloud_crs: str = "EPSG:4326",
+    dry_run: bool = False,
+    verbose: bool = True,
+) -> None:
+    """
+    Convert a point cloud (LAS/LAZ) file to a raster Digital Elevation Model (DEM)
+    using a PDAL pipeline based on a reference DEM for spatial extent, resolution,
+    and coordinate reference system.
+
+    This function automatically builds a PDAL pipeline that:
+      1. Reads the input point cloud.
+      2. Reprojects it to match the reference DEM CRS.
+      3. Crops it to the reference DEM bounds.
+      4. Interpolates the points into a raster (using IDW).
+      5. Writes the resulting DEM to GeoTIFF format.
+
+    Parameters
+    ----------
+    pointcloud_path : str or Path
+        Path to the input point cloud file (.las or .laz).
+    reference_dem_path : str or Path
+        Path to the reference DEM used to extract bounds, CRS, and resolution.
+    output_dem_path : str or Path
+        Path to the output DEM file (.tif) to be created.
+    pdal_exec_path : str, optional
+        Path to the PDAL executable (default is "pdal").
+    output_pipeline_path : str or Path, optional
+        Path to save the generated PDAL pipeline JSON. If None, it will be created
+        in a "processing_pipelines" subdirectory next to the output DEM.
+    default_pointcloud_crs : str, optional
+        CRS to use if the input point cloud has no embedded CRS (default "EPSG:4326").
+    dry_run : bool, optional
+        If True, the function only writes the pipeline JSON without executing it.
+    verbose : bool, optional
+        If True, prints progress messages and execution time.
+
+    Returns
+    -------
+    None
+        The function does not return anything. It writes a GeoTIFF DEM file and a
+        PDAL pipeline JSON on disk.
+
+    Raises
+    ------
+    ValueError
+        If the reference DEM has no CRS defined.
+    subprocess.CalledProcessError
+        If PDAL execution fails.
+
+    Notes
+    -----
+    - The output DEM is generated using inverse distance weighting (IDW) interpolation.
+    - The interpolation resolution and extent are derived from the reference DEM.
+    - If performance is an issue for large point clouds, consider splitting the area
+      into tiles and processing them in parallel using PDAL and GDAL tools.
+    """
+    pointcloud_path = Path(pointcloud_path)
+    output_dem_path = Path(output_dem_path)
+    output_pipeline_path = (
+        output_dem_path.parent / "processing_pipelines" / f"pdal_pipeline_{output_dem_path.stem}.json"
+        if output_pipeline_path is None
+        else Path(output_pipeline_path)
+    )
+    output_pipeline_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # --- Get CRS from LAS/LAZ ---
+    with laspy.open(pointcloud_path) as fh:
+        header = fh.header
+        in_crs = header.parse_crs()
+    used_in_crs = str(in_crs) if in_crs else str(default_pointcloud_crs)
+
+    # --- Reference DEM info ---
+    reference_dem = gu.Raster(reference_dem_path)
+    if reference_dem.crs is None:
+        raise ValueError("Reference DEM has no CRS; cannot perform reprojection.")
+
+    bounds = reference_dem.bounds
+    out_crs = str(reference_dem.crs)
+    resolution = reference_dem.res[0]
+
+    # --- PDAL pipeline definition ---
+    pipeline_dict = {
+        "pipeline": [
+            {"type": "readers.las", "filename": str(pointcloud_path)},
+            {
+                "type": "filters.reprojection",
+                "in_srs": used_in_crs,
+                "out_srs": out_crs,
+            },
+            {"type": "filters.crop", "bounds": f"([{bounds.left},{bounds.right}],[{bounds.bottom},{bounds.top}])"},
+            {
+                "type": "writers.gdal",
+                "filename": str(output_dem_path),
+                "resolution": resolution,
+                "output_type": "idw",  # Interpolation like point2dem
+                "data_type": "float32",
+                "gdaldriver": "GTiff",
+                "nodata": -9999,
+                "window_size": 0,
+            },
+        ]
+    }
+
+    # write the pipeline in a json file
+    with open(output_pipeline_path, "w", encoding="utf-8") as f:
+        json.dump(pipeline_dict, f, ensure_ascii=False, indent=4)
+
+    if not dry_run:
+        start_time = time.time()
+        if verbose:
+            print(f"Start processing {pointcloud_path.name}.")
+        cmd = [pdal_exec_path, "pipeline", output_pipeline_path]
+        subprocess.run(cmd, check=True)
+
+        elapsed = time.time() - start_time
+        if verbose:
+            print(f"Finish processing of {pointcloud_path.name} in {elapsed:.1f} seconds")
+
+
 def coregister_dem(
     dem_path: str,
     ref_dem_path: str,
@@ -467,67 +680,3 @@ def coregister_dem(
         ddem_after = dem_coreg - dem_ref
         Path(output_ddem_after_path).parent.mkdir(exist_ok=True, parents=True)
         ddem_after.save(output_ddem_after_path)
-
-
-def generate_ddem(dem1_path: str, dem2_path: str, output_dem_path: str, mask_path: str | None = None) -> None:
-    """
-    Generate a differential DEM (dDEM = DEM1 - DEM2), optionally applying a mask.
-
-    This function loads two DEM rasters, reprojects DEM1 onto the grid of DEM2,
-    computes their difference, and saves the result as a new GeoTIFF.
-    If a binary mask is provided, pixels outside the mask are set to NaN in the output.
-
-    Parameters
-    ----------
-    dem1_path : str
-        Path to the first DEM (typically the "before" DEM).
-    dem2_path : str
-        Path to the second DEM (typically the "after" or reference DEM).
-    output_dem_path : str
-        Path where the differential DEM (dDEM) will be saved.
-    mask_path : str or None, optional
-        Optional path to a binary mask raster. If provided, only pixels where the
-        mask is True (nonzero) will be retained in the output; others will be set to NaN.
-
-    Returns
-    -------
-    None
-        The resulting differential DEM is written to disk.
-
-    Notes
-    -----
-    - The function ensures that DEM1 is reprojected to match DEM2 (extent, CRS, resolution).
-    - The mask, if provided, is also reprojected to DEM2’s grid for consistency.
-    - Output is saved as a tiled GeoTIFF using GeoUtils' `Raster.save()` method.
-
-    Examples
-    --------
-    >>> generate_ddem(
-    ...     dem1_path="before_dem.tif",
-    ...     dem2_path="after_dem.tif",
-    ...     output_dem_path="ddem.tif",
-    ...     mask_path="inlier_mask.tif"
-    ... )
-    """
-    # Load reference DEM
-    dem2 = gu.Raster(dem2_path)
-
-    # Load and reproject the first DEM to match dem2
-    dem1 = gu.Raster(dem1_path).reproject(dem2, silent=True)
-
-    # Compute the differential DEM
-    ddem = dem1 - dem2
-
-    # Apply mask if provided
-    if mask_path is not None:
-        mask_raster = gu.Raster(mask_path).reproject(dem2, silent=True)
-        mask = mask_raster.data.astype(bool)
-        # Apply mask: keep valid pixels only
-        ddem.data[~mask] = np.nan
-
-    # Ensure output directory exists
-    output_path = Path(output_dem_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Save the dDEM
-    ddem.save(output_path, tiled=True)
