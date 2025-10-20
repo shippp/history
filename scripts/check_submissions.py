@@ -7,7 +7,7 @@ submission data and checks for the presence of mandatory and optional files
 according to expected naming conventions.
 
 Each file must follow a structured naming pattern:
-    <author>_<site>_<dataset>_<images>_<camera_used>_<gcp_used>_<pointcloud_coregistration>_<mtp_adjustment>_<suffix>
+    <author>_<site>_<dataset>_<images>_<use_of_camera_calibration>_<use_of_gcps>_<pointcloud_coregistration>_<mtb_adjustment>_<suffix>
 
 The script:
 ------------
@@ -43,70 +43,43 @@ MANDATORY_SUFFIXS = [
 OPTIONAL_SUFFIXS = ["dem.tif", "orthoimage.tif"]
 
 
-def parse_code(code: str) -> dict[str, str | bool]:
-    """
-    Parse and interpret a submission code string into its metadata components.
-
-    Each code follows a structured format composed of multiple segments separated by underscores.
-    Each segment encodes a specific parameter of the dataset, such as site, dataset type,
-    image preprocessing, and processing options.
-
-    Example
-    -------
-    >>> parse_code("JD_CG_AI_RA_CY_GA_PY_MY")
-    {
-        'author': 'JD',
-        'site': 'casa_grande',
-        'dataset': 'aerial',
-        'images': 'raw',
-        'camera_used': True,
-        'gcp_used': 'Automated approch',
-        'pointcloud_coregistration': True,
-        'mtp_adjustment': True
-    }
-
-    Parameters
-    ----------
-    code : str
-        Submission code string to parse.
-
-    Returns
-    -------
-    dict[str, str | bool]
-        A dictionary mapping parameter names to their interpreted values.
-
-    Raises
-    ------
-    ValueError
-        If the code does not match the expected structure or contains unknown identifiers.
-    """
+def parse_filename(file: str | Path) -> tuple[str, dict[str, str]]:
     VALID_MAPPING = {
         "site": {"CG": "casa_grande", "IL": "iceland"},
         "dataset": {"AI": "aerial", "MC": "kh9mc", "PC": "kh9pc"},
         "images": {"RA": "raw", "PP": "preprocessed"},
-        "camera_used": {"CY": True, "CN": False},
-        "gcp_used": {"GM": "Manual (provided)", "GA": "Automated approch", "GN": "No"},
-        "pointcloud_coregistration": {"PY": True, "PN": False},
-        "mtp_adjustment": {"MY": True, "MN": False},
+        "use_of_camera_calibration": {"CY": "Yes", "CN": "No"},
+        "use_of_gcps": {"GM": "Manual (provided)", "GA": "Automated approch", "GN": "No"},
+        "pointcloud_coregistration": {"PY": "Yes", "PN": "No"},
+        "mtb_adjustment": {"MY": "Yes", "MN": "No"},
     }
-    parts = code.split("_")
-    # Check format length
-    expected_parts = len(VALID_MAPPING) + 1  # author + mappings
-    if len(parts) < expected_parts:
-        raise ValueError(f"The code: {code} has unexpected format (expected ≥ {expected_parts} parts)")
-
+    filename = Path(file).stem
+    parts = filename.split("_")
+    code = parts[0]
     metadatas = {"author": parts[0]}
 
     # Normalize to uppercase for consistency
     parts = [p.upper() for p in parts]
 
+    # Fix special handling of MN/MY
+    if parts[7].startswith("MN"):
+        parts[7] = "MN"
+    elif parts[7].startswith("MY"):
+        parts[7] = "MY"
+
+    # Check format length
+    expected_parts = len(VALID_MAPPING) + 1  # author + mappings
+    if len(parts) < expected_parts:
+        raise ValueError(f"File {file} has unexpected format (expected ≥ {expected_parts} parts)")
+
     for i, (key, mapping) in enumerate(VALID_MAPPING.items()):
         value = parts[i + 1]
         if value not in mapping:
-            raise ValueError(f"{value} is not a known code for {key}.")
+            raise ValueError(f"{file.name} : {value} is not a known code for {key}.")
         metadatas[key] = mapping[value]
+        code += "_" + value
 
-    return metadatas
+    return code, metadatas
 
 
 def main(input_dir: Path):
@@ -138,24 +111,32 @@ def main(input_dir: Path):
     print(f"Processing directory: {input_dir} : \n")
 
     files_found = defaultdict(list)
+    metadatas_dict = {}
 
     # search all files in the directory recursivly
     for f in [f for f in input_dir.rglob("*") if f.is_file()]:
         for suffix in MANDATORY_SUFFIXS + OPTIONAL_SUFFIXS:
             if f.name.endswith(suffix):
-                code = f.name.removesuffix("_" + suffix)
-                files_found[code].append(suffix)
+                try:
+                    code, metadatas = parse_filename(f)
+                    files_found[code].append(suffix)
+                    metadatas_dict[code] = metadatas
+                except Exception as e:
+                    print(e)
+                    continue
 
     # print all informations
     print(f"Found {len(files_found)} submission(s) : ")
     for code, suffixs in files_found.items():
         print(f"\n - {code} : ")
+        for k, v in metadatas_dict[code].items():
+            print(f"\t{k} : {v}")
         for s in MANDATORY_SUFFIXS:
             status = f"{GREEN}True{RESET}" if s in suffixs else f"{RED}False{RESET}"
-            print(f"\t{s} : {status}")
+            print(f"\t- {s} : {status}")
         for s in OPTIONAL_SUFFIXS:
             status = f"{GREEN}True{RESET}" if s in suffixs else f"{ORANGE}False{RESET}"
-            print(f"\t{s} (Optional) : {status}")
+            print(f"\t- {s} (Optional) : {status}")
 
 
 if __name__ == "__main__":
