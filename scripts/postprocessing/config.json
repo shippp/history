@@ -1,4 +1,7 @@
 {
     "base_dir": "/mnt/summer/USERS/DEHECQA/history/output",
-    "custom_paths":{}
+    "custom_paths":{
+        "iceland_ref_dem_zoom": "/mnt/summer/USERS/DEHECQA/history/output/processing/aux_data/iceland_ref_dem_zoom_5m.tif",
+        "casagrande_ref_dem_zoom": "/mnt/summer/USERS/DEHECQA/history/output/processing/aux_data/casagrande_ref_dem_zoom_5m.tif"
+    }
 }

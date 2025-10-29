@@ -444,7 +444,7 @@ def compute_raster_stats_by_landcover(raster_file: str | Path, landcover_file: s
 
     # open the landcover reprojected on the first raster
     # here we use nearest resampling to preserve class
-    landcover = gu.Raster(landcover_file).reproject(raster, resampling="nearest")
+    landcover = gu.Raster(landcover_file).reproject(raster, resampling="nearest", silent=True)
 
     # Combine masks to keep only valid pixels in both arrays
     combined_mask = (~raster.data.mask) & (~landcover.data.mask)

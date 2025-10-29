@@ -28,6 +28,8 @@ import laspy
 import numpy as np
 import rasterio
 import xdem
+from pyproj import Transformer
+from shapely import box, transform
 from tqdm import tqdm
 
 from history.postprocessing.io import PathsManager, uncompress_all_submissions
@@ -468,61 +470,52 @@ def convert_pointcloud_to_dem(
     output_dem_path: str | Path,
     pdal_exec_path: str = "pdal",
     output_pipeline_path: str | Path | None = None,
-    default_pointcloud_crs: str = "EPSG:4326",
     dry_run: bool = False,
     verbose: bool = True,
 ) -> None:
     """
-    Convert a point cloud (LAS/LAZ) file to a raster Digital Elevation Model (DEM)
-    using a PDAL pipeline based on a reference DEM for spatial extent, resolution,
-    and coordinate reference system.
+    Converts a point cloud (LAS/LAZ) file into a DEM (Digital Elevation Model) using a PDAL pipeline.
 
-    This function automatically builds a PDAL pipeline that:
-      1. Reads the input point cloud.
-      2. Reprojects it to match the reference DEM CRS.
-      3. Crops it to the reference DEM bounds.
-      4. Interpolates the points into a raster (using IDW).
-      5. Writes the resulting DEM to GeoTIFF format.
+    This function builds and executes (or optionally just writes) a PDAL pipeline that:
+      1. Reads a point cloud file (.las or .laz).
+      2. Reprojects it into the same CRS as a reference DEM.
+      3. Interpolates the points into a raster grid using inverse distance weighting (IDW).
+      4. Ensures the output DEM matches the spatial extent and resolution of the reference DEM.
 
-    Parameters
-    ----------
-    pointcloud_path : str or Path
-        Path to the input point cloud file (.las or .laz).
-    reference_dem_path : str or Path
-        Path to the reference DEM used to extract bounds, CRS, and resolution.
-    output_dem_path : str or Path
-        Path to the output DEM file (.tif) to be created.
-    pdal_exec_path : str, optional
-        Path to the PDAL executable (default is "pdal").
-    output_pipeline_path : str or Path, optional
-        Path to save the generated PDAL pipeline JSON. If None, it will be created
-        in a "processing_pipelines" subdirectory next to the output DEM.
-    default_pointcloud_crs : str, optional
-        CRS to use if the input point cloud has no embedded CRS (default "EPSG:4326").
-    dry_run : bool, optional
-        If True, the function only writes the pipeline JSON without executing it.
-    verbose : bool, optional
-        If True, prints progress messages and execution time.
+    If the point cloud file has no defined CRS, a set of candidate CRSs (including the reference DEM CRS
+    and WGS84) are tested. The function compares the reprojected point cloud bounding box with the
+    buffered reference DEM bounding box to identify a plausible CRS.
 
-    Returns
-    -------
-    None
-        The function does not return anything. It writes a GeoTIFF DEM file and a
-        PDAL pipeline JSON on disk.
+    Args:
+        pointcloud_path (str | Path): Path to the input point cloud file (.las or .laz).
+        reference_dem_path (str | Path): Path to the reference DEM used to define output resolution,
+            extent, and CRS.
+        output_dem_path (str | Path): Path to the output DEM GeoTIFF file to be created.
+        pdal_exec_path (str, optional): Path to the PDAL executable. Defaults to "pdal".
+        output_pipeline_path (str | Path | None, optional): Path where the PDAL pipeline JSON file
+            will be saved. If None, it is created automatically next to the output DEM.
+        dry_run (bool, optional): If True, only writes the PDAL pipeline JSON without executing it.
+            Defaults to False.
+        verbose (bool, optional): If True, prints progress information to the console. Defaults to True.
 
-    Raises
-    ------
-    ValueError
-        If the reference DEM has no CRS defined.
-    subprocess.CalledProcessError
-        If PDAL execution fails.
+    Raises:
+        ValueError: If the reference DEM has no CRS defined.
+        ValueError: If no valid CRS can be identified for the point cloud.
 
-    Notes
-    -----
-    - The output DEM is generated using inverse distance weighting (IDW) interpolation.
-    - The interpolation resolution and extent are derived from the reference DEM.
-    - If performance is an issue for large point clouds, consider splitting the area
-      into tiles and processing them in parallel using PDAL and GDAL tools.
+    Returns:
+        None
+
+    Notes:
+        - The PDAL writer uses the `writers.gdal` stage with IDW interpolation to rasterize the point cloud.
+        - The output DEM inherits resolution and extent from the reference DEM to ensure pixel alignment.
+        - This function assumes that PDAL is correctly installed and available in the system PATH.
+
+    Example:
+        >>> convert_pointcloud_to_dem(
+        ...     pointcloud_path="input_points.las",
+        ...     reference_dem_path="ref_dem.tif",
+        ...     output_dem_path="output_dem.tif"
+        ... )
     """
     pointcloud_path = Path(pointcloud_path)
     output_dem_path = Path(output_dem_path)
@@ -533,20 +526,37 @@ def convert_pointcloud_to_dem(
     )
     output_pipeline_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # --- Get CRS from LAS/LAZ ---
-    with laspy.open(pointcloud_path) as fh:
-        header = fh.header
-        in_crs = header.parse_crs()
-    used_in_crs = str(in_crs) if in_crs else str(default_pointcloud_crs)
+    with laspy.open(pointcloud_path) as las_reader:
+        pc_crs = las_reader.header.parse_crs()
 
-    # --- Reference DEM info ---
-    reference_dem = gu.Raster(reference_dem_path)
-    if reference_dem.crs is None:
-        raise ValueError("Reference DEM has no CRS; cannot perform reprojection.")
+    ref_dem = gu.Raster(reference_dem_path)
+    ref_crs = ref_dem.crs
+    if ref_crs is None:
+        raise ValueError(f"The reference dem {reference_dem_path} as no CRS.")
+    ref_box = box(*ref_dem.bounds)
 
-    bounds = reference_dem.bounds
-    out_crs = str(reference_dem.crs)
-    resolution = reference_dem.res[0]
+    # if not crs found in pc_crs test with a list of CRS
+    if pc_crs is None:
+        test_crs_list = [ref_crs, "EPSG:4326"]
+        if verbose:
+            print(f"{pointcloud_path.name} : No CRS found, try CRSs : {test_crs_list}")
+
+        # open the real bounding box of the pointcloud file
+        las = laspy.read(pointcloud_path)
+        pc_box = box(float(las.x.min()), float(las.y.min()), float(las.x.max()), float(las.y.max()))
+
+        # buffered of 10% of area the ref_dem bounding box
+        ref_box_buffered = ref_box.buffer(np.sqrt(ref_box.area) * 0.1)
+
+        for tested_crs in test_crs_list:
+            transformer = Transformer.from_crs(tested_crs, ref_crs, always_xy=True)
+            pc_box_reprojected = transform(transformer.transform, pc_box)
+
+            if pc_box_reprojected.within(ref_box_buffered):
+                pc_crs = tested_crs
+
+    if pc_crs is None:
+        raise ValueError(f"{pointcloud_path.name} : Can't find a valid CRS")
 
     # --- PDAL pipeline definition ---
     pipeline_dict = {
@@ -554,19 +564,21 @@ def convert_pointcloud_to_dem(
             {"type": "readers.las", "filename": str(pointcloud_path)},
             {
                 "type": "filters.reprojection",
-                "in_srs": used_in_crs,
-                "out_srs": out_crs,
+                "in_srs": str(pc_crs),
+                "out_srs": str(ref_crs),
             },
-            {"type": "filters.crop", "bounds": f"([{bounds.left},{bounds.right}],[{bounds.bottom},{bounds.top}])"},
             {
                 "type": "writers.gdal",
                 "filename": str(output_dem_path),
-                "resolution": resolution,
+                "resolution": ref_dem.res[0],
                 "output_type": "idw",  # Interpolation like point2dem
                 "data_type": "float32",
                 "gdaldriver": "GTiff",
                 "nodata": -9999,
-                "window_size": 0,
+                "origin_x": ref_dem.bounds.left,
+                "origin_y": ref_dem.bounds.bottom,
+                "width": ref_dem.shape[1],
+                "height": ref_dem.shape[0],
             },
         ]
     }
