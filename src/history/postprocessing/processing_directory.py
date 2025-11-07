@@ -15,7 +15,9 @@ class ProcessingDirectory:
         else:
             self.base_dir = Path(base_dir)
 
-        self.sub_dirs = {
+    @property
+    def sub_dirs(self) -> dict[tuple[str, str], SubProcessingDirectory]:
+        return {
             (site, dataset): SubProcessingDirectory(self.base_dir / site / dataset)
             for site in FILE_CODE_MAPPING_V1["site"].values()
             for dataset in FILE_CODE_MAPPING_V1["dataset"].values()

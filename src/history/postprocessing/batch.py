@@ -69,8 +69,8 @@ from history.postprocessing.core import (
     get_raster_statistics_by_landcover,
     is_existing_std_dem,
 )
-from history.postprocessing.io import parse_filename
-from history.postprocessing.processing_directory import SubProcessingDirectory
+from history.postprocessing.io import FILE_CODE_MAPPING_V1, parse_filename
+from history.postprocessing.processing_directory import ProcessingDirectory, SubProcessingDirectory
 
 
 @flow(log_prints=True)
@@ -132,7 +132,7 @@ def uncompress_all_submissions(
 
 @flow(log_prints=True)
 def run_postprocessing(
-    input_dir: str | Path,
+    input_dir: str | Path | ProcessingDirectory,
     output_dir: str | Path,
     pdal_exec_path: str = "pdal",
     verbose: bool = True,
@@ -167,12 +167,12 @@ def run_postprocessing(
     # get the current task runner to propagate it on subflows
     current_task_runner = get_run_context().task_runner
 
-    base_dir_dict = extract_pointclouds(input_dir, output_dir)
+    proc_dir = ProcessingDirectory(input_dir)
 
-    for (site, dataset), base_dir in base_dir_dict.items():
+    for (site, dataset), sub_dir in proc_dir.sub_dirs.items():
         try:
             process_group.with_options(task_runner=current_task_runner, name=f"process_{site}_{dataset}")(
-                base_dir, pdal_exec_path, verbose, overwrite, dry_run
+                sub_dir.base_dir, pdal_exec_path, verbose, overwrite, dry_run
             )
         except Exception as e:
             print(f"Skip {site} - {dataset} : {e}")
@@ -747,38 +747,44 @@ def generate_postprocessing_plots(input_dir: str | Path, output_dir: str | Path)
             print(f"Error of plot generating : {e}")
 
 
-def extract_pointclouds(input_dir: str | Path, output_dir: str | Path) -> dict[tuple[str, str], Path]:
+def create_pointcloud_symlinks(input_dir: str | Path, output_dir: str | Path) -> None:
     """
     Finds and organizes point cloud files by creating symbolic links in a structured output directory.
 
     This function searches recursively for LAS and LAZ point cloud files in the input directory,
     parses their filenames to extract site and dataset metadata, and creates symbolic links for
-    each point cloud under the output directory, organized by site and dataset.
+    each point cloud under the output directory, organized by site and dataset. For each (site, dataset)
+    pair, the function prints the number of point clouds found.
 
     Args:
         input_dir (str | Path): Root directory containing point cloud files.
         output_dir (str | Path): Directory where symbolic links will be created, structured as
             <output_dir>/<site>/<dataset>/pointclouds/.
-
-    Returns:
-        dict[tuple[str, str], Path]: A dictionary mapping (site, dataset) pairs to their corresponding
-        output directories.
     """
-
     input_dir, output_dir = Path(input_dir), Path(output_dir)
     pointcloud_files = list(input_dir.rglob("*_dense_pointcloud.las")) + list(input_dir.rglob("*_dense_pointcloud.laz"))
-    result = {}
+
+    # Group pointclouds by (site, dataset)
+    grouped_pointclouds = {
+        (site, dataset): []
+        for site in FILE_CODE_MAPPING_V1["site"].values()
+        for dataset in FILE_CODE_MAPPING_V1["dataset"].values()
+    }
+
     for pc_path in pointcloud_files:
         _, metadata = parse_filename(str(pc_path))
         site, dataset = str(metadata["site"]), str(metadata["dataset"])
-        link = output_dir / site / dataset / "pointclouds" / pc_path.name
-        link.parent.mkdir(exist_ok=True, parents=True)
+        grouped_pointclouds[(site, dataset)].append(pc_path)
 
-        # Remove existing link if it already exists
-        if link.exists() or link.is_symlink():
-            link.unlink()
-        link.symlink_to(pc_path)
+    # Create symlinks and print summary
+    for (site, dataset), files in grouped_pointclouds.items():
+        for pc_path in files:
+            link = output_dir / site / dataset / "pointclouds" / pc_path.name
+            link.parent.mkdir(exist_ok=True, parents=True)
 
-        result[(site, dataset)] = output_dir / site / dataset
+            # Remove existing link if it already exists
+            if link.exists() or link.is_symlink():
+                link.unlink()
+            link.symlink_to(pc_path)
 
-    return result
+        print(f" {site} - {dataset} → {len(files)} pointcloud(s) linked.")
