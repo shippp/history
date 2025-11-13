@@ -21,8 +21,6 @@ Structure Overview
 ------------------
 Flows:
     - `uncompress_all_submissions`: Extracts all compressed submissions in parallel.
-    - `run_postprocessing`: Runs the entire processing chain for all available sites/datasets.
-    - `process_group`: Orchestrates all processing steps for a single site/dataset.
     - `process_pointclouds_to_dems`: Converts point clouds into DEMs using PDAL.
     - `process_coregister_dems`: Coregisters DEMs with reference surfaces.
     - `process_generate_ddems`: Generates DEM differences (before and after coregistration).
@@ -46,13 +44,12 @@ Intermediate outputs (DEMs, statistics, plots) are cached and reused unless `ove
 
 """
 
-import warnings
+import re
 from pathlib import Path
 
 import geoutils as gu
 import pandas as pd
-from prefect import flow
-from prefect.context import get_run_context
+from prefect import flow, get_run_logger
 
 import history.postprocessing.visualization as viz
 from history.postprocessing.core import (
@@ -69,8 +66,8 @@ from history.postprocessing.core import (
     get_raster_statistics_by_landcover,
     is_existing_std_dem,
 )
-from history.postprocessing.io import FILE_CODE_MAPPING_V1, parse_filename
-from history.postprocessing.processing_directory import ProcessingDirectory, SubProcessingDirectory
+from history.postprocessing.io import FILE_CODE_MAPPING, parse_filename
+from history.postprocessing.processing_directory import ProcessingDirectory
 
 
 @flow(log_prints=True)
@@ -131,257 +128,198 @@ def uncompress_all_submissions(
 
 
 @flow(log_prints=True)
-def run_postprocessing(
-    input_dir: str | Path | ProcessingDirectory,
-    output_dir: str | Path,
-    pdal_exec_path: str = "pdal",
-    verbose: bool = True,
-    overwrite: bool = False,
-    dry_run: bool = False,
-) -> None:
-    """
-    Executes the complete postprocessing pipeline for all site-dataset pairs in a directory.
-
-    This flow orchestrates the entire postprocessing sequence for multiple datasets by:
-        1. Extracting and organizing point clouds into structured processing directories.
-        2. Running the full DEM generation and analysis workflow (`process_group`) for each site/dataset.
-        3. Handling execution context and parallelization across subflows.
-
-    It acts as a global controller to automate DEM generation, coregistration, differential DEM creation,
-    and computation of related statistics and landcover analyses for all datasets found in the input directory.
-
-    Args:
-        input_dir (str | Path): Root directory containing the input point cloud files for all sites and datasets.
-        output_dir (str | Path): Destination directory where processed outputs will be stored.
-        pdal_exec_path (str, optional): Path to the PDAL executable. Defaults to "pdal".
-        verbose (bool, optional): Whether to display detailed processing logs. Defaults to True.
-        overwrite (bool, optional): Whether to overwrite existing outputs. Defaults to False.
-        dry_run (bool, optional): If True, simulates execution without performing actual computations. Defaults to False.
-
-    Returns:
-        None: Results are saved under `output_dir`, organized by site and dataset.
-    """
-
-    output_dir = Path(output_dir)
-
-    # get the current task runner to propagate it on subflows
-    current_task_runner = get_run_context().task_runner
-
-    proc_dir = ProcessingDirectory(input_dir)
-
-    for (site, dataset), sub_dir in proc_dir.sub_dirs.items():
-        try:
-            process_group.with_options(task_runner=current_task_runner, name=f"process_{site}_{dataset}")(
-                sub_dir.base_dir, pdal_exec_path, verbose, overwrite, dry_run
-            )
-        except Exception as e:
-            print(f"Skip {site} - {dataset} : {e}")
-            continue
-
-
-@flow(log_prints=True)
-def process_group(
-    base_dir: str | Path,
-    pdal_exec_path: str = "pdal",
-    verbose: bool = True,
-    overwrite: bool = False,
-    dry_run: bool = False,
-) -> None:
-    """
-    Executes the full DEM processing workflow for a given base directory.
-
-    This flow sequentially runs all major processing steps required to transform point clouds into
-    coregistered DEMs, compute elevation differences, derive quality metrics, and generate
-    landcover-based and standard deviation DEM statistics. It acts as a single entry point to
-    process an entire dataset group.
-
-    Workflow steps:
-        1. Convert dense point clouds to raw DEMs.
-        2. Coregister DEMs to a reference DEM.
-        3. Generate differential DEMs (before and after coregistration).
-        4. Compute raster statistics (e.g., NMAD, mean, voids).
-        5. Compute DEM statistics per landcover class.
-        6. Generate standard deviation DEMs for quality assessment.
-        7. Compute landcover statistics on standard deviation DEMs.
-
-    Args:
-        base_dir (str | Path): Root directory containing dataset-specific subdirectories.
-        pdal_exec_path (str, optional): Path to the PDAL executable. Defaults to "pdal".
-        verbose (bool, optional): Whether to print detailed logs during processing. Defaults to True.
-        overwrite (bool, optional): Whether to overwrite existing files. Defaults to False.
-        dry_run (bool, optional): If True, simulate the workflow without performing operations. Defaults to False.
-
-    Returns:
-        None: Results are written to the corresponding subdirectories under `base_dir`.
-    """
-
-    process_pointclouds_to_dems.fn(base_dir, pdal_exec_path, verbose, overwrite, dry_run)
-    process_coregister_dems.fn(base_dir, verbose, overwrite)
-    process_generate_ddems.fn(base_dir, verbose, overwrite)
-    process_compute_statistics.fn(base_dir)
-    process_compute_landcover_statistics.fn(base_dir)
-    process_generate_std_dems.fn(base_dir, overwrite)
-    process_compute_landcover_statistics_on_std_dems.fn(base_dir)
-
-
-@flow(log_prints=True)
 def process_pointclouds_to_dems(
-    base_dir: str | Path,
+    processing_directory: str | Path | ProcessingDirectory,
     pdal_exec_path: str = "pdal",
-    verbose: bool = True,
     overwrite: bool = False,
     dry_run: bool = False,
 ) -> None:
     """
-    Processes all point clouds in a base directory and converts them into DEMs using PDAL.
+    Converts all point clouds within a processing directory into DEMs for each site and dataset.
 
-    This flow automates the conversion of multiple point cloud files (LAS/LAZ) into Digital
-    Elevation Models (DEMs). Each point cloud is matched to a reference DEM for alignment and
-    interpolation. The resulting DEMs are organized within the processing directory structure.
-    The function supports asynchronous task submission and optional dry runs.
+    This flow iterates over all subdirectories of the given processing directory, retrieves
+    the reference DEM for each dataset, and converts each point cloud into a DEM using the
+    PDAL pipeline. Tasks are executed asynchronously and logged through Prefect for monitoring.
+
+    If a DEM already exists and `overwrite` is False, the conversion is skipped. Errors encountered
+    for individual files or datasets are logged without interrupting the overall execution.
 
     Args:
-        base_dir (str | Path): Base directory containing the point cloud data and reference DEM.
-        pdal_exec_path (str, optional): Path to the PDAL executable. Defaults to "pdal".
-        verbose (bool, optional): Whether to print detailed process information. Defaults to True.
-        overwrite (bool, optional): Whether to overwrite existing DEMs. Defaults to False.
-        dry_run (bool, optional): If True, generates PDAL pipelines without executing them. Defaults to False.
+        processing_directory (str | Path | ProcessingDirectory):
+            Root processing directory containing subdirectories for each site and dataset.
+        pdal_exec_path (str, optional):
+            Path to the PDAL executable. Defaults to "pdal".
+        overwrite (bool, optional):
+            If True, existing DEMs will be overwritten. Defaults to False.
+        dry_run (bool, optional):
+            If True, simulate execution without performing real computations. Defaults to False.
 
     Returns:
-        None: The function processes and generates DEMs for all detected point clouds.
+        None: All generated DEMs are written under each subdirectory of the processing directory.
     """
 
-    proc_dir = SubProcessingDirectory(base_dir)
+    logger = get_run_logger()
     future_dems = {}
+    processing_directory = ProcessingDirectory(processing_directory)
 
-    ref_dem_path = proc_dir.get_reference_dem()
-
-    for file in proc_dir.get_pointclouds():
+    for (site, dataset), sub_dir in processing_directory.sub_dirs.items():
+        # Get the reference DEM, skip group if an exception occurs
         try:
-            code, metadatas = parse_filename(str(file))
-
-            output_dem_path = proc_dir.raw_dems_dir / f"{code}-DEM.tif"
-
-            if output_dem_path.exists() and not overwrite:
-                if verbose:
-                    print(f"Skip point2dem for {code}: output already exists.")
-                continue
-
-            future_dems[code] = convert_pointcloud_to_dem.with_options(name=f"point2dem_{code}").submit(
-                file, ref_dem_path, output_dem_path, pdal_exec_path, None, overwrite, dry_run
-            )
-
+            ref_dem_path = sub_dir.get_reference_dem()
         except Exception as e:
-            print(f"Error {file.name} : {e}")
+            logger.warning(f"Skip group {site} - {dataset}: {e}")
             continue
 
-    for code, f in future_dems.items():
-        try:
-            f.result()
-        except Exception as e:
-            print(f"Point2dem error for {code}: {e}")
-
-
-@flow(log_prints=True)
-def process_coregister_dems(base_dir: str | Path, verbose: bool = True, overwrite: bool = False) -> None:
-    """
-    Coregisters all DEMs within a processing directory to a reference DEM.
-
-    This flow automates the coregistration of multiple raw DEMs to a common reference DEM
-    using both horizontal (Nuth-Kaab) and vertical shift corrections. It handles asynchronous
-    task submission for parallel processing and organizes the results in a dedicated
-    coregistered DEMs directory.
-
-    Args:
-        base_dir (str | Path): Base directory containing raw DEMs and the reference DEM.
-        verbose (bool, optional): Whether to print detailed progress information. Defaults to True.
-        overwrite (bool, optional): Whether to overwrite existing coregistered DEMs. Defaults to False.
-
-    Returns:
-        None: The function processes all DEMs in the directory and saves the coregistered outputs.
-    """
-
-    proc_dir = SubProcessingDirectory(base_dir)
-    future_dems = {}
-
-    ref_dem_path = proc_dir.get_reference_dem()
-    ref_dem_mask_path = proc_dir.get_reference_dem_mask()
-
-    for file in proc_dir.get_raw_dems():
-        try:
-            code, _ = parse_filename(str(file))
-
-            output_dem_path = proc_dir.coreg_dems_dir / f"{code}-DEM.tif"
-
-            if output_dem_path.exists() and not overwrite:
-                if verbose:
-                    print(f"Skip coregistration for {code}: output already exists.")
-                continue
-
-            future_dems[code] = coregister_dem.with_options(name=f"coreg_{code}").submit(
-                file, ref_dem_path, ref_dem_mask_path, output_dem_path, overwrite
-            )
-
-        except Exception as e:
-            print(f"Error {file.name} : {e}")
-            continue
-
-    for code, f in future_dems.items():
-        try:
-            f.result()
-        except Exception as e:
-            print(f"Coregistration error for {code}: {e}")
-
-
-@flow(log_prints=True)
-def process_generate_ddems(base_dir: str | Path, verbose: bool = True, overwrite: bool = False) -> None:
-    """
-    Generates differential DEMs (dDEMs) before and after coregistration for all DEMs in a processing directory.
-
-    This flow creates dDEMs by subtracting each DEM (raw and coregistered) from the reference DEM.
-    It processes all DEMs found in the pipeline directory structure, organizes the outputs in
-    dedicated folders for before and after coregistration, and supports asynchronous parallel execution.
-
-    Args:
-        base_dir (str | Path): Base directory containing raw and coregistered DEMs along with the reference DEM.
-        verbose (bool, optional): Whether to print detailed process information. Defaults to True.
-        overwrite (bool, optional): Whether to overwrite existing dDEM outputs. Defaults to False.
-
-    Returns:
-        None: The function generates and saves dDEMs for all matching DEMs in the directory.
-    """
-
-    proc_dir = SubProcessingDirectory(base_dir)
-    files_mapping = {
-        "ddem_before": (proc_dir.get_raw_dems(), proc_dir.ddems_before_dir),
-        "ddem_after": (proc_dir.get_coreg_dems(), proc_dir.ddems_after_dir),
-    }
-
-    future_dems = []
-
-    ref_dem_path = proc_dir.get_reference_dem()
-
-    for name, (files, output_dir) in files_mapping.items():
-        for f in files:
+        for file in sub_dir.get_pointclouds():
             try:
-                code, _ = parse_filename(f)
+                code, metadatas = parse_filename(file)
 
-                output_dem_path = output_dir / f"{code}-DDEM.tif"
+                output_dem_path = sub_dir.raw_dems_dir / f"{code}-DEM.tif"
 
                 if output_dem_path.exists() and not overwrite:
-                    if verbose:
-                        print(f"Skip {name} for {code}: output already exists.")
+                    logger.info(f"Skip point2dem for {code}: output already exists.")
                     continue
 
-                future_dems.append(
-                    generate_ddem.with_options(name=f"{name}_{code}").submit(
-                        f, ref_dem_path, output_dem_path, overwrite
-                    )
+                future_dems[code] = convert_pointcloud_to_dem.with_options(name=f"point2dem_{code}").submit(
+                    file,
+                    ref_dem_path,
+                    output_dem_path,
+                    pdal_exec_path,
+                    None,
+                    overwrite,
+                    dry_run,
                 )
 
             except Exception as e:
-                print(f"Error {f.name} : {e}")
+                logger.error(f"Error processing {file.name}: {e}")
                 continue
+
+    # Wait for all point2dem tasks to finish
+    for code, f in future_dems.items():
+        try:
+            f.result()
+        except Exception as e:
+            logger.error(f"Point2dem error for {code}: {e}")
+
+
+@flow(log_prints=True)
+def process_coregister_dems(processing_directory: str | Path | ProcessingDirectory, overwrite: bool = False) -> None:
+    """
+    Coregisters all DEMs within a processing directory to their corresponding reference DEMs.
+
+    This flow iterates over each site and dataset in the given processing directory, retrieves
+    the reference DEM and its mask, and aligns all raw DEMs to this reference using the
+    coregistration pipeline. Each coregistration task is submitted asynchronously and monitored
+    through Prefect logging.
+
+    If a coregistered DEM already exists and `overwrite` is False, it will be skipped.
+    Errors for individual DEMs or datasets are logged without interrupting the entire process.
+
+    Args:
+        processing_directory (str | Path | ProcessingDirectory):
+            Root processing directory containing subdirectories for each site and dataset.
+        overwrite (bool, optional):
+            If True, overwrite existing coregistered DEMs. Defaults to False.
+
+    Returns:
+        None: All generated coregistered DEMs are written under each subdirectory of the processing directory.
+    """
+
+    logger = get_run_logger()
+    processing_directory = ProcessingDirectory(processing_directory)
+    future_dems = {}
+
+    for (site, dataset), sub_dir in processing_directory.sub_dirs.items():
+        try:
+            ref_dem_path = sub_dir.get_reference_dem()
+            ref_dem_mask_path = sub_dir.get_reference_dem_mask()
+        except Exception as e:
+            logger.warning(f"Skip group {site} - {dataset}: {e}")
+            continue
+
+        for file in sub_dir.get_raw_dems():
+            try:
+                code, _ = parse_filename(file)
+
+                output_dem_path = sub_dir.coreg_dems_dir / f"{code}-DEM.tif"
+
+                if output_dem_path.exists() and not overwrite:
+                    logger.info(f"Skip point2dem for {code}: output already exists.")
+                    continue
+                future_dems[code] = coregister_dem.with_options(name=f"coreg_{code}").submit(
+                    file, ref_dem_path, ref_dem_mask_path, output_dem_path, overwrite
+                )
+
+            except Exception as e:
+                logger.error(f"Error processing {file.name}: {e}")
+                continue
+
+    for code, f in future_dems.items():
+        try:
+            f.result()
+        except Exception as e:
+            logger.error(f"Point2dem error for {code}: {e}")
+
+
+@flow(log_prints=True)
+def process_generate_ddems(processing_directory: str | Path | ProcessingDirectory, overwrite: bool = False) -> None:
+    """
+    Generates differential DEMs (DDEMs) before and after coregistration for each dataset in the processing directory.
+
+    This flow processes all site/dataset subdirectories, computing DDEMs by differencing each DEM
+    against its corresponding reference DEM. Two sets of DDEMs are created:
+        - `ddem_before`: using raw DEMs before coregistration.
+        - `ddem_after`: using coregistered DEMs after alignment.
+
+    Each DDEM generation task is executed asynchronously and logged through Prefect.
+    If a DDEM already exists and `overwrite` is False, it will be skipped. Errors encountered for
+    individual files or datasets are logged without interrupting the overall workflow.
+
+    Args:
+        processing_directory (str | Path | ProcessingDirectory):
+            Root processing directory containing subdirectories for each site and dataset.
+        overwrite (bool, optional):
+            If True, overwrite existing DDEMs. Defaults to False.
+
+    Returns:
+        None: All generated DDEMs are saved under the corresponding subdirectories.
+    """
+
+    logger = get_run_logger()
+    processing_directory = ProcessingDirectory(processing_directory)
+
+    future_dems = []
+    for (site, dataset), sub_dir in processing_directory.sub_dirs.items():
+        files_mapping = {
+            "ddem_before": (sub_dir.get_raw_dems(), sub_dir.ddems_before_dir),
+            "ddem_after": (sub_dir.get_coreg_dems(), sub_dir.ddems_after_dir),
+        }
+        try:
+            ref_dem_path = sub_dir.get_reference_dem()
+        except Exception as e:
+            logger.warning(f"Skip group {site} - {dataset}: {e}")
+            continue
+
+        for name, (files, output_dir) in files_mapping.items():
+            for f in files:
+                try:
+                    code, _ = parse_filename(f)
+
+                    output_dem_path = output_dir / f"{code}-DDEM.tif"
+
+                    if output_dem_path.exists() and not overwrite:
+                        logger.info(f"Skip {name} for {code}: output already exists.")
+                        continue
+
+                    future_dems.append(
+                        generate_ddem.with_options(name=f"{name}_{code}").submit(
+                            f, ref_dem_path, output_dem_path, overwrite
+                        )
+                    )
+
+                except Exception as e:
+                    print(f"Error {f.name} : {e}")
+                    continue
 
     for f in future_dems:
         try:
@@ -391,241 +329,318 @@ def process_generate_ddems(base_dir: str | Path, verbose: bool = True, overwrite
 
 
 @flow(log_prints=True)
-def process_compute_statistics(base_dir: str | Path, nmad_multiplier: float = 3.0) -> pd.DataFrame:
+def process_compute_statistics(
+    processing_directory: str | Path | ProcessingDirectory, nmad_multiplier: float = 3.0
+) -> None:
     """
-    Computes and aggregates raster and point cloud statistics for all datasets in a processing directory.
+    Computes statistics for all DEMs, DDEMs, and point clouds within each site and dataset in the processing directory.
 
-    This flow automates the computation of descriptive statistics for all DEMs (raw, coregistered,
-    and dDEMs) as well as metadata extraction for point clouds. It stores all results in a unified
-    DataFrame and applies an inlier filter based on the NMAD distribution to flag consistent datasets.
+    This flow performs the following operations for each subdirectory:
+        1. Computes raster statistics for raw DEMs, coregistered DEMs, and DDEMs, either retrieving
+           existing statistics or submitting asynchronous computation tasks.
+        2. Extracts point cloud metadata for all point cloud files.
+        3. Computes coregistration shifts for each coregistered DEM.
+        4. Adds an inliers filter based on NMAD of the DDEMs after coregistration, using the
+           specified `nmad_multiplier`.
+        5. Saves the resulting statistics DataFrame to a CSV file within the subdirectory.
+
+    All tasks are logged through Prefect. Errors in individual computations are captured without
+    interrupting the processing of other datasets.
 
     Args:
-        base_dir (str | Path): Base directory containing the processing structure (DEMs, point clouds, etc.).
-        nmad_multiplier (float, optional): Multiplier applied to the NMAD value for filtering inliers.
-            Defaults to 3.0.
+        processing_directory (str | Path | ProcessingDirectory):
+            Root directory containing site/dataset subdirectories with DEMs and point clouds.
+        nmad_multiplier (float, optional):
+            Multiplier applied to the NMAD to determine inlier thresholds. Defaults to 3.0.
 
     Returns:
-        pd.DataFrame: A DataFrame containing computed statistics, point cloud metadata,
-        and coregistration parameters for all datasets.
+        None: The computed statistics are saved as CSV files under each subdirectory's statistics file path.
     """
 
-    proc_dir = SubProcessingDirectory(base_dir)
-    df = proc_dir.get_filepaths_df()
+    logger = get_run_logger()
+    processing_directory = ProcessingDirectory(processing_directory)
 
-    dem_colnames = ["raw_dem_file", "coreg_dem_file", "ddem_before_file", "ddem_after_file"]
-    future_stats_dict = {}
+    for (site, dataset), sub_dir in processing_directory.sub_dirs.items():
+        df = sub_dir.get_filepaths_df()
 
-    # Compute raster stats
-    for colname in dem_colnames:
-        prefix = colname.replace("file", "")
-        for code, dem_file in df[colname].dropna().items():
-            stats = get_raster_statistics(dem_file)
-            if stats is None:
-                future_stats_dict[(code, prefix)] = compute_raster_statistics.with_options(
-                    name=f"compute_stats_{prefix}_{code}"
-                ).submit(dem_file)
-            else:
+        dem_colnames = ["raw_dem_file", "coreg_dem_file", "ddem_before_file", "ddem_after_file"]
+        future_stats_dict = {}
+
+        # Compute raster stats
+        for colname in dem_colnames:
+            prefix = colname.replace("file", "")
+            for code, dem_file in df[colname].dropna().items():
+                stats = get_raster_statistics(dem_file)
+                if stats is None:
+                    future_stats_dict[(code, prefix)] = compute_raster_statistics.with_options(
+                        name=f"compute_stats_{prefix}_{code}"
+                    ).submit(dem_file)
+                else:
+                    for key, value in stats.items():
+                        df.at[code, prefix + key] = value
+
+        # Retrieve results from futures
+        for (code, prefix), fut in future_stats_dict.items():
+            try:
+                stats = fut.result()
                 for key, value in stats.items():
                     df.at[code, prefix + key] = value
+            except Exception as e:
+                logger.warning(f"Could not compute stats for {prefix} {code}: {e}")
 
-    # Retrieve results from futures
-    for (code, prefix), fut in future_stats_dict.items():
-        try:
-            stats = fut.result()
-            for key, value in stats.items():
-                df.at[code, prefix + key] = value
-        except Exception as e:
-            print(f"[WARNING] Could not compute stats for {prefix} {code}: {e}")
+        # Pointcloud metadata
+        for code, pc_file in df["pointcloud_file"].dropna().items():
+            for key, value in get_pointcloud_metadatas(pc_file).items():
+                df.at[code, "pointcloud_" + key] = value
 
-    # Pointcloud metadata
-    for code, pc_file in df["pointcloud_file"].dropna().items():
-        for key, value in get_pointcloud_metadatas(pc_file).items():
-            df.at[code, "pointcloud_" + key] = value
+        # coregistration shifts
+        for code, dem_file in df["coreg_dem_file"].dropna().items():
+            for key, value in get_raster_coregistration_shifts(dem_file).items():
+                df.at[code, key] = value
 
-    # coregistration shifts
-    for code, dem_file in df["coreg_dem_file"].dropna().items():
-        for key, value in get_raster_coregistration_shifts(dem_file).items():
-            df.at[code, key] = value
+        # add a inliers filter based on ddems_after_coreg
+        if "ddem_after_nmad" in df.columns and df["ddem_after_nmad"].notna().any():
+            nmad = df["ddem_after_nmad"].dropna()
+            threshold = nmad.median() + nmad_multiplier * gu.stats.nmad(nmad)
+            df["inliers"] = df["ddem_after_nmad"] <= threshold
+        else:
+            df["inliers"] = pd.NA
+        nmad = df["ddem_after_nmad"]
 
-    # add a inliers filter based on ddems_after_coreg
-    if "ddem_after_nmad" in df.columns and df["ddem_after_nmad"].notna().any():
-        nmad = df["ddem_after_nmad"].dropna()
-        threshold = nmad.median() + nmad_multiplier * gu.stats.nmad(nmad)
-        df["inliers"] = df["ddem_after_nmad"] <= threshold
-    else:
-        df["inliers"] = pd.NA
-    nmad = df["ddem_after_nmad"]
+        df.to_csv(sub_dir.statistics_file, index=True)
 
-    df.to_csv(proc_dir.statistics_file, index=True)
-
-    print(f"✅ Statistics DataFrame saved to: {proc_dir.statistics_file}")
-    return df
+        logger.info(f"({site} - {dataset}) Statistics DataFrame saved to: {sub_dir.statistics_file}")
 
 
 @flow(log_prints=True)
-def process_compute_landcover_statistics(base_dir: str | Path) -> None:
+def process_compute_landcover_statistics(processing_directory: str | Path | ProcessingDirectory) -> None:
     """
-    Computes landcover-based statistics for all coregistered DEMs in a processing directory.
+    Computes landcover-based statistics for all coregistered DEMs within each site and dataset.
 
-    This flow calculates descriptive statistics (mean, median, quartiles, NMAD, etc.) for each
-    landcover class within every coregistered DEM, using a reference landcover raster. Results
-    are collected asynchronously, flattened into a unified table, and exported as a CSV file.
+    This flow processes each subdirectory in the given processing directory by:
+        1. Retrieving the reference landcover map for the dataset.
+        2. Computing raster statistics stratified by landcover for each coregistered DEM.
+           Existing statistics are reused if available; otherwise, asynchronous computation
+           tasks are submitted.
+        3. Aggregating and flattening the results into a single DataFrame per dataset.
+        4. Saving the resulting landcover statistics as a CSV file in the corresponding subdirectory.
+
+    All computation tasks are logged through Prefect. Errors for individual DEMs or datasets
+    are captured without halting the workflow.
 
     Args:
-        base_dir (str | Path): Base directory containing coregistered DEMs and the reference landcover raster.
+        processing_directory (str | Path | ProcessingDirectory):
+            Root directory containing site/dataset subdirectories with coregistered DEMs.
 
     Returns:
-        None: The function saves a CSV file containing landcover-based statistics for all DEMs.
+        None: The computed landcover statistics are saved under each subdirectory's
+        `landcover_statistics_file`.
     """
 
-    proc_dir = SubProcessingDirectory(base_dir)
-    landcover_path = proc_dir.get_reference_landcover()
-    stats_dict = {}
-    future_stats_dict = {}
-
-    for f in proc_dir.get_coreg_dems():
+    logger = get_run_logger()
+    processing_directory = ProcessingDirectory(processing_directory)
+    for (site, dataset), sub_dir in processing_directory.sub_dirs.items():
         try:
-            code, metadata = parse_filename(f)
-            key = (code, metadata["site"], metadata["dataset"])
-            stats = get_raster_statistics_by_landcover(f)
-            if stats is None:
-                future_stats_dict[key] = compute_raster_statistics_by_landcover.with_options(
-                    name=f"landcover_stat_{code}"
-                ).submit(f, landcover_path)
-            else:
-                stats_dict[key] = stats
+            landcover_path = sub_dir.get_reference_landcover()
         except Exception as e:
-            print(f"Error {f.name} : {e}")
+            logger.warning(f"Skip group {site} - {dataset}: {e}")
             continue
 
-    for key, future in future_stats_dict.items():
-        try:
-            stats_dict[key] = future.result()
-        except Exception as e:
-            print(f"[WARNING] Could not compute stats for {key[0]}: {e}")
+        stats_dict = {}
+        future_stats_dict = {}
 
-    # Step 3: flatten results
-    records = []
-    for (code, site, dataset), stats in stats_dict.items():
-        records += [{"code": code, "site": site, "dataset": dataset, **elem} for elem in stats]
+        for f in sub_dir.get_coreg_dems():
+            try:
+                code, metadata = parse_filename(f)
+                key = (code, metadata["site"], metadata["dataset"])
+                stats = get_raster_statistics_by_landcover(f)
+                if stats is None:
+                    future_stats_dict[key] = compute_raster_statistics_by_landcover.with_options(
+                        name=f"landcover_stat_{code}"
+                    ).submit(f, landcover_path)
+                else:
+                    stats_dict[key] = stats
+            except Exception as e:
+                logger.error(f"Error {f.name} : {e}")
+                continue
 
-    df = pd.DataFrame(records)
-    df.to_csv(proc_dir.landcover_statistics_file, index=False)
+        for key, future in future_stats_dict.items():
+            try:
+                stats_dict[key] = future.result()
+            except Exception as e:
+                logger.error(f"Could not compute stats for {key[0]}: {e}")
+
+        # Step 3: flatten results
+        records = []
+        for (code, site, dataset), stats in stats_dict.items():
+            records += [{"code": code, "site": site, "dataset": dataset, **elem} for elem in stats]
+
+        df = pd.DataFrame(records)
+        df.to_csv(sub_dir.landcover_statistics_file, index=False)
+        logger.info(
+            f"({site} - {dataset}) Landcover statistics DataFrame saved to: {sub_dir.landcover_statistics_file}"
+        )
 
 
 @flow(log_prints=True)
-def process_generate_std_dems(base_dir: str | Path, overwrite: bool = False) -> None:
+def process_generate_std_dems(processing_directory: str | Path | ProcessingDirectory, overwrite: bool = False) -> None:
     """
-    Generates standard deviation DEMs (std DEMs) from sets of raw and coregistered DEMs.
+    Generates standard deviation DEMs (std DEMs) for raw and coregistered DEMs within each site and dataset.
 
-    This flow computes pixel-wise standard deviation maps across multiple DEMs to assess
-    terrain consistency and variability. It produces separate std DEMs for all datasets and
-    for inlier-only subsets (based on NMAD filtering). The function supports conditional
-    overwriting and parallel task execution.
+    This flow processes each subdirectory in the given processing directory by:
+        1. Retrieving the statistics DataFrame to identify available DEM files.
+        2. Preparing two DEM sets for each type: all DEMs and inliers-only DEMs.
+        3. Computing standard deviation DEMs for each set, skipping sets with insufficient DEMs
+           or if the output already exists and `overwrite` is False.
+        4. Submitting asynchronous tasks to generate the std DEMs and logging progress via Prefect.
+
+    Warnings are issued for sets with insufficient DEMs, and errors in individual tasks
+    are captured without halting the overall workflow.
 
     Args:
-        base_dir (str | Path): Base directory containing processed DEMs and statistics.
-        overwrite (bool, optional): Whether to overwrite existing std DEMs. Defaults to False.
+        processing_directory (str | Path | ProcessingDirectory):
+            Root directory containing site/dataset subdirectories with DEMs and statistics.
+        overwrite (bool, optional):
+            If True, existing std DEMs will be overwritten. Defaults to False.
 
     Returns:
-        None: The function saves the generated std DEMs to the standard deviation directory.
+        None: All generated standard deviation DEMs are saved under each subdirectory's `std_dems_dir`.
     """
 
-    proc_dir = SubProcessingDirectory(base_dir)
-    df = proc_dir.get_statistics()
+    logger = get_run_logger()
+    processing_directory = ProcessingDirectory(processing_directory)
     futures = []
 
-    colnames = ["raw_dem_file", "coreg_dem_file"]
+    for (site, dataset), sub_dir in processing_directory.sub_dirs.items():
+        df = sub_dir.get_statistics()
 
-    for colname in colnames:
-        prefix = colname.replace("dem_file", "")
+        colnames = ["raw_dem_file", "coreg_dem_file"]
 
-        # Prepare the two DEM sets: all and inliers
-        dem_sets = {
-            "": df[colname].dropna().to_list(),
-            "_inliers": df.loc[df["inliers"], colname].dropna().to_list(),
-        }
+        for colname in colnames:
+            prefix = colname.replace("dem_file", "")
 
-        for suffix, dem_files in dem_sets.items():
-            std_dem_file = proc_dir.std_dems_dir / f"{prefix}std_dem{suffix}.tif"
+            # Prepare the two DEM sets: all and inliers
+            dem_sets = {
+                "all": df[colname].dropna().to_list(),
+                "inliers": df.loc[df["inliers"], colname].dropna().to_list(),
+            }
 
-            # Skip if there are not enough DEMs
-            if len(dem_files) <= 1:
-                warnings.warn(
-                    f"Only {len(dem_files)} DEM file(s) for '{colname}{suffix}'. "
-                    f"Skipping generation of {std_dem_file.name}.",
-                    UserWarning,
-                )
-                continue
+            for suffix, dem_files in dem_sets.items():
+                std_dem_file = sub_dir.std_dems_dir / f"{prefix}std_dem_{suffix}.tif"
 
-            # Skip if std_dem already exists and overwrite=False
-            if is_existing_std_dem(dem_files, std_dem_file) and not overwrite:
-                print(f"Skip {std_dem_file.name}: output already exists.")
-                continue
+                # Skip if there are not enough DEMs
+                if len(dem_files) <= 1:
+                    logger.warning(
+                        f"({site} - {dataset}) "
+                        f"Only {len(dem_files)} DEM file(s) for '{colname} {suffix}'. "
+                        f"Skipping generation of {std_dem_file.name}."
+                    )
+                    continue
 
-            # Otherwise, submit creation task
-            futures.append(create_std_dem.submit(dem_files, std_dem_file))
+                # Skip if std_dem already exists and overwrite=False
+                if is_existing_std_dem(dem_files, std_dem_file) and not overwrite:
+                    logger.info(f"({site} - {dataset}) Skip {std_dem_file.name}: output already exists.")
+                    continue
+
+                # Otherwise, submit creation task
+                futures.append(create_std_dem.submit(dem_files, std_dem_file))
 
     # Wait for all tasks to complete
     for f in futures:
         try:
             f.result()
         except Exception as e:
-            print(f"Error: {e}")
+            logger.error(f"Error: {e}")
 
 
 @flow(log_prints=True)
-def process_compute_landcover_statistics_on_std_dems(base_dir: str | Path) -> None:
-    proc_dir = SubProcessingDirectory(base_dir)
+def process_compute_landcover_statistics_on_std_dems(processing_directory: str | Path | ProcessingDirectory) -> None:
+    """
+    Computes landcover-based statistics for standard deviation DEMs (std DEMs) within each site and dataset.
 
-    landcover_path = proc_dir.get_reference_landcover()
+    This flow iterates over each subdirectory in the processing directory and performs the following steps:
+        1. Retrieves the reference landcover map for the dataset.
+        2. For both raw and coregistered DEM types, and for each subset ('all' and 'inliers'),
+           computes raster statistics stratified by landcover. Existing statistics are reused
+           when available; otherwise, asynchronous tasks are submitted.
+        3. Aggregates and flattens the results into a single DataFrame per dataset.
+        4. Saves the resulting std landcover statistics as a CSV file in the corresponding subdirectory.
 
-    future_stats_dict = {}
-    stats_dict = {}
-    for dem_type in ["coreg", "raw"]:
-        for inliers in [True, False]:
-            try:
-                dem_file = proc_dir.std_dems_dir / f"{dem_type}_std_dem.tif"
-                if inliers:
-                    dem_file = dem_file.with_stem(dem_file.stem + "_inliers")
-                key = (dem_type, inliers)
+    All tasks and errors are logged through Prefect. If no std DEMs are available or all computations
+    fail, a warning is issued without interrupting the workflow.
 
-                stats = get_raster_statistics_by_landcover(dem_file)
+    Args:
+        processing_directory (str | Path | ProcessingDirectory):
+            Root directory containing site/dataset subdirectories with standard deviation DEMs.
 
-                if stats is None:
-                    future_stats_dict[key] = compute_raster_statistics_by_landcover.with_options(
-                        name=f"landcover_stat_{dem_file.stem}"
-                    ).submit(dem_file, landcover_path)
-                else:
-                    stats_dict[key] = stats
+    Returns:
+        None: The computed std DEM landcover statistics are saved under each subdirectory's
+        `std_landcover_statistics_file`.
+    """
 
-            except Exception as e:
-                print(f"Error {dem_file.name} : {e}")
-                continue
+    logger = get_run_logger()
+    processing_directory = ProcessingDirectory(processing_directory)
 
-    for key, future in future_stats_dict.items():
+    for (site, dataset), sub_dir in processing_directory.sub_dirs.items():
         try:
-            stats_dict[key] = future.result()
+            landcover_path = sub_dir.get_reference_landcover()
         except Exception as e:
-            print(f"[WARNING] Could not compute stats for {key}: {e}")
+            logger.warning(f"Skip group {site} - {dataset}: {e}")
 
-    # Step 3: flatten results
-    records = []
-    for (dem_type, inliers), stats in stats_dict.items():
-        records += [
-            {"dem_type": dem_type, "inliers": inliers, "site": proc_dir.site, "dataset": proc_dir.dataset, **elem}
-            for elem in stats
-        ]
-    if records:
-        df = pd.DataFrame(records)
-        df.to_csv(proc_dir.std_landcover_statistics_file, index=False)
-        print(f"Saved std landcover stats to {proc_dir.std_landcover_statistics_file}.")
-    else:
-        print("No landcover statistics were computed — no std_dem files available or all computations failed.")
+        future_stats_dict = {}
+        stats_dict = {}
+
+        for dem_type in ["coreg", "raw"]:
+            for subset in ["all", "inliers"]:
+                try:
+                    dem_file = sub_dir.std_dems_dir / f"{dem_type}_std_dem_{subset}.tif"
+                    key = (dem_file, dem_type, subset)
+
+                    stats = get_raster_statistics_by_landcover(dem_file)
+
+                    if stats is None:
+                        future_stats_dict[key] = compute_raster_statistics_by_landcover.with_options(
+                            name=f"landcover_stat_{dem_file.stem}"
+                        ).submit(dem_file, landcover_path)
+                    else:
+                        stats_dict[key] = stats
+
+                except Exception as e:
+                    logger.error(f"({site} - {dataset}) Error {dem_file.name} : {e}")
+                    continue
+
+        for key, future in future_stats_dict.items():
+            try:
+                stats_dict[key] = future.result()
+            except Exception as e:
+                logger.error(f"({site} - {dataset}) Could not compute stats for {key}: {e}")
+
+        # Step 3: flatten results
+        records = []
+        for (dem_file, dem_type, subset), stats in stats_dict.items():
+            records += [
+                {
+                    "dem_file": dem_file,
+                    "dem_type": dem_type,
+                    "subset": subset,
+                    "site": sub_dir.site,
+                    "dataset": sub_dir.dataset,
+                    **elem,
+                }
+                for elem in stats
+            ]
+        if records:
+            df = pd.DataFrame(records)
+            df.to_csv(sub_dir.std_landcover_statistics_file, index=False)
+            logger.info(f"({site} - {dataset}) Saved std landcover stats to {sub_dir.std_landcover_statistics_file}.")
+        else:
+            logger.warning(
+                f"({site} - {dataset}) No landcover statistics were computed — no std_dem files available or all computations failed."
+            )
 
 
 @flow(log_prints=True)
-def generate_postprocessing_plots(input_dir: str | Path, output_dir: str | Path) -> None:
+def generate_postprocessing_plots(input_dir: str | Path | ProcessingDirectory, output_dir: str | Path) -> None:
     """
     Generates all post-processing plots and visual summaries for DEM and point cloud analysis results.
 
@@ -643,26 +658,17 @@ def generate_postprocessing_plots(input_dir: str | Path, output_dir: str | Path)
         in the specified output directory.
     """
 
-    input_dir = Path(input_dir)
+    input_dir = ProcessingDirectory(input_dir)
     output_dir = Path(output_dir)
 
-    proc_dirs = {
-        (site_dir.name, dataset_dir.name): SubProcessingDirectory(dataset_dir)
-        for site_dir in input_dir.iterdir()
-        for dataset_dir in site_dir.iterdir()
-    }
+    global_stats_df = input_dir.get_statistics()
+    global_lc_stats_df = input_dir.get_landcover_statistics()
+    global_std_lc_stats_df = input_dir.get_std_landcover_statistics()
 
-    stats_dict = {key: proc_dir.get_statistics() for key, proc_dir in proc_dirs.items()}
-    lc_stats_dict = {key: proc_dir.get_landcover_statistics() for key, proc_dir in proc_dirs.items()}
-    std_lc_stats_dict = {
-        key: proc_dir.get_std_landcover_statistics()
-        for key, proc_dir in proc_dirs.items()
-        if proc_dir.std_landcover_statistics_file.exists()
-    }
-    global_stats_df = pd.concat(stats_dict.values())
-    global_std_lc_stats_df = pd.concat(std_lc_stats_dict.values())
-    global_std_lc_stats_df = global_std_lc_stats_df[global_std_lc_stats_df["dem_type"] == "coreg"]
-    global_std_lc_stats_df_inliers = global_std_lc_stats_df[global_std_lc_stats_df["inliers"]]
+    # process the global_std_lc_stats_df
+    global_std_lc_stats_df = global_std_lc_stats_df.loc[global_std_lc_stats_df["dem_type"] == "coreg"]
+    global_std_lc_stats_df_all = global_std_lc_stats_df.loc[global_std_lc_stats_df["subset"] == "all"]
+    global_std_lc_stats_df_inliers = global_std_lc_stats_df.loc[global_std_lc_stats_df["subset"] == "inliers"]
 
     # ======================================================================================
     #                               GENERATE GLOBAL PLOTS
@@ -679,7 +685,7 @@ def generate_postprocessing_plots(input_dir: str | Path, output_dir: str | Path)
         global_stats_df, output_dir / "raw_dem_voids.png", "raw_dem_percent_nodata", "Raw DEM nodata percent"
     )
     viz.generate_landcover_grouped_boxplot_from_std_dems(
-        global_std_lc_stats_df, output_dir / "landcover_boxplot_from_std_dems.png"
+        global_std_lc_stats_df_all, output_dir / "landcover_boxplot_from_std_dems.png"
     )
     viz.generate_landcover_grouped_boxplot_from_std_dems(
         global_std_lc_stats_df_inliers, output_dir / "landcover_boxplot_from_std_dems_inliers.png"
@@ -688,7 +694,7 @@ def generate_postprocessing_plots(input_dir: str | Path, output_dir: str | Path)
     # ======================================================================================
     #                            GENERATE STATS PLOTS FOR EACH GROUP
     # ======================================================================================
-    for (site, dataset), stats in stats_dict.items():
+    for (site, dataset), stats in global_stats_df.groupby(["site", "dataset"]):
         sub_dir = output_dir / site / dataset
         viz.generate_plot_nmad_before_vs_after(stats, sub_dir / "nmad_before_vs_after_coregistration.png")
         viz.generate_plot_coreg_shifts(stats, sub_dir / "coregistration_shifts.png")
@@ -700,7 +706,9 @@ def generate_postprocessing_plots(input_dir: str | Path, output_dir: str | Path)
         viz.generate_plot_coreg_shifts(stats.loc[stats["inliers"]], sub_dir / "coregistration_shifts_inliers.png")
 
         # landcover plots
-        lc_stats = lc_stats_dict[(site, dataset)]
+        lc_stats = global_lc_stats_df.loc[
+            (global_lc_stats_df["site"] == site) & (global_lc_stats_df["dataset"] == dataset)
+        ]
         viz.generate_landcover_grouped_boxplot(lc_stats, sub_dir / "landcover_grouped_boxplot.png")
         viz.generate_landcover_boxplot(lc_stats, sub_dir / "landcover_boxplot.png")
         viz.generate_landcover_nmad(lc_stats, sub_dir / "landcover_nmad.png")
@@ -712,13 +720,29 @@ def generate_postprocessing_plots(input_dir: str | Path, output_dir: str | Path)
         viz.generate_landcover_nmad(lc_stats_inliers, sub_dir / "landcover_nmad_inliers.png")
 
     # ======================================================================================
+    #                            GENERATE FOR EACH GROUP STD DEMS
+    # ======================================================================================
+    futures = []
+    for (dem_file, site, dataset), stats in global_std_lc_stats_df.groupby(["dem_file", "site", "dataset"]):
+        output_path = output_dir / site / dataset / Path(dem_file).with_suffix(".png").stem
+        futures.append(viz.generate_std_dem_plots.submit(dem_file, output_path))
+
+    for fut in futures:
+        try:
+            fut.result()
+        except Exception as e:
+            print(f"Error of plot generating : {e}")
+
+    # ======================================================================================
     #                            GENERATE FOR EACH GROUP MOSAIC PLOTS
     # ======================================================================================
     futures = []
-    for (site, dataset), stats in stats_dict.items():
-        mosaic_dir = output_dir / site / dataset / "mosaic"
-        coreg_output_dir = output_dir / site / dataset / "coregistration_individual_plots"
+    for (site, dataset), stats in global_stats_df.groupby(["site", "dataset"]):
+        group_dir = output_dir / site / dataset
+        mosaic_dir = group_dir / "mosaic"
+        coreg_output_dir = group_dir / "coregistration_individual_plots"
 
+        # add the individual coregistration plots generation
         futures.append(viz.generate_coregistration_individual_plots.submit(stats, coreg_output_dir))
 
         for colname in ["raw_dem_file", "coreg_dem_file"]:
@@ -747,32 +771,107 @@ def generate_postprocessing_plots(input_dir: str | Path, output_dir: str | Path)
             print(f"Error of plot generating : {e}")
 
 
-def create_pointcloud_symlinks(input_dir: str | Path, output_dir: str | Path) -> None:
+@flow(log_prints=True)
+def analyze_submission_dir(input_dir: str | Path) -> pd.DataFrame:
     """
-    Finds and organizes point cloud files by creating symbolic links in a structured output directory.
+    Analyze a submission directory and extract metadata and file paths for required data products.
 
-    This function searches recursively for LAS and LAZ point cloud files in the input directory,
-    parses their filenames to extract site and dataset metadata, and creates symbolic links for
-    each point cloud under the output directory, organized by site and dataset. For each (site, dataset)
-    pair, the function prints the number of point clouds found.
+    This function iterates through subdirectories within the given `input_dir`, searching for
+    mandatory files based on predefined regex patterns (e.g., dense/sparse point clouds,
+    intrinsics/extrinsics CSVs). It parses filenames to extract metadata and organizes all
+    collected information into a structured pandas DataFrame.
+
+    For each subdirectory (representing a submission), it logs a warning if one or more
+    mandatory files are missing.
+
+    Parameters
+    ----------
+    input_dir : str or Path
+        Path to the root directory containing submission subfolders.
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame where each row corresponds to a dataset code extracted from filenames.
+        Columns include:
+        - `submission`: name of the submission folder
+        - Metadata fields extracted from filenames
+        - `dense_pointcloud_file`: path to the dense point cloud file
+        - `sparse_pointcloud_file`: path to the sparse point cloud file
+        - `extrinsics_file`: path to the extrinsics CSV file
+        - `intrinsics_file`: path to the intrinsics CSV file
+
+    """
+    logger = get_run_logger()
+    input_dir = Path(input_dir)
+
+    # Define regex patterns mapping to dataframe column names
+    mandatory_patterns = {
+        "dense_pointcloud_file": r"_dense_pointcloud\.(las|laz)$",
+        "sparse_pointcloud_file": r"_sparse_pointcloud\.(las|laz)$",
+        "extrinsics_file": r"_extrinsics\.csv$",
+        "intrinsics_file": r"_intrinsics\.csv$",
+    }
+    df = pd.DataFrame()
+    df.index.name = "code"
+    for subdir in input_dir.iterdir():
+        if not subdir.is_dir():
+            continue
+
+        all_files = list(subdir.rglob("*"))
+
+        for file in all_files:
+            try:
+                code, metadatas = parse_filename(file)
+            except ValueError:
+                continue
+
+            for column, pattern in mandatory_patterns.items():
+                if re.search(pattern, file.name, re.IGNORECASE):
+                    df.at[code, "submission"] = subdir.name
+                    for k, v in metadatas.items():
+                        df.at[code, k] = v
+                    df.at[code, column] = str(file)
+
+                    break  # Stop at first match
+
+    for code, row in df.iterrows():
+        missing_files = [c for c in mandatory_patterns if pd.isna(row[c])]
+        if missing_files:
+            logger.warning(f"{code} - Missing the following mandatory file(s) : {missing_files}")
+
+    return pd.DataFrame(df)
+
+
+def create_pointcloud_symlinks(pointcloud_files: list[str | Path], output_dir: str | Path) -> None:
+    """
+    Create organized symbolic links for a list of point cloud files.
+
+    This function takes a list of LAS/LAZ point cloud file paths, extracts metadata
+    (specifically the site and dataset) from their filenames using `parse_filename`,
+    and creates symbolic links for each file within a structured output directory.
+
+    The output directory is organized by site and dataset in the following hierarchy:
+        <output_dir>/<site>/<dataset>/pointclouds/<filename>
+
+    Existing links are overwritten if they already exist. After processing, the function
+    prints a summary of how many point clouds were linked for each (site, dataset) pair.
 
     Args:
-        input_dir (str | Path): Root directory containing point cloud files.
-        output_dir (str | Path): Directory where symbolic links will be created, structured as
-            <output_dir>/<site>/<dataset>/pointclouds/.
+        pointcloud_files (list[str | Path]): List of point cloud file paths to organize.
+        output_dir (str | Path): Root directory where symbolic links will be created.
     """
-    input_dir, output_dir = Path(input_dir), Path(output_dir)
-    pointcloud_files = list(input_dir.rglob("*_dense_pointcloud.las")) + list(input_dir.rglob("*_dense_pointcloud.laz"))
-
+    output_dir = Path(output_dir)
+    pointcloud_files: list[Path] = [Path(f) for f in pointcloud_files]
     # Group pointclouds by (site, dataset)
-    grouped_pointclouds = {
+    grouped_pointclouds: dict[tuple[str, str], list[Path]] = {
         (site, dataset): []
-        for site in FILE_CODE_MAPPING_V1["site"].values()
-        for dataset in FILE_CODE_MAPPING_V1["dataset"].values()
+        for site in FILE_CODE_MAPPING["site"].values()
+        for dataset in FILE_CODE_MAPPING["dataset"].values()
     }
 
     for pc_path in pointcloud_files:
-        _, metadata = parse_filename(str(pc_path))
+        _, metadata = parse_filename(pc_path)
         site, dataset = str(metadata["site"]), str(metadata["dataset"])
         grouped_pointclouds[(site, dataset)].append(pc_path)
 

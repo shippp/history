@@ -5,10 +5,18 @@ from pathlib import Path
 
 import pandas as pd
 
-from history.postprocessing.io import FILE_CODE_MAPPING_V1, parse_filename
+from history.postprocessing.io import FILE_CODE_MAPPING, parse_filename
 
 
 class ProcessingDirectory:
+    def __new__(cls, base_dir: str | Path | ProcessingDirectory):
+        # If an instance of the same class is passed, return it directly
+        if isinstance(base_dir, ProcessingDirectory):
+            return base_dir
+
+        # Otherwise, create a new instance normally
+        return super().__new__(cls)
+
     def __init__(self, base_dir: str | Path | ProcessingDirectory):
         if isinstance(base_dir, ProcessingDirectory):
             self.base_dir = base_dir.base_dir
@@ -19,8 +27,8 @@ class ProcessingDirectory:
     def sub_dirs(self) -> dict[tuple[str, str], SubProcessingDirectory]:
         return {
             (site, dataset): SubProcessingDirectory(self.base_dir / site / dataset)
-            for site in FILE_CODE_MAPPING_V1["site"].values()
-            for dataset in FILE_CODE_MAPPING_V1["dataset"].values()
+            for site in FILE_CODE_MAPPING["site"].values()
+            for dataset in FILE_CODE_MAPPING["dataset"].values()
             if (self.base_dir / site / dataset).exists()
         }
 
@@ -34,6 +42,32 @@ class ProcessingDirectory:
 
         return pd.concat(dfs, ignore_index=True)
 
+    def get_statistics(self) -> pd.DataFrame:
+        dfs = [sub_dir.get_statistics() for sub_dir in self.sub_dirs.values()]
+
+        if not dfs:
+            raise ValueError("No statistics founds")
+
+        return pd.concat(dfs)
+
+    def get_landcover_statistics(self) -> pd.DataFrame:
+        dfs = [sub_dir.get_landcover_statistics() for sub_dir in self.sub_dirs.values()]
+
+        if not dfs:
+            raise ValueError("No landcover statistics founds")
+        return pd.concat(dfs)
+
+    def get_std_landcover_statistics(self) -> pd.DataFrame:
+        dfs = [
+            sub_dir.get_std_landcover_statistics()
+            for sub_dir in self.sub_dirs.values()
+            if sub_dir.std_landcover_statistics_file.exists()
+        ]
+
+        if not dfs:
+            raise ValueError("No std landcover statistics founds.")
+        return pd.concat(dfs)
+
     def __str__(self):
         df = self.get_filepaths_df()
         if df.empty:
@@ -43,11 +77,19 @@ class ProcessingDirectory:
 
 
 class SubProcessingDirectory:
+    def __new__(cls, base_dir: str | Path | SubProcessingDirectory):
+        # If an instance of the same class is passed, return it directly
+        if isinstance(base_dir, SubProcessingDirectory):
+            return base_dir
+
+        # Otherwise, create a new instance normally
+        return super().__new__(cls)
+
     def __init__(self, base_dir: str | Path | SubProcessingDirectory):
         if isinstance(base_dir, SubProcessingDirectory):
-            self.base_dir = base_dir.base_dir
-        else:
-            self.base_dir = Path(base_dir)
+            return
+
+        self.base_dir = Path(base_dir)
         self.pointclouds_dir = self.base_dir / "pointclouds"
         self.raw_dems_dir = self.base_dir / "raw_dems"
         self.coreg_dems_dir = self.base_dir / "coreg_dems"

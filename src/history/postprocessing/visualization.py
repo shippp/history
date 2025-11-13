@@ -161,25 +161,26 @@ def generate_hillshades_mosaic(
         fig.suptitle(f"Hillshade {colname}")
 
 
-def generate_std_dem_plots(input_dir: str | Path) -> None:
+@task
+def generate_std_dem_plots(dem_path: str | Path, output_path: str | Path) -> None:
     # create the output directory if needed
-    input_dir = Path(input_dir)
+    dem_path = Path(dem_path)
 
-    for p in input_dir.glob("std-dem-*.tif"):
-        std_dem = _read_raster_with_max_size(p)
+    std_dem = _read_raster_with_max_size(dem_path)
 
-        # create the plot and save them at output_plot_file
-        vmax = np.nanquantile(std_dem, 0.9)
-        fig = Figure()
-        ax = fig.subplots(1, 1)
-        im = ax.imshow(std_dem, cmap="viridis", vmax=vmax)
-        ax.set_title(f"{p.stem}")
-        ax.axis("off")
+    # create the plot and save them at output_plot_file
+    vmax = np.nanquantile(std_dem, 0.9)
+    fig = Figure()
+    ax = fig.subplots(1, 1)
+    im = ax.imshow(std_dem, cmap="viridis", vmax=vmax)
+    ax.set_title(f"{dem_path.stem}")
+    ax.axis("off")
 
-        cbar = fig.colorbar(im, ax=ax)
-        cbar.set_label("Elevation standard deviation (m)")
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label("Elevation standard deviation (m)")
 
-        fig.savefig(p.with_suffix(".png"))
+    Path(output_path).parent.mkdir(exist_ok=True, parents=True)
+    fig.savefig(output_path)
 
 
 #######################################################################################################################

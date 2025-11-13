@@ -1,7 +1,6 @@
 import re
 import shutil
 import tarfile
-import warnings
 import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Union
@@ -9,14 +8,14 @@ from typing import Any, Dict, List, Union
 import pandas as pd
 import py7zr
 
-FILE_CODE_MAPPING_V1: dict[str, dict[str, Any]] = {
+FILE_CODE_MAPPING: dict[str, dict[str, str]] = {
     "site": {"CG": "casa_grande", "IL": "iceland"},
     "dataset": {"AI": "aerial", "MC": "kh9mc", "PC": "kh9pc"},
     "images": {"RA": "raw", "PP": "preprocessed"},
-    "camera_used": {"CY": True, "CN": False},
-    "gcp_used": {"GY": True, "GN": False},
-    "pointcloud_coregistration": {"PY": True, "PN": False},
-    "mtp_adjustment": {"MY": True, "MN": False},
+    "use_of_camera_calibration": {"CY": "Yes", "CN": "No"},
+    "use_of_gcps": {"GM": "Manual (provided)", "GA": "Automated approch", "GN": "No", "GY": "Yes"},
+    "pointcloud_coregistration": {"PY": "Yes", "PN": "No"},
+    "mtb_adjustment": {"MY": "Yes", "MN": "No"},
 }
 
 FILENAME_PATTERN = re.compile(
@@ -738,13 +737,13 @@ def parse_filename(file: str | Path) -> tuple[str, dict[str, Any]]:
         raise ValueError(f"The filename {Path(file).stem} don't respect the code convention")
 
     match_dict = match.groupdict()
-    metadatas = {}
+    metadatas = {"author": match_dict["author"]}
 
     for key, value in match_dict.items():
-        if key in FILE_CODE_MAPPING_V1:
-            metadatas[key] = FILE_CODE_MAPPING_V1[key].get(value)
-            if metadatas[key] is None:
-                warnings.warn(f"{value} is not a known code for {key}")
+        if key in FILE_CODE_MAPPING:
+            metadatas[key] = FILE_CODE_MAPPING[key].get(value)
+
+    metadatas["version"] = match_dict.get("version")
 
     code = "_".join([v for v in match_dict.values() if v is not None])
     return code, metadatas
