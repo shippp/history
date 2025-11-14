@@ -10,6 +10,7 @@ dependencies:
   - laspy
   - jupyterlab
   - ruff
+  - prefect
   - pip
   - pip :
     - usgsxplore

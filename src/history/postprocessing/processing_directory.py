@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from history.postprocessing.io import FILE_CODE_MAPPING, parse_filename
+from history.postprocessing.visualization import plot_files_recap
 
 
 class ProcessingDirectory:
@@ -40,7 +41,7 @@ class ProcessingDirectory:
             # Return an empty DataFrame with no error
             return pd.DataFrame()
 
-        return pd.concat(dfs, ignore_index=True)
+        return pd.concat(dfs)
 
     def get_statistics(self) -> pd.DataFrame:
         dfs = [sub_dir.get_statistics() for sub_dir in self.sub_dirs.values()]
@@ -67,6 +68,9 @@ class ProcessingDirectory:
         if not dfs:
             raise ValueError("No std landcover statistics founds.")
         return pd.concat(dfs)
+
+    def plot(self) -> None:
+        plot_files_recap(self.get_filepaths_df())
 
     def __str__(self):
         df = self.get_filepaths_df()
@@ -105,7 +109,7 @@ class SubProcessingDirectory:
         self.dataset = self.base_dir.name
 
     def get_pointclouds(self) -> list[Path]:
-        return list(self.pointclouds_dir.iterdir())
+        return list(self.pointclouds_dir.glob("*.las")) + list(self.pointclouds_dir.glob("*.laz"))
 
     def get_raw_dems(self) -> list[Path]:
         return list(self.raw_dems_dir.glob("*-DEM.tif"))

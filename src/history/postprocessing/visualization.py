@@ -418,53 +418,50 @@ def generate_landcover_grouped_boxplot_from_std_dems(std_landcover_df: pd.DataFr
 #######################################################################################################################
 
 
-# def plot_files_recap(paths_manager: PathsManager, output_path: str | None = None, show: bool = True) -> None:
-#     data = []
-#     for code, row in paths_manager.get_filepaths_df().iterrows():
-#         row_dict = {
-#             "code": code,
-#             "Sparse pointcloud": not pd.isna(row["sparse_pointcloud_file"]),
-#             "Dense pointcloud": not pd.isna(row["dense_pointcloud_file"]),
-#             "Extrinsics": not pd.isna(row["extrinsics_camera_file"]),
-#             "Intrinsics": not pd.isna(row["intrinsics_camera_file"]),
-#             "Raw DEM": not pd.isna(row["raw_dem_file"]),
-#             "Coregistered DEM": not pd.isna(row["coreg_dem_file"]),
-#         }
-#         data.append(row_dict)
+def plot_files_recap(filepaths_df: pd.DataFrame, output_path: str | None = None, show: bool = True) -> None:
+    data = [
+        {
+            "code": code,
+            "Pointclouds": not pd.isna(row["pointcloud_file"]),
+            "Raw DEM": not pd.isna(row["raw_dem_file"]),
+            "Coregistered DEM": not pd.isna(row["coreg_dem_file"]),
+        }
+        for code, row in filepaths_df.iterrows()
+    ]
 
-#     new_df = pd.DataFrame(data).set_index("code")
+    new_df = pd.DataFrame(data).set_index("code")
 
-#     # Convertir en matrice 0/1
-#     matrix = new_df.astype(int).values
+    # Convertir en matrice 0/1
+    matrix = new_df.astype(int).values
 
-#     fig, ax = plt.subplots(figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(12, 6))
 
-#     # Utiliser pcolormesh pour avoir un meilleur contrôle des bordures
-#     cmap = plt.get_cmap("binary")  # blanc = 0, noir = 1
-#     ax.pcolormesh(matrix, cmap=cmap, edgecolors="grey", linewidth=1, shading="auto")
+    # Utiliser pcolormesh pour avoir un meilleur contrôle des bordures
+    cmap = plt.get_cmap("binary")  # blanc = 0, noir = 1
+    ax.pcolormesh(matrix, cmap=cmap, edgecolors="grey", linewidth=1, shading="auto")
 
-#     # Ajouter ticks
-#     ax.set_xticks(np.arange(matrix.shape[1]) + 0.5)
-#     ax.set_yticks(np.arange(matrix.shape[0]) + 0.5)
-#     ax.set_xticklabels(new_df.columns, rotation=30, ha="right", fontsize=9)
-#     ax.set_yticklabels(new_df.index, fontsize=9)
+    # Ajouter ticks
+    ax.set_xticks(np.arange(matrix.shape[1]) + 0.5)
+    ax.set_yticks(np.arange(matrix.shape[0]) + 0.5)
+    ax.set_xticklabels(new_df.columns, rotation=30, ha="right", fontsize=9)
+    ax.set_yticklabels(new_df.index, fontsize=9)
 
-#     # Grille (par-dessus pour rester visible même sur les cases noires)
-#     ax.set_xticks(np.arange(matrix.shape[1]), minor=True)
-#     ax.set_yticks(np.arange(matrix.shape[0]), minor=True)
-#     ax.grid(which="minor", color="grey", linestyle="-", linewidth=0.8, alpha=0.7)
-#     ax.tick_params(which="minor", bottom=False, left=False)
+    # Grille (par-dessus pour rester visible même sur les cases noires)
+    ax.set_xticks(np.arange(matrix.shape[1]), minor=True)
+    ax.set_yticks(np.arange(matrix.shape[0]), minor=True)
+    ax.grid(which="minor", color="grey", linestyle="-", linewidth=0.8, alpha=0.7)
+    ax.tick_params(which="minor", bottom=False, left=False)
 
-#     # Amélioration visuelle
-#     ax.set_title("Files Recap", fontsize=14, weight="bold")
-#     fig.tight_layout()
-#     if output_path:
-#         plt.savefig(output_path)
+    # Amélioration visuelle
+    ax.set_title("Files Recap", fontsize=14, weight="bold")
+    fig.tight_layout()
+    if output_path:
+        plt.savefig(output_path)
 
-#     if show:
-#         plt.show()
-#     else:
-#         plt.close()
+    if show:
+        plt.show()
+    else:
+        plt.close()
 
 
 @task
