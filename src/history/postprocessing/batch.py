@@ -415,22 +415,22 @@ def process_compute_statistics(
 @flow(log_prints=True)
 def process_compute_landcover_statistics(processing_directory: str | Path | ProcessingDirectory) -> None:
     """
-    Computes landcover-based statistics for all coregistered DEMs within each site and dataset.
+    Computes landcover-based statistics for all coregistered dDEMs within each site and dataset.
 
     This flow processes each subdirectory in the given processing directory by:
-        1. Retrieving the reference landcover map for the dataset.
-        2. Computing raster statistics stratified by landcover for each coregistered DEM.
+        1. Retrieving the reference landcover map associated with the dataset.
+        2. Computing raster statistics stratified by landcover for each coregistered dDEM.
            Existing statistics are reused if available; otherwise, asynchronous computation
-           tasks are submitted.
-        3. Aggregating and flattening the results into a single DataFrame per dataset.
+           tasks are submitted through Prefect.
+        3. Aggregating and flattening all per-dDEM results into a single DataFrame per dataset.
         4. Saving the resulting landcover statistics as a CSV file in the corresponding subdirectory.
 
-    All computation tasks are logged through Prefect. Errors for individual DEMs or datasets
-    are captured without halting the workflow.
+    All computation tasks are logged through Prefect. Errors for individual dDEMs or datasets
+    are handled gracefully and do not interrupt the global workflow.
 
     Args:
         processing_directory (str | Path | ProcessingDirectory):
-            Root directory containing site/dataset subdirectories with coregistered DEMs.
+            Root directory containing site/dataset subdirectories with coregistered dDEMs.
 
     Returns:
         None: The computed landcover statistics are saved under each subdirectory's
@@ -449,7 +449,7 @@ def process_compute_landcover_statistics(processing_directory: str | Path | Proc
         stats_dict = {}
         future_stats_dict = {}
 
-        for f in sub_dir.get_coreg_dems():
+        for f in sub_dir.get_ddems_after():
             try:
                 code, metadata = parse_filename(f)
                 key = (code, metadata["site"], metadata["dataset"])
@@ -674,12 +674,17 @@ def generate_postprocessing_plots(input_dir: str | Path | ProcessingDirectory, o
     #                               GENERATE GLOBAL PLOTS
     # ======================================================================================
 
-    viz.barplot_var(global_stats_df, output_dir / "pointcloud_point_count.png", "pointcloud_point_count", "Point count")
+    viz.barplot_var(
+        global_stats_df,
+        output_dir / "pointcloud_point_count.png",
+        "pointcloud_point_count",
+        "Point count in dense point-cloud file",
+    )
     viz.barplot_var(
         global_stats_df,
         output_dir / "nmad_after_coregistration.png",
         "ddem_after_nmad",
-        "NMAD of dDEM after coregistration",
+        "NMAD of Altitude differences with ref DEM after coregistration by code",
     )
     viz.barplot_var(
         global_stats_df, output_dir / "raw_dem_voids.png", "raw_dem_percent_nodata", "Raw DEM nodata percent"
@@ -696,28 +701,59 @@ def generate_postprocessing_plots(input_dir: str | Path | ProcessingDirectory, o
     # ======================================================================================
     for (site, dataset), stats in global_stats_df.groupby(["site", "dataset"]):
         sub_dir = output_dir / site / dataset
-        viz.generate_plot_nmad_before_vs_after(stats, sub_dir / "nmad_before_vs_after_coregistration.png")
-        viz.generate_plot_coreg_shifts(stats, sub_dir / "coregistration_shifts.png")
+        title_prefix = f"({site} - {dataset})"
+        viz.generate_plot_nmad_before_vs_after(
+            stats,
+            sub_dir / "nmad_before_vs_after_coregistration.png",
+            title=f"{title_prefix} NMAD of DEM differences before vs after coregistration",
+        )
+        viz.generate_plot_coreg_shifts(
+            stats,
+            sub_dir / "coregistration_shifts.png",
+            title=f"{title_prefix} Coregistration shifts",
+        )
 
         # generate also with inliers only
         viz.generate_plot_nmad_before_vs_after(
-            stats.loc[stats["inliers"]], sub_dir / "nmad_before_vs_after_coregistration_inliers.png"
+            stats.loc[stats["inliers"]],
+            sub_dir / "nmad_before_vs_after_coregistration_inliers.png",
+            title=f"{title_prefix} NMAD of DEM differences before vs after coregistration (inliers only)",
         )
-        viz.generate_plot_coreg_shifts(stats.loc[stats["inliers"]], sub_dir / "coregistration_shifts_inliers.png")
+        viz.generate_plot_coreg_shifts(
+            stats.loc[stats["inliers"]],
+            sub_dir / "coregistration_shifts_inliers.png",
+            title=f"{title_prefix} Coregistration shifts (inliers only)",
+        )
 
         # landcover plots
         lc_stats = global_lc_stats_df.loc[
             (global_lc_stats_df["site"] == site) & (global_lc_stats_df["dataset"] == dataset)
         ]
-        viz.generate_landcover_grouped_boxplot(lc_stats, sub_dir / "landcover_grouped_boxplot.png")
-        viz.generate_landcover_boxplot(lc_stats, sub_dir / "landcover_boxplot.png")
-        viz.generate_landcover_nmad(lc_stats, sub_dir / "landcover_nmad.png")
+        viz.generate_landcover_grouped_boxplot(
+            lc_stats,
+            sub_dir / "landcover_grouped_boxplot.png",
+            title=f"{title_prefix} Boxplot of Altitude difference with ref DEM by code/landcover",
+        )
+        # viz.generate_landcover_boxplot(lc_stats, sub_dir / "landcover_boxplot.png")
+        viz.generate_landcover_nmad(
+            lc_stats,
+            sub_dir / "landcover_nmad.png",
+            title=f"{title_prefix} NMAD of Altitude difference with ref DEM by code/landcover",
+        )
 
         # landcove plots inliers
         lc_stats_inliers = lc_stats[lc_stats["code"].isin(stats.index[stats["inliers"]])]
-        viz.generate_landcover_grouped_boxplot(lc_stats_inliers, sub_dir / "landcover_grouped_boxplot_inliers.png")
-        viz.generate_landcover_boxplot(lc_stats_inliers, sub_dir / "landcover_boxplot_inliers.png")
-        viz.generate_landcover_nmad(lc_stats_inliers, sub_dir / "landcover_nmad_inliers.png")
+        viz.generate_landcover_grouped_boxplot(
+            lc_stats_inliers,
+            sub_dir / "landcover_grouped_boxplot_inliers.png",
+            title=f"{title_prefix} Boxplot of Altitude difference with ref DEM by code/landcover (inliers only)",
+        )
+        # viz.generate_landcover_boxplot(lc_stats_inliers, sub_dir / "landcover_boxplot_inliers.png")
+        viz.generate_landcover_nmad(
+            lc_stats_inliers,
+            sub_dir / "landcover_nmad_inliers.png",
+            title=f"{title_prefix} NMAD of Altitude difference with ref DEM by code/landcover (inliers only)",
+        )
 
     # ======================================================================================
     #                            GENERATE FOR EACH GROUP STD DEMS
@@ -741,26 +777,42 @@ def generate_postprocessing_plots(input_dir: str | Path | ProcessingDirectory, o
         group_dir = output_dir / site / dataset
         mosaic_dir = group_dir / "mosaic"
         coreg_output_dir = group_dir / "coregistration_individual_plots"
+        title_prefix = f"({site} - {dataset})"
 
         # add the individual coregistration plots generation
         futures.append(viz.generate_coregistration_individual_plots.submit(stats, coreg_output_dir))
 
         for colname in ["raw_dem_file", "coreg_dem_file"]:
-            futures.append(viz.generate_dems_mosaic.submit(stats, mosaic_dir / f"mosaic_{colname[:-5]}.png", colname))
+            futures.append(
+                viz.generate_dems_mosaic.submit(
+                    stats, mosaic_dir / f"mosaic_{colname[:-5]}.png", colname, title=f"{title_prefix} Mosaic {colname}"
+                )
+            )
 
         for colname in ["ddem_before_file", "ddem_after_file"]:
             futures.append(
-                viz.generate_ddems_mosaic.submit(stats, mosaic_dir / f"mosaic_{colname[:-5]}_coreg.png", colname)
+                viz.generate_ddems_mosaic.submit(
+                    stats,
+                    mosaic_dir / f"mosaic_{colname[:-5]}_coreg.png",
+                    colname,
+                    title=f"{title_prefix} Mosaic {colname}",
+                )
             )
 
             futures.append(
                 viz.generate_slopes_mosaic.submit(
-                    stats, mosaic_dir / f"mosaic_slopes_{colname[:-5]}_coreg.png", colname
+                    stats,
+                    mosaic_dir / f"mosaic_slopes_{colname[:-5]}_coreg.png",
+                    colname,
+                    title=f"{title_prefix} Mosaic slopes {colname}",
                 )
             )
             futures.append(
                 viz.generate_hillshades_mosaic.submit(
-                    stats, mosaic_dir / f"mosaic_hillshades_{colname[:-5]}_coreg.png", colname
+                    stats,
+                    mosaic_dir / f"mosaic_hillshades_{colname[:-5]}_coreg.png",
+                    colname,
+                    title=f"{title_prefix} Mosaic hillshades {colname}",
                 )
             )
 

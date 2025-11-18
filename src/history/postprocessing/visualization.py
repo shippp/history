@@ -43,7 +43,9 @@ def _generate_mosaic_figure_and_axes(
 
 
 @task
-def generate_dems_mosaic(df: pd.DataFrame, output_path: str | Path, colname: str = "raw_dem_file") -> None:
+def generate_dems_mosaic(
+    df: pd.DataFrame, output_path: str | Path, colname: str = "raw_dem_file", title: str = ""
+) -> None:
     df_dropped = df.dropna(subset=colname)
 
     vmin = df_dropped[colname.replace("file", "min")].median()
@@ -61,12 +63,17 @@ def generate_dems_mosaic(df: pd.DataFrame, output_path: str | Path, colname: str
             orientation="vertical",
         )
         cbar.set_label("Altitude (m)")
-        fig.suptitle(f"Mosaic {colname}", fontsize=16)
+        fig.suptitle(title, fontsize=16)
 
 
 @task
 def generate_ddems_mosaic(
-    df: pd.DataFrame, output_path: str | Path, colname: str = "ddem_before_file", vmin: float = -10, vmax: float = 10
+    df: pd.DataFrame,
+    output_path: str | Path,
+    colname: str = "ddem_before_file",
+    vmin: float = -10,
+    vmax: float = 10,
+    title: str = "",
 ) -> None:
     df_dropped = df.dropna(subset=colname)
 
@@ -86,7 +93,7 @@ def generate_ddems_mosaic(
             orientation="vertical",
         )
         cbar.set_label("Altitude difference (m)")
-        fig.suptitle(f"Mosaic {colname}", fontsize=16)
+        fig.suptitle(title, fontsize=16)
 
 
 @task
@@ -96,6 +103,7 @@ def generate_slopes_mosaic(
     colname: str = "ddem_before_file",
     vmin: float = 0,
     vmax: float = 15,
+    title: str = "",
 ) -> None:
     df_dropped = df.dropna(subset=colname)
 
@@ -124,7 +132,7 @@ def generate_slopes_mosaic(
         )
         cbar.set_label("Slope (Degree)")
 
-        fig.suptitle(f"Slope {colname}", fontsize=16)
+        fig.suptitle(title, fontsize=16)
 
 
 @task
@@ -134,6 +142,7 @@ def generate_hillshades_mosaic(
     colname: str = "ddem_before_file",
     vmin: float = 0,
     vmax: float = 1,
+    title: str = "",
 ) -> None:
     df_dropped = df.dropna(subset=colname)
 
@@ -158,7 +167,7 @@ def generate_hillshades_mosaic(
             orientation="vertical",
         )
         cbar.set_label("Hillshade")
-        fig.suptitle(f"Hillshade {colname}")
+        fig.suptitle(title, fontsize=16)
 
 
 @task
@@ -233,7 +242,7 @@ def barplot_var(global_df: pd.DataFrame, output_path: str | Path, colname: str, 
     fig.savefig(output_path)
 
 
-def generate_plot_coreg_shifts(df: pd.DataFrame, output_path: str | Path) -> None:
+def generate_plot_coreg_shifts(df: pd.DataFrame, output_path: str | Path, title: str = "") -> None:
     colnames = ["coreg_shift_x", "coreg_shift_y", "coreg_shift_z"]
     dropped_df = (
         df.dropna(subset=colnames)
@@ -248,22 +257,25 @@ def generate_plot_coreg_shifts(df: pd.DataFrame, output_path: str | Path) -> Non
 
     for container in ax.containers:
         ax.bar_label(container, fmt="%.2f", label_type="edge", padding=3)
+
+    fig.suptitle(title, fontsize=16)
     fig.tight_layout()
 
     Path(output_path).parent.mkdir(exist_ok=True, parents=True)
     fig.savefig(output_path)
 
 
-def generate_plot_nmad_before_vs_after(df: pd.DataFrame, output_path: str | Path) -> None:
+def generate_plot_nmad_before_vs_after(df: pd.DataFrame, output_path: str | Path, title: str = "") -> None:
     colnames = ["ddem_before_nmad", "ddem_after_nmad"]
     dropped_df = df.dropna(subset=colnames).sort_values(by="ddem_after_nmad")
 
-    fig = Figure(figsize=(15, 5))
+    fig = Figure(figsize=(12, 7))
     ax = fig.add_subplot(1, 1, 1)
     dropped_df[colnames].plot(kind="bar", ax=ax)
 
     for container in ax.containers:
         ax.bar_label(container, fmt="%.2f", label_type="edge", padding=3)
+    fig.suptitle(title, fontsize=16)
     fig.tight_layout()
 
     Path(output_path).parent.mkdir(exist_ok=True, parents=True)
@@ -275,7 +287,7 @@ def generate_plot_nmad_before_vs_after(df: pd.DataFrame, output_path: str | Path
 #######################################################################################################################
 
 
-def generate_landcover_grouped_boxplot(landcover_df: pd.DataFrame, output_path: str | Path) -> None:
+def generate_landcover_grouped_boxplot(landcover_df: pd.DataFrame, output_path: str | Path, title: str = "") -> None:
     # order group with the mean of nmad
     code_order = landcover_df.groupby("code")["nmad"].mean().sort_values().index
     ordered_df = landcover_df.set_index("code").loc[code_order].reset_index()
@@ -290,7 +302,7 @@ def generate_landcover_grouped_boxplot(landcover_df: pd.DataFrame, output_path: 
         "landcover_label",
         "code",
         y_label="Altitude difference (m)",
-        title="Grouped boxplot by landcover and code",
+        title=title,
     )
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -325,7 +337,7 @@ def generate_landcover_boxplot(landcover_df: pd.DataFrame, output_path: str | Pa
     fig.savefig(output_path)
 
 
-def generate_landcover_nmad(landcover_df: pd.DataFrame, output_path: str | Path) -> None:
+def generate_landcover_nmad(landcover_df: pd.DataFrame, output_path: str | Path, title: str = "") -> None:
     df_plot = landcover_df.pivot_table(
         index="landcover_label",  # x axe
         columns="code",  # one color per bar
@@ -338,7 +350,7 @@ def generate_landcover_nmad(landcover_df: pd.DataFrame, output_path: str | Path)
     # Replace index labels with label + mean percent
     df_plot.index = [f"{label} ({percent_means[label]:.2f}%)" for label in df_plot.index]
 
-    fig = Figure(figsize=(10, 6))
+    fig = Figure(figsize=(12, 7))
     ax = fig.subplots(1, 1)
 
     # plot the grouped barplot
@@ -346,11 +358,11 @@ def generate_landcover_nmad(landcover_df: pd.DataFrame, output_path: str | Path)
 
     # Style and labels
     ax.set_ylabel("NMAD")
-    ax.set_title("NMAD by landcover class and raster code")
     ax.set_xticklabels(df_plot.index, rotation=45, ha="right")
     ax.legend(title="Code", bbox_to_anchor=(1.05, 1), loc="upper left")
     ax.grid(axis="y", linestyle="--", alpha=0.5)
 
+    fig.suptitle(title, fontsize=16)
     fig.tight_layout()
 
     # Save

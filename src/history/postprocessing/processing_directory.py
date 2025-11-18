@@ -41,7 +41,7 @@ class ProcessingDirectory:
             # Return an empty DataFrame with no error
             return pd.DataFrame()
 
-        return pd.concat(dfs)
+        return pd.concat(dfs).sort_index(ascending=False)
 
     def get_statistics(self) -> pd.DataFrame:
         dfs = [sub_dir.get_statistics() for sub_dir in self.sub_dirs.values()]
@@ -71,6 +71,36 @@ class ProcessingDirectory:
 
     def plot(self) -> None:
         plot_files_recap(self.get_filepaths_df())
+
+    def submissions_summary(self) -> None:
+        """
+        Print a high-level summary of all processed submissions.
+
+        This method extracts the submission metadata into a DataFrame and reports:
+        - the number of successfully processed submissions,
+        - the list of submissions missing mandatory files,
+        - the number of unique participants,
+        - a cross-tabulated summary of submissions per site and dataset.
+
+        Returns
+        -------
+        None
+            This function prints a formatted summary to the console.
+        """
+        df = self.get_filepaths_df()
+        if df.empty:
+            print(f"{str(self.base_dir)}: Empty")
+            return
+        print("Submission Summary : ")
+        print(f" - Total of submissions sucessfully processed: {len(df['coreg_dem_file'].dropna())}/{len(df)}")
+        print(" - List of problematic submissions: ")
+        for code in df.index[df["coreg_dem_file"].isna()]:
+            print(f"\t{code}")
+
+        print(f" - Number of participants : {len(df['author'].unique())}")
+        print(" - Number of submission per site/dataset: ")
+        ct = pd.crosstab(df["site"], df["dataset"])
+        print("\t" + ct.to_string().replace("\n", "\n\t"))
 
     def __str__(self):
         df = self.get_filepaths_df()
@@ -149,7 +179,7 @@ class SubProcessingDirectory:
                     for k, v in metadatas.items():
                         df.at[code, k] = v
                 df.at[code, colname] = f
-        return df
+        return df.sort_index(ascending=False)
 
     def get_statistics(self) -> pd.DataFrame:
         return pd.read_csv(self.statistics_file, index_col="code")
