@@ -30,7 +30,6 @@ import numpy as np
 import py7zr
 import rasterio
 import xdem
-from prefect import task
 from pyproj import Transformer
 from rasterio.windows import Window
 from shapely import box, transform
@@ -53,7 +52,6 @@ LANDCOVER_MAPPING = {
 LANDCOVER_MAPPING_INV = {v: k for k, v in LANDCOVER_MAPPING.items()}
 
 
-@task(log_prints=True)
 def coregister_dem(
     dem_path: str | Path,
     ref_dem_path: str | Path,
@@ -126,7 +124,6 @@ def coregister_dem(
     return output_dem_path
 
 
-@task
 def generate_ddem(
     dem_path1: str | Path, dem_path2: str | Path, output_path: str | Path, overwrite: bool = False
 ) -> Path:
@@ -160,7 +157,6 @@ def generate_ddem(
     return output_path
 
 
-@task
 def extract_archive(archive_path: Path | str, output_dir: Path | str, overwrite: bool = False) -> None:
     """
     Extracts the contents of an archive file into a specified directory.
@@ -207,7 +203,6 @@ def extract_archive(archive_path: Path | str, output_dir: Path | str, overwrite:
     print(f"Extraction complete: {output_dir}")
 
 
-@task
 def convert_pointcloud_to_dem(
     pointcloud_path: str | Path,
     reference_dem_path: str | Path,
@@ -348,7 +343,6 @@ def get_raster_statistics(dem_file: str | Path) -> dict[str, Any] | None:
     return None
 
 
-@task
 def compute_raster_statistics(dem_file: str | Path) -> dict[str, Any]:
     """
     Computes basic statistics for a raster dataset and stores them in its metadata.
@@ -428,7 +422,6 @@ def get_raster_statistics_by_landcover(
             return None
 
 
-@task
 def compute_raster_statistics_by_landcover(
     raster_file: str | Path,
     landcover_file: str | Path,
@@ -555,7 +548,6 @@ def is_existing_std_dem(dem_files: list[str | Path], output_path: str | Path, me
         return False
 
 
-@task
 def create_std_dem(
     dem_files: list[str | Path], output_path: str | Path, block_size: int = 256, metadata_key: str = "dem_files"
 ) -> None:

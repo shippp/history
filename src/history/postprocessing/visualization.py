@@ -12,7 +12,6 @@ from matplotlib.cm import ScalarMappable
 from matplotlib.colors import LightSource
 from matplotlib.figure import Figure
 from matplotlib.patches import Patch
-from prefect import task
 from rasterio.enums import Resampling
 
 #######################################################################################################################
@@ -42,7 +41,6 @@ def _generate_mosaic_figure_and_axes(
         del fig
 
 
-@task
 def generate_dems_mosaic(
     df: pd.DataFrame, output_path: str | Path, colname: str = "raw_dem_file", title: str = ""
 ) -> None:
@@ -66,7 +64,6 @@ def generate_dems_mosaic(
         fig.suptitle(title, fontsize=16)
 
 
-@task
 def generate_ddems_mosaic(
     df: pd.DataFrame,
     output_path: str | Path,
@@ -96,7 +93,6 @@ def generate_ddems_mosaic(
         fig.suptitle(title, fontsize=16)
 
 
-@task
 def generate_slopes_mosaic(
     df: pd.DataFrame,
     output_path: str | Path,
@@ -135,7 +131,6 @@ def generate_slopes_mosaic(
         fig.suptitle(title, fontsize=16)
 
 
-@task
 def generate_hillshades_mosaic(
     df: pd.DataFrame,
     output_path: str | Path,
@@ -170,7 +165,6 @@ def generate_hillshades_mosaic(
         fig.suptitle(title, fontsize=16)
 
 
-@task
 def generate_std_dem_plots(dem_path: str | Path, output_path: str | Path) -> None:
     # create the output directory if needed
     dem_path = Path(dem_path)
@@ -476,7 +470,6 @@ def plot_files_recap(filepaths_df: pd.DataFrame, output_path: str | None = None,
         plt.close()
 
 
-@task
 def generate_coregistration_individual_plots(
     df: pd.DataFrame, output_directory: str | Path, overwrite: bool = False, vmin: float = -10, vmax: float = 10
 ) -> None:

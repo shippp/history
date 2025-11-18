@@ -1,5 +1,5 @@
 from . import core, plotting, visualization
-from .batch import (
+from .pipeline import (
     create_pointcloud_symlinks,
     generate_postprocessing_plots,
     uncompress_all_submissions,

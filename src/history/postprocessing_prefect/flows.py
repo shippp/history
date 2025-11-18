@@ -1,72 +1,13 @@
-"""
-This module orchestrates the batch processing workflow for DEM generation, coregistration,
-differencing, statistics computation, and visualization across multiple datasets and sites.
-
-It defines Prefect flows and tasks to automate the full processing chain — from raw point clouds
-to final DEM quality assessment and post-processing visualization. Each flow encapsulates a specific
-processing stage, and higher-level flows coordinate their sequential execution.
-
-Main Features
--------------
-- **Archive Extraction**: Decompresses and organizes raw submissions into a structured workspace.
-- **Point Cloud Processing**: Converts point clouds into DEMs using PDAL.
-- **DEM Coregistration**: Aligns DEMs spatially using reference surfaces and masks.
-- **dDEM Computation**: Generates DEM differences before and after coregistration.
-- **Statistics Computation**: Computes global and landcover-based statistics for DEMs and dDEMs.
-- **Standard Deviation DEMs**: Aggregates DEMs to create STD surfaces (with and without inlier filtering).
-- **Postprocessing Visualizations**: Produces global and per-dataset plots summarizing performance metrics.
-- **Batch Execution**: Manages concurrent processing of multiple datasets within a site.
-
-Structure Overview
-------------------
-Flows:
-    - `uncompress_all_submissions`: Extracts all compressed submissions in parallel.
-    - `process_pointclouds_to_dems`: Converts point clouds into DEMs using PDAL.
-    - `process_coregister_dems`: Coregisters DEMs with reference surfaces.
-    - `process_generate_ddems`: Generates DEM differences (before and after coregistration).
-    - `process_compute_statistics`: Computes DEM and dDEM statistics and identifies inliers.
-    - `process_compute_landcover_statistics`: Computes per-landcover statistics on DEMs.
-    - `process_generate_std_dems`: Generates standard deviation DEMs across a dataset group.
-    - `generate_postprocessing_plots`: Creates visual summaries and quality plots.
-
-Dependencies
-------------
-- Prefect: Task orchestration and parallelization.
-- Pandas: DataFrame manipulation and CSV export.
-- GeoUtils / xDEM: Raster and terrain analysis.
-- PDAL: Point cloud to DEM conversion.
-- Matplotlib / custom viz module: Visualization of metrics and results.
-
-Notes
------
-All flows are designed to be modular, reproducible, and fault-tolerant.
-Intermediate outputs (DEMs, statistics, plots) are cached and reused unless `overwrite=True`.
-
-"""
-
-import re
 from pathlib import Path
 
 import geoutils as gu
 import pandas as pd
 from prefect import flow, get_run_logger
 
+import history.postprocessing.core as core
 import history.postprocessing.visualization as viz
-from history.postprocessing.core import (
-    compute_raster_statistics,
-    compute_raster_statistics_by_landcover,
-    convert_pointcloud_to_dem,
-    coregister_dem,
-    create_std_dem,
-    extract_archive,
-    generate_ddem,
-    get_pointcloud_metadatas,
-    get_raster_coregistration_shifts,
-    get_raster_statistics,
-    get_raster_statistics_by_landcover,
-    is_existing_std_dem,
-)
-from history.postprocessing.io import FILE_CODE_MAPPING, parse_filename
+import history.postprocessing_prefect.tasks as tks
+from history.postprocessing.io import parse_filename
 from history.postprocessing.processing_directory import ProcessingDirectory
 
 
@@ -115,7 +56,7 @@ def uncompress_all_submissions(
             print(f"Skipping extraction (folder exists): {output_path}")
             continue
         tasks.append(
-            extract_archive.with_options(name=f"extract_archive_{input_path.name}").submit(
+            tks.extract_archive.with_options(name=f"extract_archive_{input_path.name}").submit(
                 input_path, output_path, overwrite
             )
         )
@@ -180,7 +121,7 @@ def process_pointclouds_to_dems(
                     logger.info(f"Skip point2dem for {code}: output already exists.")
                     continue
 
-                future_dems[code] = convert_pointcloud_to_dem.with_options(name=f"point2dem_{code}").submit(
+                future_dems[code] = tks.convert_pointcloud_to_dem.with_options(name=f"point2dem_{code}").submit(
                     file,
                     ref_dem_path,
                     output_dem_path,
@@ -246,7 +187,7 @@ def process_coregister_dems(processing_directory: str | Path | ProcessingDirecto
                 if output_dem_path.exists() and not overwrite:
                     logger.info(f"Skip point2dem for {code}: output already exists.")
                     continue
-                future_dems[code] = coregister_dem.with_options(name=f"coreg_{code}").submit(
+                future_dems[code] = tks.coregister_dem.with_options(name=f"coreg_{code}").submit(
                     file, ref_dem_path, ref_dem_mask_path, output_dem_path, overwrite
                 )
 
@@ -312,7 +253,7 @@ def process_generate_ddems(processing_directory: str | Path | ProcessingDirector
                         continue
 
                     future_dems.append(
-                        generate_ddem.with_options(name=f"{name}_{code}").submit(
+                        tks.generate_ddem.with_options(name=f"{name}_{code}").submit(
                             f, ref_dem_path, output_dem_path, overwrite
                         )
                     )
@@ -370,9 +311,9 @@ def process_compute_statistics(
         for colname in dem_colnames:
             prefix = colname.replace("file", "")
             for code, dem_file in df[colname].dropna().items():
-                stats = get_raster_statistics(dem_file)
+                stats = core.get_raster_statistics(dem_file)
                 if stats is None:
-                    future_stats_dict[(code, prefix)] = compute_raster_statistics.with_options(
+                    future_stats_dict[(code, prefix)] = tks.compute_raster_statistics.with_options(
                         name=f"compute_stats_{prefix}_{code}"
                     ).submit(dem_file)
                 else:
@@ -390,12 +331,12 @@ def process_compute_statistics(
 
         # Pointcloud metadata
         for code, pc_file in df["pointcloud_file"].dropna().items():
-            for key, value in get_pointcloud_metadatas(pc_file).items():
+            for key, value in core.get_pointcloud_metadatas(pc_file).items():
                 df.at[code, "pointcloud_" + key] = value
 
         # coregistration shifts
         for code, dem_file in df["coreg_dem_file"].dropna().items():
-            for key, value in get_raster_coregistration_shifts(dem_file).items():
+            for key, value in core.get_raster_coregistration_shifts(dem_file).items():
                 df.at[code, key] = value
 
         # add a inliers filter based on ddems_after_coreg
@@ -453,9 +394,9 @@ def process_compute_landcover_statistics(processing_directory: str | Path | Proc
             try:
                 code, metadata = parse_filename(f)
                 key = (code, metadata["site"], metadata["dataset"])
-                stats = get_raster_statistics_by_landcover(f)
+                stats = core.get_raster_statistics_by_landcover(f)
                 if stats is None:
-                    future_stats_dict[key] = compute_raster_statistics_by_landcover.with_options(
+                    future_stats_dict[key] = tks.compute_raster_statistics_by_landcover.with_options(
                         name=f"landcover_stat_{code}"
                     ).submit(f, landcover_path)
                 else:
@@ -538,12 +479,12 @@ def process_generate_std_dems(processing_directory: str | Path | ProcessingDirec
                     continue
 
                 # Skip if std_dem already exists and overwrite=False
-                if is_existing_std_dem(dem_files, std_dem_file) and not overwrite:
+                if core.is_existing_std_dem(dem_files, std_dem_file) and not overwrite:
                     logger.info(f"({site} - {dataset}) Skip {std_dem_file.name}: output already exists.")
                     continue
 
                 # Otherwise, submit creation task
-                futures.append(create_std_dem.submit(dem_files, std_dem_file))
+                futures.append(tks.create_std_dem.submit(dem_files, std_dem_file))
 
     # Wait for all tasks to complete
     for f in futures:
@@ -596,10 +537,10 @@ def process_compute_landcover_statistics_on_std_dems(processing_directory: str |
                     dem_file = sub_dir.std_dems_dir / f"{dem_type}_std_dem_{subset}.tif"
                     key = (dem_file, dem_type, subset)
 
-                    stats = get_raster_statistics_by_landcover(dem_file)
+                    stats = core.get_raster_statistics_by_landcover(dem_file)
 
                     if stats is None:
-                        future_stats_dict[key] = compute_raster_statistics_by_landcover.with_options(
+                        future_stats_dict[key] = tks.compute_raster_statistics_by_landcover.with_options(
                             name=f"landcover_stat_{dem_file.stem}"
                         ).submit(dem_file, landcover_path)
                     else:
@@ -761,7 +702,7 @@ def generate_postprocessing_plots(input_dir: str | Path | ProcessingDirectory, o
     futures = []
     for (dem_file, site, dataset), stats in global_std_lc_stats_df.groupby(["dem_file", "site", "dataset"]):
         output_path = output_dir / site / dataset / Path(dem_file).with_suffix(".png").stem
-        futures.append(viz.generate_std_dem_plots.submit(dem_file, output_path))
+        futures.append(tks.generate_std_dem_plots.submit(dem_file, output_path))
 
     for fut in futures:
         try:
@@ -780,18 +721,18 @@ def generate_postprocessing_plots(input_dir: str | Path | ProcessingDirectory, o
         title_prefix = f"({site} - {dataset})"
 
         # add the individual coregistration plots generation
-        futures.append(viz.generate_coregistration_individual_plots.submit(stats, coreg_output_dir))
+        futures.append(tks.generate_coregistration_individual_plots.submit(stats, coreg_output_dir))
 
         for colname in ["raw_dem_file", "coreg_dem_file"]:
             futures.append(
-                viz.generate_dems_mosaic.submit(
+                tks.generate_dems_mosaic.submit(
                     stats, mosaic_dir / f"mosaic_{colname[:-5]}.png", colname, title=f"{title_prefix} Mosaic {colname}"
                 )
             )
 
         for colname in ["ddem_before_file", "ddem_after_file"]:
             futures.append(
-                viz.generate_ddems_mosaic.submit(
+                tks.generate_ddems_mosaic.submit(
                     stats,
                     mosaic_dir / f"mosaic_{colname[:-5]}_coreg.png",
                     colname,
@@ -800,7 +741,7 @@ def generate_postprocessing_plots(input_dir: str | Path | ProcessingDirectory, o
             )
 
             futures.append(
-                viz.generate_slopes_mosaic.submit(
+                tks.generate_slopes_mosaic.submit(
                     stats,
                     mosaic_dir / f"mosaic_slopes_{colname[:-5]}_coreg.png",
                     colname,
@@ -808,7 +749,7 @@ def generate_postprocessing_plots(input_dir: str | Path | ProcessingDirectory, o
                 )
             )
             futures.append(
-                viz.generate_hillshades_mosaic.submit(
+                tks.generate_hillshades_mosaic.submit(
                     stats,
                     mosaic_dir / f"mosaic_hillshades_{colname[:-5]}_coreg.png",
                     colname,
@@ -821,121 +762,3 @@ def generate_postprocessing_plots(input_dir: str | Path | ProcessingDirectory, o
             fut.result()
         except Exception as e:
             print(f"Error of plot generating : {e}")
-
-
-@flow(log_prints=True)
-def analyze_submission_dir(input_dir: str | Path) -> pd.DataFrame:
-    """
-    Analyze a submission directory and extract metadata and file paths for required data products.
-
-    This function iterates through subdirectories within the given `input_dir`, searching for
-    mandatory files based on predefined regex patterns (e.g., dense/sparse point clouds,
-    intrinsics/extrinsics CSVs). It parses filenames to extract metadata and organizes all
-    collected information into a structured pandas DataFrame.
-
-    For each subdirectory (representing a submission), it logs a warning if one or more
-    mandatory files are missing.
-
-    Parameters
-    ----------
-    input_dir : str or Path
-        Path to the root directory containing submission subfolders.
-
-    Returns
-    -------
-    pd.DataFrame
-        A DataFrame where each row corresponds to a dataset code extracted from filenames.
-        Columns include:
-        - `submission`: name of the submission folder
-        - Metadata fields extracted from filenames
-        - `dense_pointcloud_file`: path to the dense point cloud file
-        - `sparse_pointcloud_file`: path to the sparse point cloud file
-        - `extrinsics_file`: path to the extrinsics CSV file
-        - `intrinsics_file`: path to the intrinsics CSV file
-
-    """
-    logger = get_run_logger()
-    input_dir = Path(input_dir)
-
-    # Define regex patterns mapping to dataframe column names
-    mandatory_patterns = {
-        "dense_pointcloud_file": r"_dense_pointcloud\.(las|laz)$",
-        "sparse_pointcloud_file": r"_sparse_pointcloud\.(las|laz)$",
-        "extrinsics_file": r"_extrinsics\.csv$",
-        "intrinsics_file": r"_intrinsics\.csv$",
-    }
-    df = pd.DataFrame()
-    df.index.name = "code"
-    for subdir in input_dir.iterdir():
-        if not subdir.is_dir():
-            continue
-
-        all_files = list(subdir.rglob("*"))
-
-        for file in all_files:
-            try:
-                code, metadatas = parse_filename(file)
-            except ValueError:
-                continue
-
-            for column, pattern in mandatory_patterns.items():
-                if re.search(pattern, file.name, re.IGNORECASE):
-                    df.at[code, "submission"] = subdir.name
-                    for k, v in metadatas.items():
-                        df.at[code, k] = v
-                    df.at[code, column] = str(file)
-
-                    break  # Stop at first match
-
-    for code, row in df.iterrows():
-        missing_files = [c for c in mandatory_patterns if pd.isna(row[c])]
-        if missing_files:
-            logger.warning(f"{code} - Missing the following mandatory file(s) : {missing_files}")
-
-    return pd.DataFrame(df)
-
-
-def create_pointcloud_symlinks(pointcloud_files: list[str | Path], output_dir: str | Path) -> None:
-    """
-    Create organized symbolic links for a list of point cloud files.
-
-    This function takes a list of LAS/LAZ point cloud file paths, extracts metadata
-    (specifically the site and dataset) from their filenames using `parse_filename`,
-    and creates symbolic links for each file within a structured output directory.
-
-    The output directory is organized by site and dataset in the following hierarchy:
-        <output_dir>/<site>/<dataset>/pointclouds/<filename>
-
-    Existing links are overwritten if they already exist. After processing, the function
-    prints a summary of how many point clouds were linked for each (site, dataset) pair.
-
-    Args:
-        pointcloud_files (list[str | Path]): List of point cloud file paths to organize.
-        output_dir (str | Path): Root directory where symbolic links will be created.
-    """
-    output_dir = Path(output_dir)
-    pointcloud_files: list[Path] = [Path(f) for f in pointcloud_files]
-    # Group pointclouds by (site, dataset)
-    grouped_pointclouds: dict[tuple[str, str], list[Path]] = {
-        (site, dataset): []
-        for site in FILE_CODE_MAPPING["site"].values()
-        for dataset in FILE_CODE_MAPPING["dataset"].values()
-    }
-
-    for pc_path in pointcloud_files:
-        _, metadata = parse_filename(pc_path)
-        site, dataset = str(metadata["site"]), str(metadata["dataset"])
-        grouped_pointclouds[(site, dataset)].append(pc_path)
-
-    # Create symlinks and print summary
-    for (site, dataset), files in grouped_pointclouds.items():
-        for pc_path in files:
-            link = output_dir / site / dataset / "pointclouds" / pc_path.name
-            link.parent.mkdir(exist_ok=True, parents=True)
-
-            # Remove existing link if it already exists
-            if link.exists() or link.is_symlink():
-                link.unlink()
-            link.symlink_to(pc_path)
-
-        print(f" {site} - {dataset} → {len(files)} pointcloud(s) linked.")
