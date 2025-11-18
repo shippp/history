@@ -628,7 +628,7 @@ def get_pointcloud_metadatas(pointcloud_file: str | Path) -> dict[str, Any]:
             header = fh.header
             res = {
                 "las_version": f"{header.version.major}.{header.version.minor}",
-                "pointcloud_crs": header.parse_crs(),
+                "crs": header.parse_crs(),
                 "point_count": header.point_count,
                 "bounds_x_min": header.mins[0],
                 "bounds_x_max": header.maxs[0],

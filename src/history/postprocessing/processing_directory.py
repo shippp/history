@@ -20,17 +20,14 @@ class ProcessingDirectory:
 
     def __init__(self, base_dir: str | Path | ProcessingDirectory):
         if isinstance(base_dir, ProcessingDirectory):
-            self.base_dir = base_dir.base_dir
-        else:
-            self.base_dir = Path(base_dir)
+            return
 
-    @property
-    def sub_dirs(self) -> dict[tuple[str, str], SubProcessingDirectory]:
-        return {
+        self.base_dir = Path(base_dir)
+
+        self.sub_dirs = {
             (site, dataset): SubProcessingDirectory(self.base_dir / site / dataset)
             for site in FILE_CODE_MAPPING["site"].values()
             for dataset in FILE_CODE_MAPPING["dataset"].values()
-            if (self.base_dir / site / dataset).exists()
         }
 
     def get_filepaths_df(self) -> pd.DataFrame:
@@ -125,6 +122,7 @@ class SubProcessingDirectory:
 
         self.base_dir = Path(base_dir)
         self.pointclouds_dir = self.base_dir / "pointclouds"
+        self.symlinks_dir = SymlinksDirectory(self.base_dir / "symlinks")
         self.raw_dems_dir = self.base_dir / "raw_dems"
         self.coreg_dems_dir = self.base_dir / "coreg_dems"
         self.std_dems_dir = self.base_dir / "std_dems"
@@ -137,9 +135,6 @@ class SubProcessingDirectory:
 
         self.site = self.base_dir.parent.name
         self.dataset = self.base_dir.name
-
-    def get_pointclouds(self) -> list[Path]:
-        return list(self.pointclouds_dir.glob("*.las")) + list(self.pointclouds_dir.glob("*.laz"))
 
     def get_raw_dems(self) -> list[Path]:
         return list(self.raw_dems_dir.glob("*-DEM.tif"))
@@ -164,7 +159,7 @@ class SubProcessingDirectory:
 
     def get_filepaths_df(self) -> pd.DataFrame:
         mapping = {
-            "pointcloud_file": self.get_pointclouds(),
+            "dense_pointcloud_file": self.symlinks_dir.get_dense_pointclouds(),
             "raw_dem_file": self.get_raw_dems(),
             "coreg_dem_file": self.get_coreg_dems(),
             "ddem_before_file": self.get_ddems_before(),
@@ -217,3 +212,27 @@ class SubProcessingDirectory:
             "    ├── ref_dem_mask.tif\n"
             "    └── landcover.tif"
         )
+
+
+class SymlinksDirectory:
+    def __new__(cls, base_dir: str | Path | SymlinksDirectory):
+        # If an instance of the same class is passed, return it directly
+        if isinstance(base_dir, SymlinksDirectory):
+            return base_dir
+
+        # Otherwise, create a new instance normally
+        return super().__new__(cls)
+
+    def __init__(self, base_dir: str | Path | SymlinksDirectory):
+        if isinstance(base_dir, SymlinksDirectory):
+            return
+
+        self.base_dir = Path(base_dir)
+        self.dense_pointclouds_dir = self.base_dir / "dense_pointclouds"
+        self.sparse_pointclouds_dir = self.base_dir / "sparse_pointclouds"
+        self.extrinsics_dir = self.base_dir / "extrinsics"
+        self.intrinsics_dir = self.base_dir / "intrinsics"
+        self.raw_dems_dir = self.base_dir / "raw_dems"
+
+    def get_dense_pointclouds(self) -> list[Path]:
+        return list(self.dense_pointclouds_dir.glob("*.las")) + list(self.dense_pointclouds_dir.glob("*.laz"))

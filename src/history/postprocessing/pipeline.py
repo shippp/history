@@ -6,7 +6,7 @@ import geoutils as gu
 import pandas as pd
 
 import history.postprocessing.visualization as viz
-from history.postprocessing.io import FILE_CODE_MAPPING, parse_filename
+from history.postprocessing.io import parse_filename
 from history.postprocessing.processing_directory import ProcessingDirectory
 
 from . import core
@@ -64,50 +64,87 @@ def uncompress_all_submissions(
                 print(f"[!] Error while processing: {e}")
 
 
-def create_pointcloud_symlinks(pointcloud_files: list[str | Path], output_dir: str | Path) -> None:
+def index_submissions_and_link_files(input_dir: str | Path, output_dir: str | Path | ProcessingDirectory) -> None:
     """
-    Create organized symbolic links for a list of point cloud files.
+    Index files contained in a submissions directory and create organized symbolic links
+    inside the structure of a ProcessingDirectory.
 
-    This function takes a list of LAS/LAZ point cloud file paths, extracts metadata
-    (specifically the site and dataset) from their filenames using `parse_filename`,
-    and creates symbolic links for each file within a structured output directory.
-
-    The output directory is organized by site and dataset in the following hierarchy:
-        <output_dir>/<site>/<dataset>/pointclouds/<filename>
-
-    Existing links are overwritten if they already exist. After processing, the function
-    prints a summary of how many point clouds were linked for each (site, dataset) pair.
+    Iterates through each subfolder of `input_dir`, attempts to extract a `code` and
+    metadata via `parse_filename`, collects paths for expected files (dense/sparse
+    pointclouds, extrinsics/intrinsics, optional DEM), and warns if mandatory files
+    are missing. For each (site, dataset) pair, creates symbolic links in the output
+    directory at `output_dir.sub_dirs[(site, dataset)].symlinks_dir`. Existing links
+    are overwritten.
 
     Args:
-        pointcloud_files (list[str | Path]): List of point cloud file paths to organize.
-        output_dir (str | Path): Root directory where symbolic links will be created.
+        input_dir (str | Path): Directory containing submissions (each submission in a subfolder).
+        output_dir (str | Path | ProcessingDirectory): Processing directory or ProcessingDirectory object.
+
+    Returns:
+        None
     """
-    output_dir = Path(output_dir)
-    pointcloud_files: list[Path] = [Path(f) for f in pointcloud_files]
-    # Group pointclouds by (site, dataset)
-    grouped_pointclouds: dict[tuple[str, str], list[Path]] = {
-        (site, dataset): []
-        for site in FILE_CODE_MAPPING["site"].values()
-        for dataset in FILE_CODE_MAPPING["dataset"].values()
+    input_dir = Path(input_dir)
+    output_dir = ProcessingDirectory(output_dir)
+
+    # Define regex patterns mapping to dataframe column names
+    mandatory_patterns = {
+        "dense_pointcloud_file": r"_dense_pointcloud\.(las|laz)$",
+        "sparse_pointcloud_file": r"_sparse_pointcloud\.(las|laz)$",
+        "extrinsics_file": r"_extrinsics\.csv$",
+        "intrinsics_file": r"_intrinsics\.csv$",
     }
+    optional_patterns = {"dem_file": r".*dem.*\.tif$"}
 
-    for pc_path in pointcloud_files:
-        _, metadata = parse_filename(pc_path)
-        site, dataset = str(metadata["site"]), str(metadata["dataset"])
-        grouped_pointclouds[(site, dataset)].append(pc_path)
+    patterns = {**mandatory_patterns, **optional_patterns}
 
-    # Create symlinks and print summary
-    for (site, dataset), files in grouped_pointclouds.items():
-        for pc_path in files:
-            link = output_dir / site / dataset / "pointclouds" / pc_path.name
-            link.parent.mkdir(exist_ok=True, parents=True)
+    df = pd.DataFrame()
+    df.index.name = "code"
+    for subdir in input_dir.iterdir():
+        if not subdir.is_dir():
+            continue
 
-            # Remove existing link if it already exists
-            if link.exists() or link.is_symlink():
-                link.unlink()
-            link.symlink_to(pc_path)
+        all_files = list(subdir.rglob("*"))
 
-        print(f" {site} - {dataset} → {len(files)} pointcloud(s) linked.")
+        for file in all_files:
+            try:
+                code, metadatas = parse_filename(file)
+            except ValueError:
+                continue
+
+            for column, pattern in patterns.items():
+                if re.search(pattern, file.name, re.IGNORECASE):
+                    df.at[code, "submission"] = subdir.name
+                    for k, v in metadatas.items():
+                        df.at[code, k] = v
+                    df.at[code, column] = str(file)
+
+                    break  # Stop at first match
+
+    for code, row in df.iterrows():
+        missing_files = [c for c in mandatory_patterns if pd.isna(row[c])]
+        if missing_files:
+            print(f"[WARNING] {code} - Missing the following mandatory file(s) : {missing_files}")
+
+        # creating symlinks
+        site, dataset = str(row["site"]), str(row["dataset"])
+
+        mapping = {
+            "dense_pointcloud_file": output_dir.sub_dirs[(site, dataset)].symlinks_dir.dense_pointclouds_dir,
+            "sparse_pointcloud_file": output_dir.sub_dirs[(site, dataset)].symlinks_dir.sparse_pointclouds_dir,
+            "extrinsics_file": output_dir.sub_dirs[(site, dataset)].symlinks_dir.extrinsics_dir,
+            "intrinsics_file": output_dir.sub_dirs[(site, dataset)].symlinks_dir.intrinsics_dir,
+            "dem_file": output_dir.sub_dirs[(site, dataset)].symlinks_dir.raw_dems_dir,
+        }
+
+        for c, p in mapping.items():
+            if not pd.isna(row[c]):
+                link = p / Path(row[c]).name
+                link.parent.mkdir(exist_ok=True, parents=True)
+
+                # Remove existing link if it already exists
+                if link.exists() or link.is_symlink():
+                    link.unlink()
+                link.symlink_to(row[c])
 
 
 def process_pointclouds_to_dems(
@@ -154,7 +191,7 @@ def process_pointclouds_to_dems(
                 print(f"[WARNING] Skip group {site} - {dataset}: {e}")
                 continue
 
-            for file in sub_dir.get_pointclouds():
+            for file in sub_dir.symlinks_dir.get_dense_pointclouds():
                 try:
                     code, metadatas = parse_filename(file)
 
@@ -384,7 +421,7 @@ def process_compute_statistics(
             # ------------------------------------------------
             # Pointcloud metadata (NOT parallel)
             # ------------------------------------------------
-            for code, pc_file in df["pointcloud_file"].dropna().items():
+            for code, pc_file in df["dense_pointcloud_file"].dropna().items():
                 for key, value in core.get_pointcloud_metadatas(pc_file).items():
                     df.at[code, "pointcloud_" + key] = value
 
@@ -837,73 +874,3 @@ def generate_postprocessing_plots(
                 fut.result()
             except Exception as e:
                 print(f"Error of plot generating : {e}")
-
-
-def analyze_submission_dir(input_dir: str | Path) -> pd.DataFrame:
-    """
-    Analyze a submission directory and extract metadata and file paths for required data products.
-
-    This function iterates through subdirectories within the given `input_dir`, searching for
-    mandatory files based on predefined regex patterns (e.g., dense/sparse point clouds,
-    intrinsics/extrinsics CSVs). It parses filenames to extract metadata and organizes all
-    collected information into a structured pandas DataFrame.
-
-    For each subdirectory (representing a submission), it logs a warning if one or more
-    mandatory files are missing.
-
-    Parameters
-    ----------
-    input_dir : str or Path
-        Path to the root directory containing submission subfolders.
-
-    Returns
-    -------
-    pd.DataFrame
-        A DataFrame where each row corresponds to a dataset code extracted from filenames.
-        Columns include:
-        - `submission`: name of the submission folder
-        - Metadata fields extracted from filenames
-        - `dense_pointcloud_file`: path to the dense point cloud file
-        - `sparse_pointcloud_file`: path to the sparse point cloud file
-        - `extrinsics_file`: path to the extrinsics CSV file
-        - `intrinsics_file`: path to the intrinsics CSV file
-
-    """
-    input_dir = Path(input_dir)
-
-    # Define regex patterns mapping to dataframe column names
-    mandatory_patterns = {
-        "dense_pointcloud_file": r"_dense_pointcloud\.(las|laz)$",
-        "sparse_pointcloud_file": r"_sparse_pointcloud\.(las|laz)$",
-        "extrinsics_file": r"_extrinsics\.csv$",
-        "intrinsics_file": r"_intrinsics\.csv$",
-    }
-    df = pd.DataFrame()
-    df.index.name = "code"
-    for subdir in input_dir.iterdir():
-        if not subdir.is_dir():
-            continue
-
-        all_files = list(subdir.rglob("*"))
-
-        for file in all_files:
-            try:
-                code, metadatas = parse_filename(file)
-            except ValueError:
-                continue
-
-            for column, pattern in mandatory_patterns.items():
-                if re.search(pattern, file.name, re.IGNORECASE):
-                    df.at[code, "submission"] = subdir.name
-                    for k, v in metadatas.items():
-                        df.at[code, k] = v
-                    df.at[code, column] = str(file)
-
-                    break  # Stop at first match
-
-    for code, row in df.iterrows():
-        missing_files = [c for c in mandatory_patterns if pd.isna(row[c])]
-        if missing_files:
-            print(f"[WARNING] {code} - Missing the following mandatory file(s) : {missing_files}")
-
-    return pd.DataFrame(df)

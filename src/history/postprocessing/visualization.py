@@ -428,7 +428,7 @@ def plot_files_recap(filepaths_df: pd.DataFrame, output_path: str | None = None,
     data = [
         {
             "code": code,
-            "Pointclouds": not pd.isna(row["pointcloud_file"]),
+            "Pointclouds": not pd.isna(row["dense_pointcloud_file"]),
             "Raw DEM": not pd.isna(row["raw_dem_file"]),
             "Coregistered DEM": not pd.isna(row["coreg_dem_file"]),
         }

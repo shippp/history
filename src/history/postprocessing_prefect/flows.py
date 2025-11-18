@@ -111,7 +111,7 @@ def process_pointclouds_to_dems(
             logger.warning(f"Skip group {site} - {dataset}: {e}")
             continue
 
-        for file in sub_dir.get_pointclouds():
+        for file in sub_dir.symlinks_dir.get_dense_pointclouds():
             try:
                 code, metadatas = parse_filename(file)
 
@@ -330,7 +330,7 @@ def process_compute_statistics(
                 logger.warning(f"Could not compute stats for {prefix} {code}: {e}")
 
         # Pointcloud metadata
-        for code, pc_file in df["pointcloud_file"].dropna().items():
+        for code, pc_file in df["dense_pointcloud_file"].dropna().items():
             for key, value in core.get_pointcloud_metadatas(pc_file).items():
                 df.at[code, "pointcloud_" + key] = value
 
