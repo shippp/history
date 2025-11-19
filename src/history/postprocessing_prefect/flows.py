@@ -106,7 +106,7 @@ def process_pointclouds_to_dems(
     for (site, dataset), sub_dir in processing_directory.sub_dirs.items():
         # Get the reference DEM, skip group if an exception occurs
         try:
-            ref_dem_path = sub_dir.get_reference_dem()
+            ref_dem_path = sub_dir.symlinks_dir.get_reference_dem()
         except Exception as e:
             logger.warning(f"Skip group {site} - {dataset}: {e}")
             continue
@@ -172,8 +172,8 @@ def process_coregister_dems(processing_directory: str | Path | ProcessingDirecto
 
     for (site, dataset), sub_dir in processing_directory.sub_dirs.items():
         try:
-            ref_dem_path = sub_dir.get_reference_dem()
-            ref_dem_mask_path = sub_dir.get_reference_dem_mask()
+            ref_dem_path = sub_dir.symlinks_dir.get_reference_dem()
+            ref_dem_mask_path = sub_dir.symlinks_dir.get_reference_dem_mask()
         except Exception as e:
             logger.warning(f"Skip group {site} - {dataset}: {e}")
             continue
@@ -236,7 +236,7 @@ def process_generate_ddems(processing_directory: str | Path | ProcessingDirector
             "ddem_after": (sub_dir.get_coreg_dems(), sub_dir.ddems_after_dir),
         }
         try:
-            ref_dem_path = sub_dir.get_reference_dem()
+            ref_dem_path = sub_dir.symlinks_dir.get_reference_dem()
         except Exception as e:
             logger.warning(f"Skip group {site} - {dataset}: {e}")
             continue
@@ -382,7 +382,7 @@ def process_compute_landcover_statistics(processing_directory: str | Path | Proc
     processing_directory = ProcessingDirectory(processing_directory)
     for (site, dataset), sub_dir in processing_directory.sub_dirs.items():
         try:
-            landcover_path = sub_dir.get_reference_landcover()
+            landcover_path = sub_dir.symlinks_dir.get_reference_landcover()
         except Exception as e:
             logger.warning(f"Skip group {site} - {dataset}: {e}")
             continue
@@ -524,7 +524,7 @@ def process_compute_landcover_statistics_on_std_dems(processing_directory: str |
 
     for (site, dataset), sub_dir in processing_directory.sub_dirs.items():
         try:
-            landcover_path = sub_dir.get_reference_landcover()
+            landcover_path = sub_dir.symlinks_dir.get_reference_landcover()
         except Exception as e:
             logger.warning(f"Skip group {site} - {dataset}: {e}")
 

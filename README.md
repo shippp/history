@@ -37,7 +37,12 @@ The table below summarizes all available datasets:
 
 For more details on how the Historical Image Dataset was prepared, see this [README](notebooks/preprocessing/README.md).
 
-## post-processing the results
+## Post-Processing the results
+
+The goal of the Post-Processing workflow is to compare, evaluate, and analyse the outcomes of the stereo reconstruction submissions.  
+It takes all user submissions as input, validates and organizes them, and then processes the data to generate a comprehensive set of analytical figures, statistical summaries, and cross-comparisons between methods and configurations.
+
+For more details on how the Post-Processing work, see this [README](notebooks/postprocessing/README.md).
 
 ## Installation
 

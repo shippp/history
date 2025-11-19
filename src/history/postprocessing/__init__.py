@@ -1,6 +1,5 @@
 from . import core, plotting, visualization
 from .pipeline import (
-    create_pointcloud_symlinks,
     generate_postprocessing_plots,
     uncompress_all_submissions,
 )
@@ -16,5 +15,4 @@ __all__ = [
     "generate_postprocessing_plots",
     "ProcessingDirectory",
     "SubProcessingDirectory",
-    "create_pointcloud_symlinks",
 ]

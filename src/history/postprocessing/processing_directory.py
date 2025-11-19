@@ -66,6 +66,43 @@ class ProcessingDirectory:
             raise ValueError("No std landcover statistics founds.")
         return pd.concat(dfs)
 
+    def set_aux_files_symlinks(self, aux_files_mapping: dict[tuple[str, str], list[str | Path]]) -> None:
+        """
+        Dispatch auxiliary files to subdirectories and trigger symlink creation.
+
+        Parameters
+        ----------
+        aux_files_mapping : dict[(str, str), list[str | Path]]
+            A mapping where each key corresponds to a subdirectory identifier
+            and the value is a list of auxiliary files for that subdirectory.
+
+        Raises
+        ------
+        KeyError
+            If a key in the mapping does not correspond to any known subdirectory.
+        TypeError
+            If the value associated with a key is not a list.
+        ValueError
+            If the list of auxiliary files is empty.
+        """
+        for key, value in aux_files_mapping.items():
+            # --- Check that key exists ---
+            if key not in self.sub_dirs:
+                raise KeyError(f"Invalid subdirectory key {key}. Available keys are: {list(self.sub_dirs.keys())}")
+
+            # --- Check the type of the value ---
+            if not isinstance(value, list):
+                raise TypeError(
+                    f"Auxiliary file list for key {key} must be a list, got {type(value).__name__} instead."
+                )
+
+            # --- Check that the list is not empty ---
+            if len(value) == 0:
+                raise ValueError(f"Auxiliary file list for key {key} is empty. At least one file must be provided.")
+
+            # --- Forward to the subdirectory handler ---
+            self.sub_dirs[key].symlinks_dir.set_aux_files_symlinks(value)
+
     def plot(self) -> None:
         plot_files_recap(self.get_filepaths_df())
 
@@ -148,15 +185,6 @@ class SubProcessingDirectory:
     def get_ddems_after(self) -> list[Path]:
         return list(self.ddems_after_dir.glob("*-DDEM.tif"))
 
-    def get_reference_dem(self) -> Path:
-        return self._find_aux_file(r"ref_dem(?!.*mask)", "Reference DEM")
-
-    def get_reference_dem_mask(self) -> Path:
-        return self._find_aux_file(r"ref_dem.*mask", "Reference DEM mask")
-
-    def get_reference_landcover(self) -> Path:
-        return self._find_aux_file(r"landcover", "Landcover file")
-
     def get_filepaths_df(self) -> pd.DataFrame:
         mapping = {
             "dense_pointcloud_file": self.symlinks_dir.get_dense_pointclouds(),
@@ -185,34 +213,6 @@ class SubProcessingDirectory:
     def get_std_landcover_statistics(self) -> pd.DataFrame:
         return pd.read_csv(self.std_landcover_statistics_file)
 
-    def _find_aux_file(self, pattern: str, description: str) -> Path:
-        """
-        Search for a file in aux_data matching a regex pattern.
-
-        Args:
-            pattern: regex pattern to match against the file stem
-            description: human-readable description for error message
-
-        Returns:
-            Path to the first matching file
-
-        Raises:
-            FileNotFoundError: if no file matches
-        """
-        for fp in Path(self.aux_data).rglob("*.tif"):
-            if re.search(pattern, fp.stem, re.IGNORECASE):
-                return fp
-
-        raise FileNotFoundError(
-            f"{description} not found.\n"
-            f"Please ensure that the 'aux_data' directory exists and contains the required file.\n"
-            f"Expected structure (example):\n"
-            f"  {self.aux_data}/\n"
-            "    ├── ref_dem.tif\n"
-            "    ├── ref_dem_mask.tif\n"
-            "    └── landcover.tif"
-        )
-
 
 class SymlinksDirectory:
     def __new__(cls, base_dir: str | Path | SymlinksDirectory):
@@ -228,6 +228,7 @@ class SymlinksDirectory:
             return
 
         self.base_dir = Path(base_dir)
+        self.aux_data = self.base_dir / "aux_data"
         self.dense_pointclouds_dir = self.base_dir / "dense_pointclouds"
         self.sparse_pointclouds_dir = self.base_dir / "sparse_pointclouds"
         self.extrinsics_dir = self.base_dir / "extrinsics"
@@ -236,3 +237,44 @@ class SymlinksDirectory:
 
     def get_dense_pointclouds(self) -> list[Path]:
         return list(self.dense_pointclouds_dir.glob("*.las")) + list(self.dense_pointclouds_dir.glob("*.laz"))
+
+    def set_aux_files_symlinks(self, aux_files: list[str | Path]) -> None:
+        aux_files: list[Path] = [Path(f) for f in aux_files]
+
+        patterns = [r"ref_dem(?!.*mask)", r"ref_dem.*mask", r"landcover"]
+        for f in aux_files:
+            # Check if filename matches at least one regex
+            if not any(re.search(p, f.name) for p in patterns):
+                raise ValueError(f"Auxiliary file '{f.name}' does not match any expected pattern: {patterns}")
+
+            link = self.aux_data / f.name
+            link.parent.mkdir(exist_ok=True, parents=True)
+
+            # Remove existing link if it already exists
+            if link.exists() or link.is_symlink():
+                link.unlink()
+            link.symlink_to(f)
+
+    def get_reference_dem(self) -> Path:
+        pattern = r"ref_dem(?!.*mask).*\.tif$"
+        for fp in self.aux_data.rglob("*"):
+            if re.search(pattern, fp.name, re.IGNORECASE):
+                return fp
+
+        raise FileNotFoundError(f"Reference DEM not found in {self.aux_data}.")
+
+    def get_reference_dem_mask(self) -> Path:
+        pattern = r"ref_dem.*mask.*\.tif$"
+        for fp in self.aux_data.rglob("*"):
+            if re.search(pattern, fp.name, re.IGNORECASE):
+                return fp
+
+        raise FileNotFoundError(f"Reference DEM mask not found in {self.aux_data}.")
+
+    def get_reference_landcover(self) -> Path:
+        pattern = r".*landcover.*\.tif$"
+        for fp in self.aux_data.rglob("*"):
+            if re.search(pattern, fp.name, re.IGNORECASE):
+                return fp
+
+        raise FileNotFoundError(f"Reference landcover not found in {self.aux_data}.")
