@@ -49,6 +49,8 @@ The complete Post-Processing workflow is divided into **11 main steps**, startin
 10. **Compute landcover-based statistics on STD DEMs** : Using the reference landcover, compute landcover-stratified statistics for all standard deviation DEMs.
 11. **Generate visualizations** : Produce plots, maps, and visual summaries for all processed DEMs, DDEMs, and point-cloud-derived analyses.
 
+For an example of the Post-Processing worflow, see this notebook : [post_process_pointclouds.ipynb](post_process_pointclouds.ipynb).
+
 
 
 
