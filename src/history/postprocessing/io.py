@@ -215,14 +215,6 @@ def analyze_submissions(
     """
     data_dir = Path(data_dir)
 
-    # Define the expected mandatory files
-    mandatory_files = [
-        "sparse_pointcloud.laz",  # or .las
-        "dense_pointcloud.laz",  # or .las
-        "extrinsics.csv",
-        "intrinsics.csv",
-    ]
-
     # Define code meanings
     codes = {
         "site": {"CG": "Casa Grande", "IL": "Iceland"},
@@ -747,3 +739,77 @@ def parse_filename(file: str | Path) -> tuple[str, dict[str, Any]]:
 
     code = "_".join([v for v in match_dict.values() if v is not None])
     return code, metadatas
+
+
+class ReferencesData:
+    def __init__(self, references_data_mapping: dict[tuple[str, str], dict[str, str | Path]]):
+        """
+        Initialize a ReferencesData instance, which manages access to reference data
+        for multiple sites and datasets, including DEMs, DEM masks, and landcover rasters.
+
+        The class provides methods to retrieve the appropriate reference files for a
+        given site and dataset, ensuring that all expected files exist.
+
+        Parameters
+        ----------
+        references_data_mapping : dict
+            A mapping from (site, dataset) tuples to dictionaries containing file paths for:
+            - "ref_dem": reference DEM raster
+            - "ref_dem_mask": corresponding DEM mask
+            - "landcover": landcover raster
+
+        Raises
+        ------
+        KeyError
+            If expected (site, dataset) keys or sub-keys are missing.
+        FileNotFoundError
+            If any referenced file does not exist.
+        """
+        self.__check_keys_validity(list(references_data_mapping.keys()))
+        self.__check_values_validity(references_data_mapping)
+        self.__references_data_mapping = references_data_mapping
+
+    def get_ref_dem(self, site: str, dataset: str) -> Path:
+        return Path(self.__references_data_mapping[(site, dataset)]["ref_dem"])
+
+    def get_ref_dem_mask(self, site: str, dataset: str) -> Path:
+        return Path(self.__references_data_mapping[(site, dataset)]["ref_dem_mask"])
+
+    def get_landcover(self, site: str, dataset: str) -> Path:
+        return Path(self.__references_data_mapping[(site, dataset)]["landcover"])
+
+    @staticmethod
+    def __check_keys_validity(keys: list[tuple[str, str]]) -> None:
+        expected_keys = {
+            (site, dataset)
+            for site in FILE_CODE_MAPPING["site"].values()
+            for dataset in FILE_CODE_MAPPING["dataset"].values()
+        }
+
+        # Detect missing keys
+        missing_keys = expected_keys - set(keys)
+        if missing_keys:
+            raise KeyError(
+                f"The following (site, dataset) keys are missing in references_data_mapping: {sorted(missing_keys)}"
+            )
+
+    @staticmethod
+    def __check_values_validity(references_data_mapping: dict[tuple[str, str], dict[str, str | Path]]) -> None:
+        expected_sub_keys = set(["ref_dem", "ref_dem_mask", "landcover"])
+
+        for (site, dataset), sub_dict in references_data_mapping.items():
+            sub_keys = set(sub_dict.keys())
+
+            # Detect missing keys
+            missing_keys = expected_sub_keys - set(sub_keys)
+            if missing_keys:
+                raise KeyError(
+                    f"The following ({site}, {dataset}) sub keys are missing in references_data_mapping: {sorted(missing_keys)}"
+                )
+
+            for file_type, file_path in sub_dict.items():
+                fp = Path(file_path)
+                if not fp.exists():
+                    raise FileNotFoundError(
+                        f"File '{fp}' for type '{file_type}' in ({site}, {dataset}) does not exist."
+                    )

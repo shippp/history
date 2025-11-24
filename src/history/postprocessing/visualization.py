@@ -1,4 +1,9 @@
+"""
+Contains functions to generate post-processing Visualization
+"""
+
 import math
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator
@@ -13,6 +18,115 @@ from matplotlib.colors import LightSource
 from matplotlib.figure import Figure
 from matplotlib.patches import Patch
 from rasterio.enums import Resampling
+from tqdm import tqdm
+
+from history.postprocessing.io import parse_filename
+
+
+def generate_all_mosaics(df: pd.DataFrame, output_dir: str | Path, max_workers: int | None = None) -> None:
+    """
+    Generate all mosaic plots (DEMs, dDEMs, slopes, and hillshades) for each
+    unique (site, dataset) combination in the input DataFrame.
+
+    This function dispatches the mosaic generation tasks to multiple processes
+    using a ProcessPoolExecutor. For each group of DEM-related files, it runs
+    the corresponding mosaic generation functions (DEM mosaic, dDEM mosaic,
+    slope mosaic, and hillshade mosaic) and stores the results in a structured
+    output directory. A tqdm progress bar is displayed to track processing
+    progress.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input DataFrame containing DEM and dDEM file paths as well as `site`
+        and `dataset` columns used to group the data.
+    output_dir : str or Path
+        Directory where all mosaic images will be saved. Subdirectories are
+        automatically created for each (site, dataset) pair.
+    max_workers : int, optional
+        Maximum number of processes to use. If None, the default value of
+        ProcessPoolExecutor is used.
+
+    Notes
+    -----
+    - The function handles all submissions asynchronously and waits for every
+      task to complete.
+    - If a mosaic generation task raises an exception, the error is caught and
+      reported, but the processing of other mosaics continues.
+    - Output filenames are automatically derived from the column names.
+    """
+    output_dir = Path(output_dir)
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for (site, dataset), group in df.groupby(["site", "dataset"]):
+            group_dir = output_dir / f"{site}_{dataset}" / "mosaic"
+            title_prefix = f"({site} - {dataset})"
+
+            for colname in ["raw_dem_file", "coreg_dem_file"]:
+                futures.append(
+                    executor.submit(
+                        generate_dems_mosaic,
+                        group,
+                        group_dir / f"mosaic_{colname[:-5]}.png",
+                        colname,
+                        title=f"{title_prefix} Mosaic {colname}",
+                    )
+                )
+
+            for colname in ["ddem_before_file", "ddem_after_file"]:
+                futures.append(
+                    executor.submit(
+                        generate_ddems_mosaic,
+                        group,
+                        group_dir / f"mosaic_{colname[:-5]}_coreg.png",
+                        colname,
+                        title=f"{title_prefix} Mosaic {colname}",
+                    )
+                )
+
+                futures.append(
+                    executor.submit(
+                        generate_slopes_mosaic,
+                        group,
+                        group_dir / f"mosaic_slopes_{colname[:-5]}_coreg.png",
+                        colname,
+                        title=f"{title_prefix} Mosaic slopes {colname}",
+                    )
+                )
+                futures.append(
+                    executor.submit(
+                        generate_hillshades_mosaic,
+                        group,
+                        group_dir / f"mosaic_hillshades_{colname[:-5]}_coreg.png",
+                        colname,
+                        title=f"{title_prefix} Mosaic hillshades {colname}",
+                    )
+                )
+
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="Generating mosaics"):
+            try:
+                fut.result()
+            except Exception as e:
+                print(f"Error of plot generating : {e}")
+
+
+def visualize_files_presence_map(directories: list[str | Path]) -> None:
+    directories: list[Path] = [Path(d) for d in directories]
+    df = pd.DataFrame()
+    df.index.name = "code"
+
+    for directory in directories:
+        if directory.is_dir():
+            for file in directory.iterdir():
+                if file.is_file():
+                    code, _ = parse_filename(file)
+
+                    df.at[code, directory.name] = True
+
+    df = df.astype(pd.BooleanDtype()).fillna(False).sort_index()
+    plot_boolean_df(df, cell_height=0.2)
+
 
 #######################################################################################################################
 ##                                                  MOSAIC VISUALIZATION
@@ -150,8 +264,9 @@ def generate_hillshades_mosaic(
 
             ls = LightSource(azdeg=315, altdeg=45)  # azimuth, sun altitude
             hillshade = ls.hillshade(dem, vert_exag=1, dx=dx, dy=dy)
+            clean = np.asarray(hillshade).copy()
 
-            axes[i].imshow(hillshade, cmap="gray", vmin=vmin, vmax=vmax)
+            axes[i].imshow(hillshade, cmap="gray", vmin=0, vmax=np.nanpercentile(clean, 99))
             axes[i].axis("off")
             axes[i].set_title(code)
 
@@ -244,13 +359,16 @@ def generate_plot_coreg_shifts(df: pd.DataFrame, output_path: str | Path, title:
         .sort_values(by="mean_abs_shift")
         .drop(columns="mean_abs_shift")
     )
+    if len(dropped_df) == 0:
+        return
 
     fig = Figure(figsize=(15, 10))
     ax = fig.add_subplot(1, 1, 1)
     dropped_df[colnames].plot(kind="bar", ax=ax)
 
     for container in ax.containers:
-        ax.bar_label(container, fmt="%.2f", label_type="edge", padding=3)
+        ax.bar_label(container, fmt="%.1f", label_type="edge", padding=3)
+    ax.set_ylabel("Coregistration shifts (meters)")
 
     fig.suptitle(title, fontsize=16)
     fig.tight_layout()
@@ -262,6 +380,8 @@ def generate_plot_coreg_shifts(df: pd.DataFrame, output_path: str | Path, title:
 def generate_plot_nmad_before_vs_after(df: pd.DataFrame, output_path: str | Path, title: str = "") -> None:
     colnames = ["ddem_before_nmad", "ddem_after_nmad"]
     dropped_df = df.dropna(subset=colnames).sort_values(by="ddem_after_nmad")
+    if len(dropped_df) == 0:
+        return
 
     fig = Figure(figsize=(12, 7))
     ax = fig.add_subplot(1, 1, 1)
@@ -461,6 +581,94 @@ def plot_files_recap(filepaths_df: pd.DataFrame, output_path: str | None = None,
     # Amélioration visuelle
     ax.set_title("Files Recap", fontsize=14, weight="bold")
     fig.tight_layout()
+    if output_path:
+        plt.savefig(output_path)
+
+    if show:
+        plt.show()
+    else:
+        plt.close()
+
+
+def visualize_symlinks_dir(input_dir: str | Path) -> None:
+    input_dir = Path(input_dir)
+
+    df = pd.DataFrame()
+    df.index.name = "code"
+
+    for sub_dir in input_dir.iterdir():
+        if sub_dir.is_dir():
+            for file in sub_dir.iterdir():
+                code, metadatas = parse_filename(file)
+
+                df.at[code, sub_dir.name] = True
+    df = df.astype(pd.BooleanDtype()).fillna(False).sort_index()
+    plot_boolean_df(df, cell_height=0.2)
+
+
+def plot_boolean_df(
+    df: pd.DataFrame,
+    title: str = "Boolean Matrix",
+    output_path: str | None = None,
+    show: bool = True,
+    cell_width: float = 0.6,
+    cell_height: float = 0.4,
+    min_width: float = 6,
+    min_height: float = 4,
+) -> None:
+    """
+    Plot a boolean DataFrame as a black/white matrix using pcolormesh,
+    with automatic figure size based on the DataFrame shape.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing only boolean values.
+    title : str, optional
+        Title of the plot.
+    output_path : str or None, optional
+        If provided, the plot is saved to the given file path.
+    show : bool, optional
+        Whether to display the plot.
+    cell_width : float, optional
+        Width (in inches) allocated per column.
+    cell_height : float, optional
+        Height (in inches) allocated per row.
+    min_width : float, optional
+        Minimum figure width in inches.
+    min_height : float, optional
+        Minimum figure height in inches.
+    """
+    # Convert boolean DataFrame to integer matrix (1=True, 0=False)
+    matrix = df.astype(int).values
+
+    # Compute figure size based on DataFrame shape
+    n_rows, n_cols = df.shape
+    fig_width = max(min_width, n_cols * cell_width)
+    fig_height = max(min_height, n_rows * cell_height)
+
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+
+    # Use a binary colormap for black/white representation
+    cmap = plt.get_cmap("binary")
+    ax.pcolormesh(matrix, cmap=cmap, edgecolors="grey", linewidth=1, shading="auto")
+
+    # Set tick positions
+    ax.set_xticks(np.arange(n_cols) + 0.5)
+    ax.set_yticks(np.arange(n_rows) + 0.5)
+    ax.set_xticklabels(df.columns, rotation=30, ha="right", fontsize=9)
+    ax.set_yticklabels(df.index, fontsize=9)
+
+    # Add visible grid
+    ax.set_xticks(np.arange(n_cols), minor=True)
+    ax.set_yticks(np.arange(n_rows), minor=True)
+    ax.grid(which="minor", color="grey", linestyle="-", linewidth=0.8, alpha=0.7)
+    ax.tick_params(which="minor", bottom=False, left=False)
+
+    # Title and layout
+    ax.set_title(title, fontsize=14, weight="bold")
+    fig.tight_layout()
+
     if output_path:
         plt.savefig(output_path)
 

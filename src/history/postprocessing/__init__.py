@@ -1,18 +1,14 @@
-from . import core, plotting, visualization
-from .pipeline import (
-    generate_postprocessing_plots,
-    uncompress_all_submissions,
-)
-from .processing_directory import ProcessingDirectory, SubProcessingDirectory
+from . import pipeline, plotting
+from . import statistics as stats
+from . import visualization as viz
+from .io import ReferencesData
 
 # from .point2dem import iter_point2dem, point2dem
 
 __all__ = [
-    "visualization",
-    "core",
+    "viz",
+    "stats",
     "plotting",
-    "uncompress_all_submissions",
-    "generate_postprocessing_plots",
-    "ProcessingDirectory",
-    "SubProcessingDirectory",
+    "pipeline",
+    "ReferencesData",
 ]
