@@ -443,6 +443,7 @@ def generate_plot_nmad_before_vs_after(df: pd.DataFrame, output_path: str | Path
 
     for container in ax.containers:
         ax.bar_label(container, fmt="%.2f", label_type="edge", padding=3)
+    ax.set_ylabel("DDEM NMAD")
     fig.suptitle(title, fontsize=16)
     fig.tight_layout()
 
@@ -924,6 +925,7 @@ def _plot_grouped_boxplot(df: pd.DataFrame, category_col: str, hue_col: str, y_l
             showfliers=False,
             patch_artist=True,
             boxprops=dict(facecolor=color_map[hue]),
+            medianprops=dict(color="black"),
         )
 
     # X-axis category labels

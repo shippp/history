@@ -3,7 +3,7 @@ import shutil
 import tarfile
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, Iterable, List, Union
 
 import pandas as pd
 import py7zr
@@ -700,6 +700,63 @@ def filter_experiment_data(
     return filtered_df
 
 
+def mirror_as_symlinks(src_dir: str | Path, dst_dir: str | Path, overwrite: bool = False) -> None:
+    """
+    Create a mirrored directory structure where all files in the source directory
+    are reproduced as symbolic links in the destination directory.
+
+    The directory tree is preserved exactly, but every file becomes a symlink
+    pointing to the original file in `src_dir`.
+
+    Parameters
+    ----------
+    src_dir : str | Path
+        Source directory containing real files.
+    dst_dir : str | Path
+        Destination directory where symlink copies will be created.
+    overwrite : bool, optional
+        If True, existing symlinks or files in the dst_dir will be replaced.
+        Default is False.
+
+    Returns
+    -------
+    None
+        The function creates files/directories but returns nothing.
+    """
+    src_dir = Path(src_dir)
+    dst_dir = Path(dst_dir)
+
+    if not src_dir.is_dir():
+        raise NotADirectoryError(f"Source directory does not exist: {src_dir}")
+
+    # Create destination directory if needed
+    dst_dir.mkdir(parents=True, exist_ok=True)
+
+    for path in src_dir.rglob("*"):
+        relative_path = path.relative_to(src_dir)
+        target_path = dst_dir / relative_path
+
+        if path.is_dir():
+            # Recreate directory structure
+            target_path.mkdir(exist_ok=True)
+        else:
+            # Create parent directories if missing
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Handle overwriting
+            if target_path.exists():
+                if overwrite:
+                    if target_path.is_file() or target_path.is_symlink():
+                        target_path.unlink()
+                    else:
+                        shutil.rmtree(target_path)
+                else:
+                    continue
+
+            # Create symbolic link pointing to the source file
+            target_path.symlink_to(path.resolve())
+
+
 def parse_filename(file: str | Path) -> tuple[str, dict[str, Any]]:
     """
     Parse a filename following the predefined code convention described in FILE_CODE_MAPPING_V1.
@@ -813,3 +870,19 @@ class ReferencesData:
                     raise FileNotFoundError(
                         f"File '{fp}' for type '{file_type}' in ({site}, {dataset}) does not exist."
                     )
+
+
+def get_filepaths_df(**kwargs: Iterable[str | Path]) -> pd.DataFrame:
+    df = pd.DataFrame()
+    df.index.name = "code"
+
+    for key, files in kwargs.items():
+        for f in files:
+            try:
+                code, metadatas = parse_filename(f)
+                for k, v in metadatas.items():
+                    df.at[code, k] = v
+                df.at[code, key] = str(f)
+            except ValueError:
+                continue
+    return df.sort_index()
