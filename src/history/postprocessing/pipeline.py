@@ -13,7 +13,7 @@ This module provides high-level utilities to:
 - Generate differential DEMs (dDEMs) and standard-deviation DEMs from multiple DEM inputs.
 - Inspect existing STD DEMs via embedded metadata and infer their associated source files.
 
-Most functions support parallel execution through ``ProcessPoolExecutor`` and are
+Most functions support parallel execution through ``ThreadPoolExecutor`` and are
 designed to fail gracefully: errors are logged without interrupting batch processing.
 All I/O operations rely on ``geoutils``, ``rasterio``, ``laspy``, and related geospatial
 libraries, ensuring consistent handling of CRS, raster grids, and metadata.
@@ -25,8 +25,9 @@ import shutil
 import subprocess
 import tarfile
 import zipfile
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Iterable
 
 import geoutils as gu
 import laspy
@@ -38,6 +39,7 @@ import xdem
 from pyproj import Transformer
 from rasterio.windows import Window
 from shapely import box, transform
+from tqdm import tqdm
 
 from history.postprocessing.io import ReferencesData, parse_filename
 
@@ -51,7 +53,7 @@ def uncompress_all_submissions(
 ) -> None:
     """
     Uncompress all supported archive submissions from an input directory into an output directory
-    using Python's ProcessPoolExecutor for parallel extraction.
+    using Python's ThreadPoolExecutor for parallel extraction.
 
     This function scans the input directory for compressed archives (ZIP, 7z, and TAR variants),
     determines their corresponding target extraction folders, and extracts each archive in
@@ -83,19 +85,27 @@ def uncompress_all_submissions(
         (fp, output_dir / fp.name[: -len(ext)]) for ext in supported_extensions for fp in input_dir.glob(f"*{ext}")
     ]
 
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = []
-        for input_path, output_path in archives:
-            if output_path.exists() and not overwrite:
-                print(f"Skipping extraction (folder exists): {output_path}")
-                continue
-            futures.append(executor.submit(extract_archive, input_path, output_path))
+    args_list = []
+    for input_path, output_path in archives:
+        if output_path.exists() and not overwrite:
+            print(f"[INFO] Skipping extraction (folder exists): {output_path}")
+            continue
+        args_list.append((input_path, output_path))
 
-        for fut in as_completed(futures):
+    if not args_list:
+        return
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(extract_archive, *args): args for args in args_list}
+
+        for fut in tqdm(as_completed(futures), desc="Extraction", total=len(futures)):
+            input_path, output_path = futures[fut]
             try:
-                fut.result()  # bloque jusqu’à la fin
+                fut.result()
+                tqdm.write(f"[OK] ✅ {input_path} extract to {output_path}.")
             except Exception as e:
-                print(f"[!] Error while processing: {e}")
+                tqdm.write(f"[ERROR] Extraction error for {input_path}: {e}")
+                continue
 
 
 def index_submissions_and_link_files(input_dir: str | Path, output_dir: str, overwrite: bool = False) -> None:
@@ -182,7 +192,6 @@ def index_submissions_and_link_files(input_dir: str | Path, output_dir: str, ove
         missing_files = [c for c in mandatory_patterns if pd.isna(row[c])]
         if missing_files:
             print(f"[WARNING] {code} - Missing the following mandatory file(s) : {missing_files}")
-
         for colname in patterns:
             if not pd.isna(row[colname]):
                 sub_dirname = colname.replace("_file", "")
@@ -206,132 +215,147 @@ def process_pointclouds_to_dems(
     overwrite: bool = False,
     dry_run: bool = False,
     max_workers: int | None = None,
+    suffix: str = "-DEM",
 ) -> None:
     """
-    Process a list of point cloud files and convert each of them into a DEM using
-    PDAL, aligning each output to the corresponding reference DEM.
+    Convert a list of point cloud files into DEMs using PDAL, aligning each output
+    to its corresponding reference DEM.
 
-    This function distributes the processing across multiple workers using a
-    ``ProcessPoolExecutor``. For each input point cloud, the function:
-    - Parses the filename to extract ``code``, ``site``, and ``dataset``.
-    - Retrieves the associated reference DEM from ``references_data``.
-    - Builds the output DEM path inside ``output_directory``.
-    - Runs the ``convert_pointcloud_to_dem`` pipeline (unless already existing and
-      ``overwrite`` is False).
+    This function prepares and executes a set of ``convert_pointcloud_to_dem`` tasks,
+    distributing them across multiple workers using a ``ThreadPoolExecutor``.
+    For each point cloud file, the workflow is:
+
+    1. Parse filename to extract ``code``, ``site``, and ``dataset``.
+    2. Retrieve the matching reference DEM from ``references_data``.
+    3. Build the output DEM path inside ``output_directory`` using the configured ``suffix``.
+    4. Skip processing if the output DEM already exists and ``overwrite=False``.
+    5. Otherwise, schedule the PDAL DEM generation task.
+    6. Display progress using a ``tqdm`` progress bar, while logs are redirected in
+       a way that does not break the bar (see ``TqdmLogHandler``).
 
     Parameters
     ----------
-    pointcloud_files : list of str or Path
-        List of point cloud file paths to process.
+    pointcloud_files : list[str | Path]
+        List of point cloud file paths to be converted.
     output_directory : str or Path
-        Directory where DEM outputs will be written.
+        Directory where the generated DEM files will be written.
     references_data : ReferencesData
-        Object providing reference DEMs for each (site, dataset) pair.
+        Object capable of providing the correct reference DEM for each (site, dataset).
     pdal_exec_path : str, optional
         Path to the PDAL executable. Default is ``"pdal"``.
     overwrite : bool, optional
-        If ``True``, existing DEMs are overwritten. Default is ``False``.
+        If ``True``, existing DEMs are re-generated. Default is ``False``.
     dry_run : bool, optional
-        If ``True``, commands are prepared but not executed. Default is ``False``.
+        If ``True``, PDAL commands are constructed but not executed. Default is ``False``.
+    suffix : str, optional
+        Suffix appended to the output DEM filename (before ``.tif``).
+        Default is ``"-DEM"``.
     max_workers : int or None, optional
-        Maximum number of parallel workers. Default uses the system's default.
+        Maximum number of parallel worker threads. If ``None``, Python selects a default.
 
     Returns
     -------
     None
-        The function performs operations for their side effects (file generation)
-        and returns nothing.
+        The function performs file generation as a side effect and returns nothing.
 
     Notes
     -----
     - Each point cloud is processed independently and in parallel.
-    - Errors encountered during individual tasks are logged but do not interrupt
-      the full processing pipeline.
-    - Output DEM filenames follow the pattern: ``<code>-DEM.tif``.
+    - Errors for individual files are logged but do not interrupt the overall pipeline.
+    - Output DEM filenames follow the pattern: ``<code><suffix>.tif``.
+    - A ``tqdm`` progress bar is displayed for the parallel tasks.
     """
     output_directory = Path(output_directory)
     pointcloud_files: list[Path] = [Path(f) for f in pointcloud_files]
 
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        future_dems = {}
+    args_dict = {}
+    for file in pointcloud_files:
+        try:
+            code, metadatas = parse_filename(file)
 
-        for file in pointcloud_files:
-            try:
-                code, metadatas = parse_filename(file)
+            # get the corresponding reference DEM
+            ref_dem_path = references_data.get_ref_dem(metadatas["site"], metadatas["dataset"])
 
-                # get the corresponding reference DEM
-                ref_dem_path = references_data.get_ref_dem(metadatas["site"], metadatas["dataset"])
+            # create the output DEM path
+            output_dem_path = output_directory / f"{code}{suffix}.tif"
 
-                # create the output DEM path
-                output_dem_path = output_directory / f"{code}-DEM.tif"
-
-                # avoid overwriting existing DEM
-                if output_dem_path.exists() and not overwrite:
-                    print(f"[INFO] Skip point2dem for {code}: output already exists.")
-                    continue
-
-                # submit the convert_pointcloud_to_dem function with all arguments
-                future = executor.submit(
-                    convert_pointcloud_to_dem,
-                    file,
-                    ref_dem_path,
-                    output_dem_path,
-                    pdal_exec_path,
-                    None,
-                    overwrite,
-                    dry_run,
-                )
-                future_dems[future] = code
-
-            except Exception as e:
-                print(f"[ERROR] Error processing {file.name}: {e}")
+            # avoid overwriting existing DEM
+            if output_dem_path.exists() and not overwrite:
+                print(f"[INFO] Skip point2dem for {code}: output already exists.")
                 continue
 
+            args_dict[code] = [file, ref_dem_path, output_dem_path]
+
+        except Exception as e:
+            print(f"[ERROR] Error processing {file.name}: {e}")
+            continue
+
+    if not args_dict:
+        return
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(convert_pointcloud_to_dem, *args, pdal_exec_path=pdal_exec_path, dry_run=dry_run): code
+            for code, args in args_dict.items()
+        }
+
         # Wait for all point2dem tasks to finish
-        for fut in as_completed(future_dems):
-            code = future_dems[fut]
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="point2dem"):
+            code = futures[fut]
             try:
                 fut.result()
-                print(f"[OK] point2dem complete for {code}")
+                tqdm.write(f"[OK] ✅ point2dem complete for {code}")
             except Exception as e:
-                print(f"[ERROR] Point2dem error for {code}: {e}")
+                tqdm.write(f"[ERROR] Point2dem error for {code}: {e}")
+                continue
 
 
 def add_provided_dems(
-    dem_files: list[str | Path], output_dir: str | Path, references_data: ReferencesData, overwrite: bool = False
+    dem_files: list[str | Path],
+    output_dir: str | Path,
+    references_data: ReferencesData,
+    overwrite: bool = False,
+    suffix: str = "-DEM",
 ) -> None:
     """
-    Reproject and integrate externally provided DEM files into the processing workflow.
+    Integrate externally provided DEMs into the processing workflow by
+    reprojecting them onto their corresponding reference DEM grid.
 
-    This function reads a list of DEM files, extracts submission metadata from their
-    filenames using `parse_filename()`, retrieves the corresponding reference DEM
-    through the `ReferencesData` object, reprojects each provided DEM onto the
-    reference DEM grid, and saves the result in `output_dir`. Output filenames follow
-    the format `<code>-DEM.tif`.
+    This function parses metadata from each input DEM filename, retrieves the
+    appropriate reference DEM through `references_data`, reprojects the provided
+    DEM onto the reference raster grid, and saves the aligned result in
+    `output_dir`. Output filenames follow the pattern ``<code><suffix>.tif``.
 
-    Existing outputs are skipped unless `overwrite` is set to True. Any error
-    encountered during processing of a file is reported but does not interrupt
-    the processing of subsequent DEMs.
+    Existing outputs are skipped unless ``overwrite`` is ``True``. Any error
+    encountered during file handling, reprojection, or saving is logged and does
+    not interrupt processing of the remaining DEMs.
 
     Parameters
     ----------
     dem_files : list of str or Path
         List of user-provided DEM file paths to process.
     output_dir : str or Path
-        Directory where reprojected DEMs will be stored. Created if it does not exist.
+        Directory where reprojected DEMs will be written. Created if necessary.
     references_data : ReferencesData
         Object used to retrieve reference DEMs based on metadata extracted from
-        input filenames (site, dataset, etc.).
+        input filenames (e.g., ``site`` and ``dataset`` fields).
     overwrite : bool, optional
-        If True, overwrite existing output files. If False, existing outputs are
-        skipped with an informational message. Default is False.
+        If ``True``, overwrite existing output files. If ``False`` (default),
+        files already present in ``output_dir`` are skipped.
+    suffix : str, optional
+        Suffix appended to output filenames before the ``.tif`` extension.
+        Default is ``"-DEM"``.
+
+    Returns
+    -------
+    None
+        This function performs processing and file generation as side effects.
 
     Notes
     -----
-    - Filenames must follow the expected convention required by `parse_filename()`.
-    - Reprojection is performed using the geoutils Raster class (`gu.Raster`).
-    - Errors during reading, reprojection, or saving are logged and ignored so that
-      processing continues for the remaining files.
+    - Filenames must comply with the conventions expected by ``parse_filename()``.
+    - Reprojection is performed using ``geoutils.Raster`` operations.
+    - Errors are logged individually and never halt the batch processing.
     """
     dem_files: list[Path] = [Path(f) for f in dem_files]
     output_dir = Path(output_dir)
@@ -342,7 +366,7 @@ def add_provided_dems(
             code, metadatas = parse_filename(file)
 
             # avoid overwriting existing files
-            output_path = output_dir / f"{code}-DEM.tif"
+            output_path = output_dir / f"{code}{suffix}.tif"
             if output_path.exists() and not overwrite:
                 print(f"[INFO] Skip {code} output already exists.")
                 continue
@@ -362,7 +386,7 @@ def add_provided_dems(
 
 
 def coregister_dems(
-    dem_files: list[str | Path],
+    dem_files: Iterable[str | Path],
     output_dir: str | Path,
     references_data: ReferencesData,
     overwrite: bool = False,
@@ -384,8 +408,8 @@ def coregister_dems(
 
     Parameters
     ----------
-    dem_files : list of str or Path
-        List of DEM file paths to be coregistered.
+    dem_files : Iterable of str or Path
+        Iterable of DEM file paths to be coregistered.
     output_dir : str or Path
         Directory where coregistered DEMs will be saved.
     references_data : ReferencesData
@@ -393,7 +417,7 @@ def coregister_dems(
     overwrite : bool, optional
         If ``True``, overwrite existing output DEMs. Default is ``False``.
     max_workers : int or None, optional
-        Maximum number of parallel workers used by ``ProcessPoolExecutor``.
+        Maximum number of parallel workers used by ``ThreadPoolExecutor``.
         Default uses the system's default.
 
     Returns
@@ -413,161 +437,215 @@ def coregister_dems(
     dem_files: list[Path] = [Path(f) for f in dem_files]
     output_dir = Path(output_dir)
 
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        future_dems = {}
+    args_dict = {}
 
-        for file in dem_files:
-            try:
-                code, metadatas = parse_filename(file)
+    for file in dem_files:
+        try:
+            code, metadatas = parse_filename(file)
 
-                output_dem_path = output_dir / file.name
+            output_dem_path = output_dir / file.name
 
-                # avoid overwriting existing files
-                if output_dem_path.exists() and not overwrite:
-                    print(f"[INFO] Skip coregistration for {code}, output already exists.")
-                    continue
-
-                # extract corresponding ref dem and mask with site and dataset
-                ref_dem_path = references_data.get_ref_dem(metadatas["site"], metadatas["dataset"])
-                ref_dem_mask_path = references_data.get_ref_dem_mask(metadatas["site"], metadatas["dataset"])
-
-                # submit coregister_dem with all arguments
-                future = executor.submit(
-                    coregister_dem, file, ref_dem_path, ref_dem_mask_path, output_dem_path, overwrite
-                )
-                future_dems[future] = code
-
-            except Exception as e:
-                print(f"[ERROR] Error processing {file.name}: {e}")
+            # avoid overwriting existing files
+            if output_dem_path.exists() and not overwrite:
+                print(f"[INFO] Skip coregistration for {code}, output already exists.")
                 continue
 
-        for fut in as_completed(future_dems):
-            code = future_dems[fut]
+            # extract corresponding ref dem and mask with site and dataset
+            ref_dem_path = references_data.get_ref_dem(metadatas["site"], metadatas["dataset"])
+            ref_dem_mask_path = references_data.get_ref_dem_mask(metadatas["site"], metadatas["dataset"])
+
+            args_dict[code] = [file, ref_dem_path, ref_dem_mask_path, output_dem_path]
+
+        except Exception as e:
+            print(f"[ERROR] Error processing {file.name}: {e}")
+            continue
+
+    # return if no coregistration needed
+    if not args_dict:
+        return
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {}
+        for code, args in args_dict.items():
+            fut = executor.submit(coregister_dem, *args)
+            futures[fut] = code
+
+        for fut in tqdm(as_completed(futures), desc="Coregistration", total=len(futures)):
+            code = futures[fut]
             try:
                 fut.result()
-                print(f"[OK] point2dem complete for {code}")
+                tqdm.write(f"[OK] Coregistration complete for {code}")
             except Exception as e:
-                print(f"[ERROR] Coregistration error for {code}: {e}")
+                tqdm.write(f"[ERROR] Coregistration error for {code}: {e}")
+                continue
 
 
 def generate_ddems(
-    dem_files: list[str | Path],
+    dem_files: Iterable[str | Path],
     output_dir: str | Path,
     references_data: ReferencesData,
     overwrite: bool = False,
     max_workers: int | None = None,
+    suffix: str = "-DDEM",
 ) -> None:
     """
-    Generate differential DEMs (DDEMs) for a list of input DEMs by subtracting
-    each one from its corresponding reference DEM.
+    Generate differential DEMs (DDEMs) for a list of DEM files by subtracting
+    each DEM from its corresponding reference DEM.
 
-    Each DEM is matched to its associated reference dataset using metadata
-    extracted from its filename. The computation is performed in parallel using
-    a ``ProcessPoolExecutor``. For each input DEM, the function:
+    Each DEM is paired with a reference dataset according to metadata extracted
+    from its filename. The processing is parallelized using ``ThreadPoolExecutor``.
+    For every DEM in the input list, this function:
+
     - Parses the filename to extract ``code``, ``site``, and ``dataset``.
-    - Retrieves the matching reference DEM from ``references_data``.
-    - Creates an output file named ``<code>-DDEM.tif`` inside ``output_dir``.
-    - Runs the ``core.generate_ddem`` routine unless the output already exists
-      and ``overwrite`` is ``False``.
+    - Retrieves the matching reference DEM through ``references_data``.
+    - Builds the output filename as ``<code><suffix>.tif`` inside ``output_dir``.
+    - Runs ``generate_ddem`` unless the output file already exists and
+      ``overwrite`` is ``False``.
 
     Parameters
     ----------
-    dem_files : list of str or Path
-        List of DEM file paths to process.
+    dem_files : Iterable[str or Path]
+        Iterable of DEM file paths to process.
     output_dir : str or Path
-        Directory where DDEM outputs will be saved. Created if it does not exist.
+        Directory where DDEM files will be written. Created if missing.
     references_data : ReferencesData
-        Object providing reference DEMs for each (site, dataset) pair.
+        Object that maps (site, dataset) pairs to their reference DEM files.
     overwrite : bool, optional
-        If ``True``, existing DDEM files are overwritten. Default is ``False``.
+        If ``True``, existing output files are replaced. Default is ``False``.
+    suffix : str, optional
+        String appended to the ``code`` to generate the output filename.
+        Default is ``"-DDEM"``.
     max_workers : int or None, optional
-        Maximum number of parallel workers. Default uses the system's default.
+        Maximum number of parallel workers. Defaults to the system's choice.
 
     Returns
     -------
     None
-        The function performs computations for their side effects (file
-        generation) and returns nothing.
+        This function performs file generation as a side effect and returns nothing.
 
     Notes
     -----
-    - Errors encountered for individual DEMs are logged and do not halt the
-      processing of remaining files.
-    - Output filenames follow the pattern ``<code>-DDEM.tif``.
-    - Reference DEMs are determined automatically based on metadata extracted
-      from the input filenames.
+    - Errors in individual computations are logged but do not interrupt the
+      entire processing pipeline.
+    - Output filenames follow the pattern: ``<code><suffix>.tif``.
+    - Reference DEM selection is fully automatic based on filename metadata.
     """
     dem_files: list[Path] = [Path(f) for f in dem_files]
     output_dir = Path(output_dir)
     output_dir.mkdir(exist_ok=True, parents=True)
 
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        future_dems = []
-        for file in dem_files:
-            try:
-                code, metadatas = parse_filename(file)
+    args_dict = {}
+    for file in dem_files:
+        try:
+            code, metadatas = parse_filename(file)
 
-                output_path = output_dir / f"{code}-DDEM.tif"
+            output_path = output_dir / f"{code}{suffix}.tif"
 
-                # avoid overwriting existing files
-                if output_path.exists() and not overwrite:
-                    print(f"[INFO] Skip ddem {code}, output already exists.")
-                    continue
+            # avoid overwriting existing files
+            if output_path.exists() and not overwrite:
+                tqdm.write(f"[INFO] Skip DDEM {code}, output already exists.")
+                continue
 
-                # get corresponding reference DEM with site and dataset
-                ref_dem_path = references_data.get_ref_dem(metadatas["site"], metadatas["dataset"])
+            # get corresponding reference DEM with site and dataset
+            ref_dem_path = references_data.get_ref_dem(metadatas["site"], metadatas["dataset"])
 
-                # submit the generate_ddem with parameters
-                future_dems.append(executor.submit(generate_ddem, file, ref_dem_path, output_path, overwrite))
-            except Exception as e:
-                print(f"[ERROR] Error while processing {file} : {e}")
+            args_dict[code] = [file, ref_dem_path, output_path, overwrite]
+        except Exception as e:
+            tqdm.write(f"[ERROR] Error while processing {file} : {e}")
 
-        for fut in as_completed(future_dems):
+    if not args_dict:
+        return
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(generate_ddem, *args): code for code, args in args_dict.items()}
+
+        for fut in tqdm(as_completed(futures), desc="ddem", total=len(futures)):
+            code = futures[fut]
             try:
                 fut.result()
+                tqdm.write(f"[OK] DDEM sucessfully generated for {code}")
             except Exception as e:
-                print(f"ddem error: {e}")
+                tqdm.write(f"[ERROR] DDEM Error for {code}: {e}")
+                continue
 
 
-def generate_std_dem(dem_files: list[str | Path], output_dem: str | Path, overwrite: bool = False) -> None:
+def create_std_dem(
+    dem_files: list[str | Path],
+    output_path: str | Path,
+    overwrite: bool = False,
+    block_size: int = 256,
+    metadata_key: str = "dem_files",
+) -> None:
     """
-    Generate a standard deviation DEM (STD DEM) from a list of DEM files.
+    Generates a standard deviation Digital Elevation Model (DEM) from a list of input DEM files.
 
-    This function computes the standard deviation raster from multiple co-registered
-    DEMs and saves it to `output_dem`. If only one DEM is provided, the operation
-    is skipped since a standard deviation surface cannot be computed from a single
-    input. The function also checks whether the output already exists using
-    `is_existing_std_dem()` and skips processing unless `overwrite` is True.
+    This function computes the pixel-wise standard deviation across multiple DEMs, processing
+    the rasters block by block to efficiently handle large datasets.
 
-    Parameters
-    ----------
-    dem_files : list of str or Path
-        List of input DEM paths used to compute the STD DEM.
-    output_dem : str or Path
-        Path where the resulting standard deviation DEM will be saved.
-    overwrite : bool, optional
-        If True, overwrite an existing output DEM. If False, skip computation when
-        the output already exists. Default is False.
+    Args:
+        dem_files (list[str | Path]): List of paths to input DEM raster files.
+        output_path (str | Path): Path to the output standard deviation DEM file.
+        block_size (int, optional): Size of the processing block in pixels. Defaults to 256.
+        metadata_key (str, optional): Metadata tag name used to store the list of input DEM files
+            in the output raster. Defaults to "dem_files".
 
-    Notes
-    -----
-    - The actual computation and saving are handled by `create_std_dem()`.
-    - The existence check relies on `is_existing_std_dem()`, which determines
-      whether a STD DEM already corresponds to the provided inputs.
-    - Errors are not caught here; failures inside `create_std_dem()` will propagate.
+    Returns:
+        None: The function writes the resulting standard deviation DEM to the specified output path.
     """
     dem_files: list[Path] = [Path(f) for f in dem_files]
-    output_dem = Path(output_dem)
+    output_path = Path(output_path)
 
     if len(dem_files) <= 1:
-        print("[WARNING] STD DEM can't be compute with only one input DEM")
+        tqdm.write(f"[WARNING] Need at least 2 DEMs for computing the STD DEM : {output_path.name}.")
         return
 
-    if is_existing_std_dem(dem_files, output_dem) and not overwrite:
-        print(f"[INFO] Skip {output_dem.name}: output already exists.")
+    if is_existing_std_dem(dem_files, output_path, metadata_key) and not overwrite:
+        tqdm.write(f"[INFO] Skip {output_path.name}: output already exists.")
         return
 
-    create_std_dem(dem_files, output_dem)
+    # first open the first raster of the list to have a reference profile
+    with rasterio.open(dem_files[0]) as src_ref:
+        profile = src_ref.profile.copy()
+        width, height = src_ref.width, src_ref.height
+
+    profile.update(dtype="float32", count=1)
+
+    output_path.parent.mkdir(exist_ok=True, parents=True)
+    with rasterio.open(output_path, "w", **profile) as dst:
+        # Loop through the raster by windows
+        for y in range(0, height, block_size):
+            for x in range(0, width, block_size):
+                win = Window(
+                    col_off=x,
+                    row_off=y,
+                    width=min(block_size, width - x),
+                    height=min(block_size, height - y),
+                )
+
+                # Read the corresponding window from each DEM
+                block_stack = []
+                for dem_path in dem_files:
+                    with rasterio.open(dem_path) as src:
+                        data = src.read(1, window=win, masked=True).filled(np.nan)
+                        block_stack.append(data)
+
+                # Compute std for this block
+                block_stack = np.stack(block_stack, axis=0)
+
+                # Avoid computing std on empty slices
+                if np.all(np.isnan(block_stack)):
+                    block_std = np.full(block_stack.shape[1:], np.nan, dtype="float32")
+                else:
+                    block_std = np.nanstd(block_stack, axis=0).astype("float32")
+
+                # Write the result
+                dst.write(block_std, 1, window=win)
+
+        # Add metadata tags
+        dem_files_str = [str(p) for p in dem_files]
+        dst.update_tags(1, **{metadata_key: json.dumps(dem_files_str)})
+
+    tqdm.write(f"[OK] STD DEM generated at {output_path}")
 
 
 #######################################################################################################################
@@ -581,7 +659,6 @@ def convert_pointcloud_to_dem(
     output_dem_path: str | Path,
     pdal_exec_path: str = "pdal",
     output_pipeline_path: str | Path | None = None,
-    overwrite: bool = False,
     dry_run: bool = False,
 ) -> Path:
     """
@@ -598,7 +675,6 @@ def convert_pointcloud_to_dem(
         pdal_exec_path (str, optional): Path to the PDAL executable. Defaults to "pdal".
         output_pipeline_path (str | Path | None, optional): Path to save the PDAL pipeline JSON.
             Defaults to a "processing_pipelines" folder near the output DEM.
-        overwrite (bool, optional): Whether to overwrite the output DEM if it exists. Defaults to False.
         dry_run (bool, optional): If True, only writes the pipeline JSON without executing it. Defaults to False.
 
     Returns:
@@ -607,11 +683,6 @@ def convert_pointcloud_to_dem(
 
     pointcloud_path = Path(pointcloud_path)
     output_dem_path = Path(output_dem_path)
-
-    # not overwrite existing file
-    if output_dem_path.exists() and not overwrite:
-        print(f"Skip {output_dem_path.stem} : output already exists.")
-        return output_dem_path
 
     output_pipeline_path = (
         output_dem_path.parent / "processing_pipelines" / f"pdal_pipeline_{output_dem_path.stem}.json"
@@ -632,7 +703,8 @@ def convert_pointcloud_to_dem(
     # if not crs found in pc_crs test with a list of CRS
     if pc_crs is None:
         test_crs_list = [str(ref_crs), "EPSG:4326"]
-        print(f"{pointcloud_path.name} : No CRS found, try CRSs : {test_crs_list}")
+
+        tqdm.write(f"[WARNING] {pointcloud_path.name} : No CRS found, try CRSs : {test_crs_list}")
 
         # open the real bounding box of the pointcloud file
         las = laspy.read(pointcloud_path)
@@ -680,9 +752,10 @@ def convert_pointcloud_to_dem(
         json.dump(pipeline_dict, f, ensure_ascii=False, indent=4)
 
     if not dry_run:
+        tqdm.write(f"[INFO] Start Processing {pointcloud_path.name}.")
         cmd = [pdal_exec_path, "pipeline", output_pipeline_path]
         subprocess.run(cmd, check=True)
-        print(f"DEM successfully generated for {pointcloud_path.name}")
+        tqdm.write(f"[OK] DEM successfully generated for {pointcloud_path.name}")
 
     return output_dem_path
 
@@ -692,7 +765,6 @@ def coregister_dem(
     ref_dem_path: str | Path,
     ref_dem_mask_path: str | Path,
     output_dem_path: str | Path,
-    overwrite: bool = False,
 ) -> Path:
     """
     Coregisters a DEM to a reference DEM using horizontal and vertical adjustment methods.
@@ -707,19 +779,14 @@ def coregister_dem(
         ref_dem_path (str | Path): Path to the reference DEM.
         ref_dem_mask_path (str | Path): Path to the reference DEM mask indicating valid pixels.
         output_dem_path (str | Path): Path where the coregistered DEM will be saved.
-        overwrite (bool, optional): Whether to overwrite the output if it already exists. Defaults to False.
 
     Returns:
         Path: Path to the coregistered DEM file.
     """
+    tqdm.write(f"[INFO] Start Coregistration of {dem_path}.")
 
     output_dem_path = Path(output_dem_path)
 
-    if output_dem_path.exists() and not overwrite:
-        print(f"Skip coregistration of {dem_path.stem}: output already exists.")
-        return output_dem_path
-
-    print(f"Start coregistration of {dem_path.stem}")
     # Because ASP's point2dem rounds the bounds, output DEM is not perfectly aligned with the ref DEM
     # so we reproject the source dem with the reference dem
     dem_ref = gu.Raster(ref_dem_path)
@@ -759,29 +826,22 @@ def coregister_dem(
     return output_dem_path
 
 
-def generate_ddem(
-    dem_path1: str | Path, dem_path2: str | Path, output_path: str | Path, overwrite: bool = False
-) -> Path:
+def generate_ddem(dem_path1: str | Path, dem_path2: str | Path, output_path: str | Path) -> Path:
     """
     Generates a differential DEM (dDEM) by subtracting one DEM from another.
 
     This function computes the pixel-wise difference between two input DEMs and saves the
-    resulting dDEM to the specified output path. Existing outputs can be optionally overwritten.
+    resulting dDEM to the specified output path.
 
     Args:
         dem_path1 (str | Path): Path to the first DEM (minuend).
         dem_path2 (str | Path): Path to the second DEM (subtrahend).
         output_path (str | Path): Path where the resulting dDEM will be saved.
-        overwrite (bool, optional): Whether to overwrite the output if it already exists. Defaults to False.
 
     Returns:
         Path: Path to the generated dDEM file.
     """
     output_path = Path(output_path)
-
-    if output_path.exists() and not overwrite:
-        print(f"Skip {output_path.stem}: output already exists.")
-        return output_path
 
     dem1 = gu.Raster(dem_path1)
     dem2 = gu.Raster(dem_path2)
@@ -941,66 +1001,3 @@ def is_existing_std_dem(dem_files: list[str | Path], output_path: str | Path, me
         # Defensive: in case of malformed metadata or corrupted file
         print(f"[WARNING] Could not verify std_dem metadata ({output_path.name}): {e}")
         return False
-
-
-def create_std_dem(
-    dem_files: list[str | Path], output_path: str | Path, block_size: int = 256, metadata_key: str = "dem_files"
-) -> None:
-    """
-    Generates a standard deviation Digital Elevation Model (DEM) from a list of input DEM files.
-
-    This function computes the pixel-wise standard deviation across multiple DEMs, processing
-    the rasters block by block to efficiently handle large datasets.
-
-    Args:
-        dem_files (list[str | Path]): List of paths to input DEM raster files.
-        output_path (str | Path): Path to the output standard deviation DEM file.
-        block_size (int, optional): Size of the processing block in pixels. Defaults to 256.
-        metadata_key (str, optional): Metadata tag name used to store the list of input DEM files
-            in the output raster. Defaults to "dem_files".
-
-    Returns:
-        None: The function writes the resulting standard deviation DEM to the specified output path.
-    """
-
-    # first open the first raster of the list to have a reference profile
-    with rasterio.open(dem_files[0]) as src_ref:
-        profile = src_ref.profile.copy()
-        width, height = src_ref.width, src_ref.height
-
-    Path(output_path).parent.mkdir(exist_ok=True, parents=True)
-    profile.update(dtype="float32", count=1)
-
-    with rasterio.open(output_path, "w", **profile) as dst:
-        # Loop through the raster by windows
-        for y in range(0, height, block_size):
-            for x in range(0, width, block_size):
-                win = Window(
-                    col_off=x,
-                    row_off=y,
-                    width=min(block_size, width - x),
-                    height=min(block_size, height - y),
-                )
-
-                # Read the corresponding window from each DEM
-                block_stack = []
-                for dem_path in dem_files:
-                    with rasterio.open(dem_path) as src:
-                        data = src.read(1, window=win, masked=True).filled(np.nan)
-                        block_stack.append(data)
-
-                # Compute std for this block
-                block_stack = np.stack(block_stack, axis=0)
-
-                # Avoid computing std on empty slices
-                if np.all(np.isnan(block_stack)):
-                    block_std = np.full(block_stack.shape[1:], np.nan, dtype="float32")
-                else:
-                    block_std = np.nanstd(block_stack, axis=0).astype("float32")
-
-                # Write the result
-                dst.write(block_std, 1, window=win)
-
-        # Add metadata tags
-        dem_files_str = [str(p) for p in dem_files]
-        dst.update_tags(1, **{metadata_key: json.dumps(dem_files_str)})

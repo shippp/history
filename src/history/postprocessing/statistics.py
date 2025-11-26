@@ -9,14 +9,16 @@ with reference landcover data for segmented analysis.
 """
 
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import geoutils as gu
 import laspy
 import numpy as np
 import pandas as pd
 import rasterio
+from tqdm import tqdm
 
 from history.postprocessing.io import FILE_CODE_MAPPING, ReferencesData, parse_filename
 
@@ -42,44 +44,53 @@ LANDCOVER_MAPPING_INV = {v: k for k, v in LANDCOVER_MAPPING.items()}
 #######################################################################################################################
 
 
-def compute_dems_statistics_df(dem_files: list[str | Path], prefix: str = "") -> pd.DataFrame:
+def compute_dems_statistics_df(
+    dem_files: Iterable[str | Path], prefix: str = "", max_workers: int | None = None
+) -> pd.DataFrame:
     """
-    Build a dataframe containing metadata and statistical attributes extracted
-    from a list of DEM (Digital Elevation Model) files.
+    Compute statistics for a list of DEM files and return a DataFrame containing metadata
+    and raster statistics.
 
-    The function parses each input filename to extract metadata (e.g., site,
-    dataset, acquisition info) and computes raster statistics using
-    `get_raster_statistics` or `compute_raster_statistics` if necessary. All
-    extracted information is stored in a pandas DataFrame indexed by the code
-    derived from the filename. A prefix may be optionally added to all DEM
-    attribute columns.
+    This function performs the following steps for each DEM file:
+    1. Parses the filename to extract a unique code and associated metadata.
+    2. Adds the metadata to a DataFrame indexed by the code.
+    3. Checks if raster statistics are already stored in the file metadata.
+       - If present, they are added directly to the DataFrame.
+       - If absent, statistics are computed in parallel using `compute_raster_statistics`.
+    4. Returns a DataFrame containing both metadata and raster statistics, with optional
+       prefix added to column names.
 
     Parameters
     ----------
-    dem_files : list[str | Path]
-        List of DEM file paths (GeoTIFF or compatible raster) to process.
+    dem_files : Iterable[str | Path]
+        Iterable of paths to DEM files to process.
     prefix : str, optional
-        Optional string added as a prefix to all DEM attribute columns
-        (e.g., `"raw_"`, `"coreg_"`). Default is an empty string.
+        Optional string prefix to prepend to all column names for raster statistics.
+        Default is an empty string.
+    max_workers : int | None, optional
+        Maximum number of worker threads to use for parallel computation of raster
+        statistics. Default is None, which uses ThreadPoolExecutor's default.
 
     Returns
     -------
     pd.DataFrame
-        A dataframe where each row corresponds to a DEM file and includes:
-        - Metadata parsed from the filename (site, dataset, date, etc.).
-        - A `{prefix}file` column storing the file path.
-        - Raster statistics (min, max, mean, std, etc.) returned by
-          `get_raster_statistics` or `compute_raster_statistics`, prefixed
-          when requested.
+        A pandas DataFrame indexed by DEM code containing metadata and computed raster
+        statistics for each DEM. Columns include:
+        - Original metadata extracted from filenames
+        - File path (`{prefix}file`)
+        - Raster statistics (`{prefix}min`, `{prefix}max`, `{prefix}mean`, etc.)
 
     Notes
     -----
-    - Files that cannot be parsed or processed produce an error message but do
-      not interrupt the global processing.
-    - Filenames must be compatible with `parse_filename`.
+    - Errors encountered while processing individual files are logged via `tqdm.write`
+      but do not interrupt processing of other files.
+    - Uses `get_raster_statistics` to check for existing statistics before recomputation.
+    - Computation of missing statistics is done in parallel to improve performance.
     """
     df = pd.DataFrame()
     df.index.name = "code"
+
+    args_dict = {}
 
     for file in dem_files:
         try:
@@ -92,22 +103,38 @@ def compute_dems_statistics_df(dem_files: list[str | Path], prefix: str = "") ->
 
             stats = get_raster_statistics(file)
             if stats is None:
-                stats = compute_raster_statistics(file)
-
-            for key, value in stats.items():
-                df.at[code, prefix + key] = value
+                args_dict[code] = file
+            else:
+                for key, value in stats.items():
+                    df.at[code, prefix + key] = value
 
         except Exception as e:
-            print(f"[ERROR] Error while processing {file} : {e}")
+            tqdm.write(f"[ERROR] Error while processing {file} : {e}")
             continue
 
+    if not args_dict:
+        return df
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(compute_raster_statistics, file): code for code, file in args_dict.items()}
+
+        for fut in tqdm(as_completed(futures), desc="Raster statistics", total=len(futures)):
+            code = futures[fut]
+            try:
+                stats = fut.result()
+
+                for key, value in stats.items():
+                    df.at[code, prefix + key] = value
+            except Exception as e:
+                tqdm.write(f"[ERROR] Error while computing stats for {code}: {e}")
+                continue
     return df
 
 
-def compute_pcs_statistics_df(pointcloud_files: list[str | Path], prefix: str = "") -> pd.DataFrame:
+def compute_pcs_statistics_df(pointcloud_files: Iterable[str | Path], prefix: str = "") -> pd.DataFrame:
     """
     Build a dataframe containing metadata and statistical attributes extracted
-    from a list of point cloud files.
+    from a Iterable of point cloud files.
 
     The function parses each input filename to extract its metadata (e.g., site,
     dataset, acquisition info) and retrieves point-cloud–specific statistics via
@@ -117,8 +144,8 @@ def compute_pcs_statistics_df(pointcloud_files: list[str | Path], prefix: str = 
 
     Parameters
     ----------
-    pointcloud_files : list[str | Path]
-        List of LAS/LAZ point cloud file paths to process.
+    pointcloud_files : Iterable[str | Path]
+        Iterable of LAS/LAZ point cloud file paths to process.
     prefix : str, optional
         Optional string added as a prefix to all point cloud attribute columns
         (e.g., `"raw_"`, `"coreg_"`). Default is an empty string.
@@ -160,7 +187,7 @@ def compute_pcs_statistics_df(pointcloud_files: list[str | Path], prefix: str = 
     return df
 
 
-def get_coregistration_statistics_df(dem_files: list[str | Path]) -> pd.DataFrame:
+def get_coregistration_statistics_df(dem_files: Iterable[str | Path]) -> pd.DataFrame:
     """
     Extract coregistration shifts and metadata for a list of DEM files.
 
@@ -172,8 +199,8 @@ def get_coregistration_statistics_df(dem_files: list[str | Path]) -> pd.DataFram
 
     Parameters
     ----------
-    dem_files : list[str | Path]
-        List of DEM file paths for which coregistration metadata should be
+    dem_files : Iterable[str | Path]
+        Iterable of DEM file paths for which coregistration metadata should be
         extracted.
 
     Returns
@@ -210,7 +237,7 @@ def get_coregistration_statistics_df(dem_files: list[str | Path]) -> pd.DataFram
     return df
 
 
-def compute_landcover_statistics(dem_files: list[str | Path], references_data: ReferencesData) -> pd.DataFrame:
+def compute_landcover_statistics(dem_files: Iterable[str | Path], references_data: ReferencesData) -> pd.DataFrame:
     """
     Compute landcover-based elevation statistics for a list of DEM files.
 
@@ -227,8 +254,8 @@ def compute_landcover_statistics(dem_files: list[str | Path], references_data: R
 
     Parameters
     ----------
-    dem_files : list[str | Path]
-        List of DEM file paths for which landcover-segmented statistics must be
+    dem_files : Iterable[str | Path]
+        Iterable of DEM file paths for which landcover-segmented statistics must be
         computed.
     references_data : ReferencesData
         Object that provides access to reference landcover rasters based on the
@@ -274,7 +301,7 @@ def compute_landcover_statistics(dem_files: list[str | Path], references_data: R
 
 
 def compute_landcover_statistics_on_std_dems(
-    dem_files: list[str | Path], references_data: ReferencesData
+    dem_files: Iterable[str | Path], references_data: ReferencesData
 ) -> pd.DataFrame:
     """
     Compute landcover-based elevation statistics for a list of STD DEMs.
@@ -289,8 +316,8 @@ def compute_landcover_statistics_on_std_dems(
 
     Parameters
     ----------
-    dem_files : list[str | Path]
-        List of paths to STD DEM rasters for which statistics must be computed.
+    dem_files : Iterable[str | Path]
+        Iterable of paths to STD DEM rasters for which statistics must be computed.
     references_data : ReferencesData
         Object providing access to reference auxiliary data (e.g., landcover rasters)
         based on site and dataset identifiers extracted from filenames.
@@ -337,6 +364,87 @@ def compute_landcover_statistics_on_std_dems(
 #######################################################################################################################
 ##                                                  OTHER FUNCTIONS
 #######################################################################################################################
+
+
+def raster_statistics(dem_file: str | Path) -> dict[str, Any]:
+    """
+    Compute or retrieve raster statistics from metadata.
+    If statistics already exist in band metadata, they are returned.
+    Otherwise, they are computed, written to metadata, and returned.
+
+    Args:
+        dem_file (str | Path): Path to the raster file.
+
+    Returns:
+        dict[str, Any]: Raster statistics with optional prefixed keys.
+    """
+
+    required_keys = ["min", "max", "mean", "std", "median", "nmad", "q1", "q3", "percent_nodata", "count"]
+
+    # -----------------------------------------------------------
+    # 1) Try reading metadata statistics
+    # -----------------------------------------------------------
+    with rasterio.open(dem_file, "r+") as src:
+        tags = src.tags(1)
+
+        # If all required keys exist → return metadata values
+        if all(k in tags for k in required_keys):
+            stats = {k: float(tags[k]) for k in required_keys}
+            stats.update(
+                {
+                    "crs": src.crs.to_string() if src.crs else None,
+                    "resolution": float(src.res[0]),
+                }
+            )
+            return stats
+
+        # -------------------------------------------------------
+        # 2) Compute statistics because metadata is missing
+        # -------------------------------------------------------
+        data = src.read(1, masked=True)
+        valid = data.compressed()
+
+        if valid.size == 0:
+            # No valid data
+            stats = {
+                "percent_nodata": 100.0,
+                "count": 0,
+                "min": np.nan,
+                "max": np.nan,
+                "mean": np.nan,
+                "median": np.nan,
+                "std": np.nan,
+                "nmad": np.nan,
+                "q1": np.nan,
+                "q3": np.nan,
+            }
+        else:
+            # Compute statistics
+            stats = {
+                "percent_nodata": float(data.mask.mean() * 100),
+                "count": int(valid.size),
+                "min": float(np.min(valid)),
+                "max": float(np.max(valid)),
+                "mean": float(np.mean(valid)),
+                "median": float(np.median(valid)),
+                "std": float(np.std(valid)),
+                "nmad": float(gu.stats.nmad(valid)),
+                "q1": float(np.percentile(valid, 25)),
+                "q3": float(np.percentile(valid, 75)),
+            }
+
+        # Write computed stats to metadata
+        src.update_tags(1, **stats)
+
+        # Add CRS + resolution
+        stats.update(
+            {
+                "crs": src.crs.to_string() if src.crs else None,
+                "resolution": float(src.res[0]),
+            }
+        )
+
+    return stats
 
 
 def get_raster_statistics(dem_file: str | Path) -> dict[str, Any] | None:
