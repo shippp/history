@@ -237,63 +237,90 @@ def get_coregistration_statistics_df(dem_files: Iterable[str | Path]) -> pd.Data
     return df
 
 
-def compute_landcover_statistics(dem_files: Iterable[str | Path], references_data: ReferencesData) -> pd.DataFrame:
+def compute_landcover_statistics(
+    dem_files: Iterable[str | Path], references_data: ReferencesData, max_workers: int | None = None
+) -> pd.DataFrame:
     """
-    Compute landcover-based elevation statistics for a list of DEM files.
+    Compute landcover-based raster statistics for a collection of DEM files.
 
-    This function processes each DEM by:
-    1. Parsing its filename to extract metadata such as `code`, `site`, and `dataset`.
-    2. Attempting to load precomputed landcover statistics via
-       `get_raster_statistics_by_landcover`.
-    3. If no precomputed statistics exist, loading the corresponding landcover
-       raster from `references_data` and computing new statistics using
-       `compute_raster_statistics_by_landcover`.
+    This function processes a list of DEM file paths and ensures that each file has
+    corresponding landcover statistics. If statistics already exist (retrieved via
+    `get_raster_statistics_by_landcover`), they are reused. Otherwise, the function
+    retrieves the appropriate landcover raster from `references_data` and computes
+    the statistics in parallel using a thread pool.
 
-    All statistics are aggregated into a single pandas DataFrame, with each row
-    representing a landcover class for a specific DEM.
+    The workflow is as follows:
+        1. Parse each DEM filename to extract metadata (code, site, dataset).
+        2. Check whether landcover statistics already exist for the DEM.
+        3. If not, queue the DEM for computation using the matching landcover file.
+        4. Compute missing statistics in parallel.
+        5. Aggregate all results into a flat pandas DataFrame.
 
     Parameters
     ----------
     dem_files : Iterable[str | Path]
-        Iterable of DEM file paths for which landcover-segmented statistics must be
-        computed.
+        List of DEM file paths to process.
     references_data : ReferencesData
-        Object that provides access to reference landcover rasters based on the
-        site and dataset extracted from DEM filenames.
+        Object providing access to reference datasets, in particular landcover rasters.
+    max_workers : int, optional
+        Maximum number of worker threads to use for parallel computation.
+        If None, the default number of workers is chosen by `ThreadPoolExecutor`.
 
     Returns
     -------
     pd.DataFrame
-        A dataframe containing the aggregated statistics for all DEMs. Each row
-        includes:
-        - code : Identifier extracted from the filename.
-        - site, dataset : Acquisition or project metadata.
-        - landcover-specific statistics (e.g., mean, std, count), as produced by
-          the underlying statistics functions.
+        A DataFrame where each row contains the DEM identifier (code, site, dataset)
+        along with the computed landcover statistics.
 
     Notes
     -----
-    - Any DEM file that raises an exception during processing produces an error
-      message but does not interrupt the computation for other files.
-    - Filenames must be compatible with `parse_filename`, otherwise they are
-      skipped.
+    - Errors encountered during file parsing or computation are logged and skipped.
+    - The resulting DataFrame is in a flattened “records” format for easy analysis.
     """
     dem_files: list[Path] = [Path(f) for f in dem_files]
+    args_dict = {}
     stats_dict = {}
+
     for file in dem_files:
         try:
             code, metadatas = parse_filename(file)
+
+            # extract site and dataset from the filename
             site, dataset = metadatas["site"], metadatas["dataset"]
+
+            # create a key with this infos
             key = (code, site, dataset)
+
+            # get existing landcover statistics
             stats = get_raster_statistics_by_landcover(file)
+
             if stats is None:
+                # get the corresponding landcover file
                 landcover_file = references_data.get_landcover(site, dataset)
-                stats_dict[key] = compute_raster_statistics_by_landcover(file, landcover_file)
+
+                args_dict[key] = (file, landcover_file)
             else:
                 stats_dict[key] = stats
-        except Exception as e:
-            print(f"[ERROR] Error while processing {file} : {e}")
 
+        except Exception as e:
+            tqdm.write(f"[ERROR] Error while processing {file} : {e}")
+            continue
+
+    if args_dict:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(compute_raster_statistics_by_landcover, file, landcover_file): key
+                for key, (file, landcover_file) in args_dict.items()
+            }
+
+            for fut in tqdm(as_completed(futures), desc="Landcover statistics", total=len(futures)):
+                key = futures[fut]
+                try:
+                    stats_dict[key] = fut.result()
+                except Exception as e:
+                    tqdm.write(f"[ERROR] Error while computing landcover statistics for {key[0]} : {e}")
+
+    # flatten the stats_dict to convert it into a df an return it
     records = []
     for (code, site, dataset), stats in stats_dict.items():
         records += [{"code": code, "site": site, "dataset": dataset, **elem} for elem in stats]
@@ -301,59 +328,80 @@ def compute_landcover_statistics(dem_files: Iterable[str | Path], references_dat
 
 
 def compute_landcover_statistics_on_std_dems(
-    dem_files: Iterable[str | Path], references_data: ReferencesData
+    dem_files: Iterable[str | Path], references_data: ReferencesData, max_workers: int | None = None
 ) -> pd.DataFrame:
     """
-    Compute landcover-based elevation statistics for a list of STD DEMs.
+    Compute landcover-based statistics for a collection of standardized DEM (STD DEM) files.
 
-    This function iterates over all provided STD DEM files, identifies their
-    associated site and dataset from the filename, and retrieves or computes
-    landcover-segmented elevation statistics. If precomputed statistics are
-    available (via `get_raster_statistics_by_landcover`), they are reused;
-    otherwise, the function loads the corresponding landcover raster from the
-    `references_data` object and computes the statistics using
-    `compute_raster_statistics_by_landcover`.
+    This function processes a set of STD DEM file paths and ensures that each file has
+    associated landcover statistics. For each DEM file, the function attempts to detect
+    the corresponding site and dataset directly from the filename using the
+    `FILE_CODE_MAPPING`. If statistics already exist (via `get_raster_statistics_by_landcover`),
+    they are reused. Otherwise, the matching landcover raster is retrieved from
+    `references_data`, and the missing statistics are computed in parallel.
+
+    The workflow is as follows:
+        1. Detect site and dataset identifiers from each DEM filename.
+        2. Check if landcover statistics already exist for the DEM.
+        3. If missing, schedule computation using the corresponding landcover raster.
+        4. Perform computations in parallel using a thread pool.
+        5. Aggregate all computed statistics into a flattened pandas DataFrame.
 
     Parameters
     ----------
     dem_files : Iterable[str | Path]
-        Iterable of paths to STD DEM rasters for which statistics must be computed.
+        Iterable of paths to standardized DEM files to process.
     references_data : ReferencesData
-        Object providing access to reference auxiliary data (e.g., landcover rasters)
-        based on site and dataset identifiers extracted from filenames.
+        Object providing access to reference datasets, including landcover rasters.
+    max_workers : int, optional
+        Maximum number of worker threads to use during parallel computation.
+        If None, the default value used by `ThreadPoolExecutor` is applied.
 
     Returns
     -------
     pd.DataFrame
-        A dataframe where each row contains landcover-specific statistics for a
-        given STD DEM, including:
-        - std_dem_file : Path to the processed STD DEM.
-        - site, dataset : Identified from the filename.
-        - Additional fields returned by the landcover statistics functions (e.g.
-          landcover class, mean elevation, standard deviation, pixel count, etc.).
+        A DataFrame where each row corresponds to a landcover statistics record,
+        including the STD DEM file path, site, dataset, and statistical values.
 
     Notes
     -----
-    - Any DEM that cannot be processed will produce an error message but does not
-      stop the full batch execution.
-    - STD DEM filenames must contain substrings matching values in
-      `FILE_CODE_MAPPING["site"]` and `FILE_CODE_MAPPING["dataset"]`.
+    - Files for which the site or dataset cannot be identified are skipped with an error message.
+    - All errors during computation are logged and do not interrupt the rest of the process.
+    - The returned DataFrame is in a flattened “records” format suited for analysis or export.
     """
     dem_files: list[Path] = [Path(f) for f in dem_files]
     stats_dict = {}
+    args_dict: dict[tuple[Path, str, str], tuple[Path, Path]] = {}
+
     for file in dem_files:
-        try:
-            site = next((s for s in FILE_CODE_MAPPING["site"].values() if s in file.name), None)
-            dataset = next((d for d in FILE_CODE_MAPPING["dataset"].values() if d in file.name), None)
-            key = (file, site, dataset)
-            stats = get_raster_statistics_by_landcover(file)
-            if stats is None:
-                landcover_file = references_data.get_landcover(site, dataset)
-                stats_dict[key] = compute_raster_statistics_by_landcover(file, landcover_file)
-            else:
-                stats_dict[key] = stats
-        except Exception as e:
-            print(f"[ERROR] Error while processing {file} : {e}")
+        site = next((s for s in FILE_CODE_MAPPING["site"].values() if s in file.name), None)
+        dataset = next((d for d in FILE_CODE_MAPPING["dataset"].values() if d in file.name), None)
+
+        if site is None or dataset is None:
+            tqdm.write(f"[ERROR] Can't determine the site, dataset of this file : {file}.")
+            continue
+
+        key = (file, site, dataset)
+        stats = get_raster_statistics_by_landcover(file)
+        if stats is None:
+            landcover_file = references_data.get_landcover(site, dataset)
+            args_dict[key] = (file, landcover_file)
+        else:
+            stats_dict[key] = stats
+
+    if args_dict:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(compute_raster_statistics_by_landcover, file, landcover_file): key
+                for key, (file, landcover_file) in args_dict.items()
+            }
+            for fut in tqdm(as_completed(futures), desc="Landcover Statistics (STD DEM)", total=len(futures)):
+                key = futures[fut]
+                try:
+                    stats_dict[key] = fut.result()
+                except Exception as e:
+                    tqdm.write(f"[ERROR] Error while computing landcover statistics for {key[0]} : {e}")
+                    continue
 
     records = []
     for (std_dem_file, site, dataset), stats in stats_dict.items():

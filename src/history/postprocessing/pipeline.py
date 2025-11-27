@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Iterable
 
 import geoutils as gu
+import humanize
 import laspy
 import numpy as np
 import pandas as pd
@@ -94,6 +95,8 @@ def uncompress_all_submissions(
 
     if not args_list:
         return
+
+    __estimate_extraction_time([f for f, _ in args_list], max_workers)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(extract_archive, *args): args for args in args_list}
@@ -1001,3 +1004,29 @@ def is_existing_std_dem(dem_files: list[str | Path], output_path: str | Path, me
         # Defensive: in case of malformed metadata or corrupted file
         print(f"[WARNING] Could not verify std_dem metadata ({output_path.name}): {e}")
         return False
+
+
+def __estimate_extraction_time(
+    archive_files: Iterable[str | Path],
+    max_workers: int = 1,
+    extraction_speed_per_thread: int = 40 * 1024 * 1024,
+) -> None:
+    """
+    Estimate and display the total extraction time for a set of archive files.
+    """
+    archive_files: list[Path] = [Path(f) for f in archive_files]
+
+    total_size = sum(f.stat().st_size for f in archive_files)
+
+    estimated_seconds = total_size / (extraction_speed_per_thread * max_workers)
+
+    human_total_size = humanize.naturalsize(total_size)
+    human_eta = humanize.naturaldelta(estimated_seconds)
+    human_speed = humanize.naturalsize(extraction_speed_per_thread) + "/s"
+
+    tqdm.write(
+        f"[INFO] Total archives size: {human_total_size} | "
+        f"Threads: {max_workers} | "
+        f"Speed per thread: {human_speed} | "
+        f"Estimated extraction time: ~{human_eta}"
+    )
