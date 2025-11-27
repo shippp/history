@@ -21,7 +21,7 @@ Two main packages are used to prepare the dataset:
 
 **Note:**  
 Some of the images required for this experiment are not available from USGS.  
-Additionally, KH-9 PC image preprocessing is not currently supported by [`hipp`](https://github.com/shippp/hipp), meaning the full workflow is not completely reproducible.
+Additionally, KH-9 MC image preprocessing is not currently supported by [`hipp`](https://github.com/shippp/hipp), meaning the full workflow is not completely reproducible.
 
 The Historical Images Dataset includes three types of imagery collected over two study sites.
 The table below summarizes all available datasets:
@@ -52,6 +52,7 @@ Clone the repository and create the conda environment:
 git clone https://github.com/shippp/history.git
 cd history
 conda env create -f environment.yml
+pip install -e .
 ```
 
 Once the environment is created, launch Jupyter and select the history kernel to run the notebooks.
