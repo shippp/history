@@ -9,6 +9,7 @@ dependencies:
   - contextily
   - laspy
   - jupyterlab
+  - nb_conda_kernels
   - ruff
   - pdal
   - pip
