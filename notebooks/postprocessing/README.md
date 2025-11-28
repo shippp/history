@@ -32,24 +32,22 @@ You can also add a version if you want to provid 2 differents submission with th
 
 ## Post-Processing Steps
 
-The complete Post-Processing workflow is divided into **11 main steps**, starting from an archived directory containing all raw submissions and ending with the generation of all plots, figures, and summary statistics.
+The complete Post-Processing workflow is divided into **8 main steps**, starting from an archived directory containing all raw submissions and ending with the generation of all plots, figures, and summary statistics (see this notebook : [post_process_workflow.ipynb](post_process_workflow.ipynb)). 
 
+ 
 1. **Extract archives** : Recursively extract all archive files found in the input directory.
 2. **Analyse submissions and create symlinks**: Inspect all extracted files, detect all **valid** submissions, and create a clean, structured symlink hierarchy.
-3. **Create auxiliary data symlinks** : Each *(site, dataset)* pair requires three reference datasets: **Reference DEM**, **Reference DEM mask**, and **Reference landcover**. KH-9 MC and KH-9 PC share the same reference files.
-4. **Convert point clouds to DEMs** : Convert each point cloud into a DEM using [pdal](https://pdal.io/en/2.9.2/). The generated DEM is spatially aligned with the corresponding reference DEM. If the point cloud lacks a CRS, try EPSG:4326 and then the CRS of the reference DEM.
-5. **Coregister DEMs** : Apply DEM coregistration consisting of:  
+3. **Convert point clouds to DEMs** : Convert each point cloud into a DEM using [pdal](https://pdal.io/en/2.9.2/). The generated DEM is spatially aligned with the corresponding reference DEM. If the point cloud lacks a CRS, try EPSG:4326 and then the CRS of the reference DEM.
+4. **Coregister DEMs** : Apply DEM coregistration consisting of:  
     - a horizontal alignment using the **Nuth–Kaab** method  
     - a vertical shift correction using the corresponding reference DEM  
     Coregistration ignores masked areas and pixels with low slopes.
-6. **Generate Differential DEMs (DDEMs)** : For both raw and coregistered DEMs, compute the difference relative to the corresponding reference DEM.
-7. **Compute general statistics** : Compute global statistics for all DEMs, DDEMs, and point clouds.
-8. **Compute landcover-based statistics** : Using the reference landcover, compute landcover-stratified statistics for **coregistered** DDEMs.
-9. **Generate STD DEMs** : Compute standard deviation DEMs for both raw and coregistered DEMs.
+5. **Generate Differential DEMs (DDEMs)** : For both raw and coregistered DEMs, compute the difference relative to the corresponding reference DEM.
+6. **Compute landcover-based statistics** : Using the reference landcover, compute landcover-stratified statistics for **coregistered** DDEMs.
+7. **Generate STD DEMs** : Compute standard deviation DEMs for both raw and coregistered DEMs.
 10. **Compute landcover-based statistics on STD DEMs** : Using the reference landcover, compute landcover-stratified statistics for all standard deviation DEMs.
-11. **Generate visualizations** : Produce plots, maps, and visual summaries for all processed DEMs, DDEMs, and point-cloud-derived analyses.
 
-For an example of the Post-Processing worflow, see this notebook : [post_process_pointclouds.ipynb](post_process_pointclouds.ipynb).
+**Note** : Some plots and visualization will be generated at each processing steps. 
 
 
 

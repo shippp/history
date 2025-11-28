@@ -405,7 +405,7 @@ def compute_landcover_statistics_on_std_dems(
 
     records = []
     for (std_dem_file, site, dataset), stats in stats_dict.items():
-        records += [{"std_dem_file": std_dem_file, "site": site, "dataset": dataset, **elem} for elem in stats]
+        records += [{"std_dem_file": str(std_dem_file), "site": site, "dataset": dataset, **elem} for elem in stats]
     return pd.DataFrame(records)
 
 

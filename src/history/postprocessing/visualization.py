@@ -3,7 +3,6 @@ Contains functions to generate post-processing Visualization
 """
 
 import math
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator
@@ -18,7 +17,6 @@ from matplotlib.colors import LightSource
 from matplotlib.figure import Figure
 from matplotlib.patches import Patch
 from rasterio.enums import Resampling
-from tqdm import tqdm
 
 from history.postprocessing.io import parse_filename
 
@@ -27,106 +25,50 @@ from history.postprocessing.io import parse_filename
 #######################################################################################################################
 
 
-def generate_all_mosaics(df: pd.DataFrame, output_dir: str | Path, max_workers: int | None = None) -> None:
+def generate_dems_mosaic(
+    dem_files_dict: dict[str, list[str | Path]],
+    output_path: str | Path,
+    vmin: float,
+    vmax: float,
+    title: str = "",
+) -> None:
     """
-    Generate all mosaic plots (DEMs, dDEMs, slopes, and hillshades) for each
-    unique (site, dataset) combination in the input DataFrame.
+    Generate a mosaic figure composed of multiple DEM images.
 
-    This function dispatches the mosaic generation tasks to multiple processes
-    using a ProcessPoolExecutor. For each group of DEM-related files, it runs
-    the corresponding mosaic generation functions (DEM mosaic, dDEM mosaic,
-    slope mosaic, and hillshade mosaic) and stores the results in a structured
-    output directory. A tqdm progress bar is displayed to track processing
-    progress.
+    This function creates a multi-panel visualization where each subplot displays
+    a DEM (Digital Elevation Model). The DEMs are provided as a dictionary in which
+    each key corresponds to a subplot title, and each value is a file path (or list
+    of paths) to the DEM data. A global colorbar is added for consistent elevation
+    scaling across all panels.
 
     Parameters
     ----------
-    df : pd.DataFrame
-        Input DataFrame containing DEM and dDEM file paths as well as `site`
-        and `dataset` columns used to group the data.
-    output_dir : str or Path
-        Directory where all mosaic images will be saved. Subdirectories are
-        automatically created for each (site, dataset) pair.
-    max_workers : int, optional
-        Maximum number of processes to use. If None, the default value of
-        ProcessPoolExecutor is used.
+    dem_files_dict : dict[str, list[str | Path]]
+        A dictionary mapping subplot titles to one or multiple raster file paths
+        representing the DEMs to display.
+    output_path : str | Path
+        Path where the generated mosaic figure will be saved. The parent
+        directories must already exist or be creatable.
+    vmin : float
+        Minimum elevation value used to normalize the DEM color scaling.
+    vmax : float
+        Maximum elevation value used to normalize the DEM color scaling.
+    title : str, optional
+        A global title displayed above the entire mosaic figure. Default is an
+        empty string.
 
-    Notes
-    -----
-    - The function handles all submissions asynchronously and waits for every
-      task to complete.
-    - If a mosaic generation task raises an exception, the error is caught and
-      reported, but the processing of other mosaics continues.
-    - Output filenames are automatically derived from the column names.
+    Returns
+    -------
+    None
+        The function saves the generated figure to ``output_path`` and does not
+        return any value.
     """
-    output_dir = Path(output_dir)
+    with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
+        for i, (subtitle, file) in enumerate(dem_files_dict.items()):
+            dem = _read_raster_with_max_size(file)
 
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = []
-        for (site, dataset), group in df.groupby(["site", "dataset"]):
-            group_dir = output_dir / f"{site}_{dataset}" / "mosaic"
-            title_prefix = f"({site} - {dataset})"
-
-            for colname in ["raw_dem_file", "coreg_dem_file"]:
-                futures.append(
-                    executor.submit(
-                        generate_dems_mosaic,
-                        group,
-                        group_dir / f"mosaic_{colname[:-5]}.png",
-                        colname,
-                        title=f"{title_prefix} Mosaic {colname}",
-                    )
-                )
-
-            for colname in ["ddem_before_file", "ddem_after_file"]:
-                futures.append(
-                    executor.submit(
-                        generate_ddems_mosaic,
-                        group,
-                        group_dir / f"mosaic_{colname[:-5]}_coreg.png",
-                        colname,
-                        title=f"{title_prefix} Mosaic {colname}",
-                    )
-                )
-
-                futures.append(
-                    executor.submit(
-                        generate_slopes_mosaic,
-                        group,
-                        group_dir / f"mosaic_slopes_{colname[:-5]}_coreg.png",
-                        colname,
-                        title=f"{title_prefix} Mosaic slopes {colname}",
-                    )
-                )
-                futures.append(
-                    executor.submit(
-                        generate_hillshades_mosaic,
-                        group,
-                        group_dir / f"mosaic_hillshades_{colname[:-5]}_coreg.png",
-                        colname,
-                        title=f"{title_prefix} Mosaic hillshades {colname}",
-                    )
-                )
-
-        for fut in tqdm(as_completed(futures), total=len(futures), desc="Generating mosaics"):
-            try:
-                fut.result()
-            except Exception as e:
-                print(f"Error of plot generating : {e}")
-
-
-def generate_dems_mosaic(
-    df: pd.DataFrame, output_path: str | Path, colname: str = "raw_dem_file", title: str = ""
-) -> None:
-    df_dropped = df.dropna(subset=colname)
-
-    vmin = df_dropped[colname.replace("file", "min")].median()
-    vmax = df_dropped[colname.replace("file", "max")].median()
-    with _generate_mosaic_figure_and_axes(len(df_dropped), output_path) as (fig, axes):
-        for i, (code, row) in enumerate(df_dropped.iterrows()):
-            dem = _read_raster_with_max_size(row[colname])
             axes[i].imshow(dem, cmap="terrain", vmin=vmin, vmax=vmax)
-            axes[i].set_title(code)
+            axes[i].set_title(subtitle)
 
         # add the global color bar
         cbar = fig.colorbar(
@@ -139,23 +81,48 @@ def generate_dems_mosaic(
 
 
 def generate_ddems_mosaic(
-    df: pd.DataFrame,
+    ddem_files_dict: dict[str, list[str | Path]],
     output_path: str | Path,
-    colname: str = "ddem_before_file",
     vmin: float = -10,
     vmax: float = 10,
     title: str = "",
 ) -> None:
-    df_dropped = df.dropna(subset=colname)
+    """
+    Generate a mosaic of dDEM (differential DEM) rasters and save it as an image.
 
-    with _generate_mosaic_figure_and_axes(len(df_dropped), output_path) as (fig, axes):
-        for i, (code, row) in enumerate(df_dropped.iterrows()):
-            dem = _read_raster_with_max_size(row[colname])
+    This function creates a multi-panel figure where each subplot displays one
+    dDEM raster provided in the input dictionary. Values are clipped to the
+    specified range before visualization, and all panels share a common
+    colorbar using the *coolwarm* colormap. The output mosaic is written to
+    the path indicated by `output_path`.
+
+    Parameters
+    ----------
+    ddem_files_dict : dict[str, list[str | Path]]
+        A dictionary mapping subplot titles to one or more raster file paths
+        representing the dDEM to display.
+    output_path : str | Path
+        Path where the final mosaic figure will be saved.
+    vmin : float, optional
+        Minimum value for clipping and colormap normalization. Default is -10.
+    vmax : float, optional
+        Maximum value for clipping and colormap normalization. Default is 10.
+    title : str, optional
+        Global title for the mosaic figure. Default is an empty string.
+
+    Returns
+    -------
+    None
+        The function saves the generated mosaic to `output_path` and does not
+        return any value.
+    """
+    with _generate_mosaic_figure_and_axes(len(ddem_files_dict), output_path) as (fig, axes):
+        for i, (subtitle, file) in enumerate(ddem_files_dict.items()):
+            dem = _read_raster_with_max_size(file)
             dem = np.clip(dem, vmin, vmax)
 
             axes[i].imshow(dem, cmap="coolwarm", vmin=vmin, vmax=vmax)
-            nmad = row[colname.replace("file", "nmad")]
-            axes[i].set_title(f"{code}\nNMAD:{nmad:.2f}")
+            axes[i].set_title(subtitle)
 
         # add the global color bar
         cbar = fig.colorbar(
@@ -168,20 +135,47 @@ def generate_ddems_mosaic(
 
 
 def generate_slopes_mosaic(
-    df: pd.DataFrame,
+    ddem_files_dict: dict[str, list[str | Path]],
     output_path: str | Path,
-    colname: str = "ddem_before_file",
     vmin: float = 0,
     vmax: float = 15,
     title: str = "",
 ) -> None:
-    df_dropped = df.dropna(subset=colname)
+    """
+    Generate a mosaic of slope maps derived from elevation rasters.
 
-    with _generate_mosaic_figure_and_axes(len(df_dropped), output_path) as (fig, axes):
-        for i, (code, row) in enumerate(df_dropped.iterrows()):
-            dem = _read_raster_with_max_size(row[colname])
+    This function computes slope (in degrees) for each raster provided in the
+    input dictionary and arranges the resulting maps into a multi-panel mosaic.
+    Slopes are calculated using the gradient of the DEM, converted to degrees,
+    clipped to the specified range, and visualized using the *terrain* colormap.
+    All panels share a global vertical colorbar, and the final mosaic is saved
+    to the specified output path.
 
-            with rasterio.open(row[colname]) as src:
+    Parameters
+    ----------
+    ddem_files_dict : dict[str, list[str | Path]]
+        A dictionary mapping subplot titles to one or more elevation raster files
+        from which slopes will be computed.
+    output_path : str | Path
+        Path where the final slope mosaic figure will be saved.
+    vmin : float, optional
+        Minimum value for clipping and colormap normalization. Default is 0.
+    vmax : float, optional
+        Maximum value for clipping and colormap normalization. Default is 15.
+    title : str, optional
+        Global title for the mosaic figure. Default is an empty string.
+
+    Returns
+    -------
+    None
+        The function saves the generated mosaic to `output_path` and does not
+        return any value.
+    """
+    with _generate_mosaic_figure_and_axes(len(ddem_files_dict), output_path) as (fig, axes):
+        for i, (subtitle, file) in enumerate(ddem_files_dict.items()):
+            dem = _read_raster_with_max_size(file)
+
+            with rasterio.open(file) as src:
                 dx, dy = src.res
 
             # compute slope in degree
@@ -194,7 +188,7 @@ def generate_slopes_mosaic(
 
             axes[i].imshow(slope_dem, cmap="terrain", vmin=vmin, vmax=vmax)
             axes[i].axis("off")
-            axes[i].set_title(code)
+            axes[i].set_title(subtitle)
 
         # add the global color bar
         cbar = fig.colorbar(
@@ -206,20 +200,47 @@ def generate_slopes_mosaic(
 
 
 def generate_hillshades_mosaic(
-    df: pd.DataFrame,
+    ddem_files_dict: dict[str, list[str | Path]],
     output_path: str | Path,
-    colname: str = "ddem_before_file",
     vmin: float = 0,
     vmax: float = 1,
     title: str = "",
 ) -> None:
-    df_dropped = df.dropna(subset=colname)
+    """
+    Generate a mosaic of hillshade visualizations from elevation rasters.
 
-    with _generate_mosaic_figure_and_axes(len(df_dropped), output_path) as (fig, axes):
-        for i, (code, row) in enumerate(df_dropped.iterrows()):
-            dem = _read_raster_with_max_size(row[colname])
+    This function computes hillshades for each raster provided in the input
+    dictionary and arranges the resulting shaded-relief images into a multi-panel
+    mosaic. Hillshades are generated using a fixed illumination geometry
+    (azimuth 315°, altitude 45°), clipped based on the 99th percentile to
+    enhance contrast, and displayed using a grayscale colormap. A global
+    vertical colorbar is added, and the final figure is saved to the specified
+    output path.
 
-            with rasterio.open(row[colname]) as src:
+    Parameters
+    ----------
+    ddem_files_dict : dict[str, list[str | Path]]
+        A dictionary mapping subplot titles to elevation raster file paths
+        from which hillshades will be computed.
+    output_path : str | Path
+        Path where the final mosaic figure will be saved.
+    vmin : float, optional
+        Minimum value for colormap normalization. Default is 0.
+    vmax : float, optional
+        Maximum value for colormap normalization. Default is 1.
+    title : str, optional
+        Global title for the hillshade mosaic. Default is an empty string.
+
+    Returns
+    -------
+    None
+        The function saves the generated hillshade mosaic to `output_path`.
+    """
+    with _generate_mosaic_figure_and_axes(len(ddem_files_dict), output_path) as (fig, axes):
+        for i, (subtitle, file) in enumerate(ddem_files_dict.items()):
+            dem = _read_raster_with_max_size(file)
+
+            with rasterio.open(file) as src:
                 dx, dy = src.res
 
             ls = LightSource(azdeg=315, altdeg=45)  # azimuth, sun altitude
@@ -228,7 +249,7 @@ def generate_hillshades_mosaic(
 
             axes[i].imshow(hillshade, cmap="gray", vmin=0, vmax=np.nanpercentile(clean, 99))
             axes[i].axis("off")
-            axes[i].set_title(code)
+            axes[i].set_title(subtitle)
 
         # add the global color bar
         cbar = fig.colorbar(
