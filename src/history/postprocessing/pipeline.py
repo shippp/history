@@ -20,10 +20,13 @@ libraries, ensuring consistent handling of CRS, raster grids, and metadata.
 """
 
 import json
+import logging
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
+import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -43,6 +46,8 @@ from shapely import box, transform
 from tqdm import tqdm
 
 from history.postprocessing.io import ReferencesData, parse_filename
+
+logger = logging.getLogger(__name__)
 
 #######################################################################################################################
 ##                                                  MAIN FUNCTIONS
@@ -89,7 +94,7 @@ def uncompress_all_submissions(
     args_list = []
     for input_path, output_path in archives:
         if output_path.exists() and not overwrite:
-            print(f"[INFO] Skipping extraction (folder exists): {output_path}")
+            logger.info(f"Skipping extraction (folder exists): {output_path}")
             continue
         args_list.append((input_path, output_path))
 
@@ -105,9 +110,9 @@ def uncompress_all_submissions(
             input_path, output_path = futures[fut]
             try:
                 fut.result()
-                tqdm.write(f"[OK] ✅ {input_path} extract to {output_path}.")
+                logger.info(f"OK: {input_path} extracted to {output_path}.")
             except Exception as e:
-                tqdm.write(f"[ERROR] Extraction error for {input_path}: {e}")
+                logger.error(f"Extraction error for {input_path}: {e}")
                 continue
 
 
@@ -194,7 +199,7 @@ def index_submissions_and_link_files(input_dir: str | Path, output_dir: str, ove
     for code, row in df.iterrows():
         missing_files = [c for c in mandatory_patterns if pd.isna(row[c])]
         if missing_files:
-            print(f"[WARNING] {code} - Missing the following mandatory file(s) : {missing_files}")
+            logger.warning(f"{code} - Missing the following mandatory file(s): {missing_files}")
         for colname in patterns:
             if not pd.isna(row[colname]):
                 sub_dirname = colname.replace("_file", "")
@@ -284,13 +289,13 @@ def process_pointclouds_to_dems(
 
             # avoid overwriting existing DEM
             if output_dem_path.exists() and not overwrite:
-                print(f"[INFO] Skip point2dem for {code}: output already exists.")
+                logger.info(f"Skip point2dem for {code}: output already exists.")
                 continue
 
             args_dict[code] = [file, ref_dem_path, output_dem_path]
 
         except Exception as e:
-            print(f"[ERROR] Error processing {file.name}: {e}")
+            logger.error(f"Error processing {file.name}: {e}")
             continue
 
     if not args_dict:
@@ -307,9 +312,8 @@ def process_pointclouds_to_dems(
             code = futures[fut]
             try:
                 fut.result()
-                tqdm.write(f"[OK] ✅ point2dem complete for {code}")
             except Exception as e:
-                tqdm.write(f"[ERROR] Point2dem error for {code}: {e}")
+                logger.error(f"Point2dem error for {code}: {e}")
                 continue
 
 
@@ -371,7 +375,7 @@ def add_provided_dems(
             # avoid overwriting existing files
             output_path = output_dir / f"{code}{suffix}.tif"
             if output_path.exists() and not overwrite:
-                print(f"[INFO] Skip {code} output already exists.")
+                logger.info(f"Skip {code} output already exists.")
                 continue
 
             # extract corresponding reference DEM
@@ -382,9 +386,9 @@ def add_provided_dems(
 
             # save the raster
             raster.save(output_path)
-            print(f"[OK] DEM successfully reprojected and saved at {output_path}.")
+            logger.info(f"DEM successfully reprojected and saved at {output_path}.")
         except Exception as e:
-            print(f"[ERROR] Error while processing {file} : {e}")
+            logger.error(f"Error while processing {file}: {e}")
             continue
 
 
@@ -450,7 +454,7 @@ def coregister_dems(
 
             # avoid overwriting existing files
             if output_dem_path.exists() and not overwrite:
-                print(f"[INFO] Skip coregistration for {code}, output already exists.")
+                logger.info(f"Skip coregistration for {code}, output already exists.")
                 continue
 
             # extract corresponding ref dem and mask with site and dataset
@@ -460,7 +464,7 @@ def coregister_dems(
             args_dict[code] = [file, ref_dem_path, ref_dem_mask_path, output_dem_path]
 
         except Exception as e:
-            print(f"[ERROR] Error processing {file.name}: {e}")
+            logger.error(f"Error processing {file.name}: {e}")
             continue
 
     # return if no coregistration needed
@@ -477,9 +481,9 @@ def coregister_dems(
             code = futures[fut]
             try:
                 fut.result()
-                tqdm.write(f"[OK] Coregistration complete for {code}")
+                logger.info(f"Coregistration complete for {code}")
             except Exception as e:
-                tqdm.write(f"[ERROR] Coregistration error for {code}: {e}")
+                logger.error(f"Coregistration error for {code}: {e}")
                 continue
 
 
@@ -546,15 +550,15 @@ def generate_ddems(
 
             # avoid overwriting existing files
             if output_path.exists() and not overwrite:
-                tqdm.write(f"[INFO] Skip DDEM {code}, output already exists.")
+                logger.info(f"Skip DDEM {code}, output already exists.")
                 continue
 
             # get corresponding reference DEM with site and dataset
             ref_dem_path = references_data.get_ref_dem(metadatas["site"], metadatas["dataset"])
 
-            args_dict[code] = [file, ref_dem_path, output_path, overwrite]
+            args_dict[code] = [file, ref_dem_path, output_path]
         except Exception as e:
-            tqdm.write(f"[ERROR] Error while processing {file} : {e}")
+            logger.error(f"Error while processing {file}: {e}")
 
     if not args_dict:
         return
@@ -566,9 +570,9 @@ def generate_ddems(
             code = futures[fut]
             try:
                 fut.result()
-                tqdm.write(f"[OK] DDEM sucessfully generated for {code}")
+                logger.info(f"DDEM successfully generated for {code}")
             except Exception as e:
-                tqdm.write(f"[ERROR] DDEM Error for {code}: {e}")
+                logger.error(f"DDEM error for {code}: {e}")
                 continue
 
 
@@ -599,11 +603,11 @@ def create_std_dem(
     output_path = Path(output_path)
 
     if len(dem_files) <= 1:
-        tqdm.write(f"[WARNING] Need at least 2 DEMs for computing the STD DEM : {output_path.name}.")
+        logger.warning(f"Need at least 2 DEMs for computing the STD DEM: {output_path.name}.")
         return
 
     if is_existing_std_dem(dem_files, output_path, metadata_key) and not overwrite:
-        tqdm.write(f"[INFO] Skip {output_path.name}: output already exists.")
+        logger.info(f"Skip {output_path.name}: output already exists.")
         return
 
     # first open the first raster of the list to have a reference profile
@@ -648,7 +652,7 @@ def create_std_dem(
         dem_files_str = [str(p) for p in dem_files]
         dst.update_tags(1, **{metadata_key: json.dumps(dem_files_str)})
 
-    tqdm.write(f"[OK] STD DEM generated at {output_path}")
+    logger.info(f"STD DEM generated at {output_path}")
 
 
 #######################################################################################################################
@@ -707,7 +711,7 @@ def convert_pointcloud_to_dem(
     if pc_crs is None:
         test_crs_list = [str(ref_crs), "EPSG:4326"]
 
-        tqdm.write(f"[WARNING] {pointcloud_path.name} : No CRS found, try CRSs : {test_crs_list}")
+        logger.warning(f"{pointcloud_path.name} : No CRS found, try CRSs : {test_crs_list}")
 
         # open the real bounding box of the pointcloud file
         las = laspy.read(pointcloud_path)
@@ -755,10 +759,24 @@ def convert_pointcloud_to_dem(
         json.dump(pipeline_dict, f, ensure_ascii=False, indent=4)
 
     if not dry_run:
-        tqdm.write(f"[INFO] Start Processing {pointcloud_path.name}.")
+        logger.info(f"Start Processing {pointcloud_path.name}.")
+
+        start = time.perf_counter()
+
         cmd = [pdal_exec_path, "pipeline", output_pipeline_path]
-        subprocess.run(cmd, check=True)
-        tqdm.write(f"[OK] DEM successfully generated for {pointcloud_path.name}")
+        subprocess.run(cmd, check=True, stdout=sys.stdout, stderr=sys.stderr)
+
+        elapsed = time.perf_counter() - start
+
+        # --- Add metadata tags using rasterio ---
+        try:
+            with rasterio.open(output_dem_path, "r+") as dst:
+                dst.update_tags(1, pdal_generated_time=f"{elapsed:.3f}")
+        except Exception as e:
+            logger.warning(f"Could not write metadata tags to {output_dem_path} : {e}")
+
+        human_eta = humanize.naturaldelta(elapsed)
+        logger.info(f"[OK] DEM successfully generated for {pointcloud_path.name} (execution time : {human_eta})")
 
     return output_dem_path
 
@@ -786,7 +804,7 @@ def coregister_dem(
     Returns:
         Path: Path to the coregistered DEM file.
     """
-    tqdm.write(f"[INFO] Start Coregistration of {dem_path}.")
+    logger.info(f"Start Coregistration of {dem_path}.")
 
     output_dem_path = Path(output_dem_path)
 
@@ -1002,7 +1020,7 @@ def is_existing_std_dem(dem_files: list[str | Path], output_path: str | Path, me
 
     except Exception as e:
         # Defensive: in case of malformed metadata or corrupted file
-        print(f"[WARNING] Could not verify std_dem metadata ({output_path.name}): {e}")
+        logger.warning(f"Could not verify std_dem metadata ({output_path.name}): {e}")
         return False
 
 
@@ -1024,8 +1042,8 @@ def __estimate_extraction_time(
     human_eta = humanize.naturaldelta(estimated_seconds)
     human_speed = humanize.naturalsize(extraction_speed_per_thread) + "/s"
 
-    tqdm.write(
-        f"[INFO] Total archives size: {human_total_size} | "
+    logger.info(
+        f"Total archives size: {human_total_size} | "
         f"Threads: {max_workers} | "
         f"Speed per thread: {human_speed} | "
         f"Estimated extraction time: ~{human_eta}"
