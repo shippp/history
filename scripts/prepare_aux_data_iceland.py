@@ -5,7 +5,7 @@ Script to prepare the auxiliary data for the Iceland site for the History projec
 - ESA worldcover dataset: each 1x1 degree tile are downloaded from the S3 bucket and merged.
 
 Author: Amaury Dehecq
-Last modified: October 2025 
+Last modified: December 2025 
 """
 
 import os
@@ -21,18 +21,32 @@ import pandas as pd
 import geopandas as gpd
 import history
 
-# TODO
-# check glacier outlines
 
-# Create output folder
-outfolder = "/mnt/summer/USERS/DEHECQA/history/data_prep/iceland/aux_data/"
-os.makedirs(outfolder, exist_ok=True)
+# # Global settings
 
-# Temporary folder for intermediate files
-tmp_folder = os.path.join(outfolder, "tmp")
-os.makedirs(tmp_folder, exist_ok=True)
+OVERWRITE = False
 
-overwrite = False
+# PATH SETTINGS
+
+OUTPUT_DIRECTORY = "/mnt/summer/USERS/DEHECQA/history/data_prep/iceland/aux_dems/"
+
+# final generated files
+
+LARGE_DEM_FILE = os.path.join(OUTPUT_DIRECTORY, "IL_reference_dem_large.tif")
+ZOOM_DEM_FILE = os.path.join(OUTPUT_DIRECTORY, "IL_reference_dem_zoom.tif")
+LARGE_DEM_MASK_FILE = os.path.join(OUTPUT_DIRECTORY, "IL_reference_dem_large_mask.tif")
+ZOOM_DEM_MASK_FILE = os.path.join(OUTPUT_DIRECTORY, "IL_reference_dem_zoom_mask.tif")
+
+# temporary directory to download tiles and process
+
+TMP_DIRECTORY = os.path.join(OUTPUT_DIRECTORY, "tmp")
+
+LANDCOVER_DIRECTORY = os.path.join(TMP_DIRECTORY, "landcover")
+LIDARDEM_DIRECTORY = os.path.join(TMP_DIRECTORY, "lidar_dem")
+COP30DEM_DIRECTORY = os.path.join(TMP_DIRECTORY, "cop30_dem")
+
+os.makedirs(TMP_DIRECTORY, exist_ok=True)
+
 
 # Bounding box of the two area of interest, in ISN2016 (EPSG:8088)
 # Chosen to be multiple of 30 m (check with % 30)
@@ -50,10 +64,10 @@ print("Creating GJSON files of AOI")
 
 # Save to gjson files
 zoom_gdf = gpd.GeoDataFrame(geometry=[gu.projtools.bounds2poly(zoom_bounds),], crs=epsg_str)
-zoom_gdf.to_file(os.path.join(tmp_folder, "zoom_aoi.geojson"))
+zoom_gdf.to_file(os.path.join(TMP_DIRECTORY, "IL_zoom_aoi.geojson"))
 
 large_gdf = gpd.GeoDataFrame(geometry=[gu.projtools.bounds2poly(large_bounds),], crs=epsg_str)
-large_gdf.to_file(os.path.join(tmp_folder, "large_aoi.geojson"))
+large_gdf.to_file(os.path.join(TMP_DIRECTORY, "IL_large_aoi.geojson"))
 
 # Convert bounding boxes to latlon
 zoom_bounds_latlon = gu.projtools.bounds2poly(zoom_bounds, in_crs=epsg_str, out_crs="EPSG:4326").bounds
@@ -67,15 +81,15 @@ print("Done with AOI")
 
 # -- Download ESA worldcover classification --
 
-landcover_folder = os.path.join(tmp_folder, "landcover")
+landcover_folder = os.path.join(TMP_DIRECTORY, "landcover")
 os.makedirs(landcover_folder, exist_ok=True)
 
 landcover_vrt_fn = os.path.join(landcover_folder, "tmp.vrt")
 
-if overwrite or (not os.path.exists(landcover_vrt_fn)):
+if OVERWRITE or (not os.path.exists(landcover_vrt_fn)):
 
     print("\nProcessing ESA world_landcover")
-    landcover_tiles = history.aux_data.download_tools.download_esa_worldcover(landcover_folder, large_bounds_lonlat, year=2021, overwrite=overwrite, dryrun=False)
+    landcover_tiles = history.aux_data.download_tools.download_esa_worldcover(landcover_folder, large_bounds_lonlat, year=2021, overwrite=OVERWRITE, dryrun=False)
 
     # Create mosaic
     list_fn = os.path.join(landcover_folder, "list_tiles.txt")
@@ -89,44 +103,40 @@ if overwrite or (not os.path.exists(landcover_vrt_fn)):
 # -- Download RGI outlines --
 # For now, file has to be downloaded manually from https://daacdata.apps.nsidc.org/pub/DATASETS/nsidc0770_rgi_v7/regional_files/RGI2000-v7.0-G/RGI2000-v7.0-G-06_iceland.zip
 
-glacier_poly_fn = os.path.join(tmp_folder, "RGI2000-v7.0-G-06_iceland.zip")
+glacier_poly_fn = os.path.join(TMP_DIRECTORY, "RGI2000-v7.0-G-06_iceland.zip")
 assert os.path.exists(glacier_poly_fn)
 
 
 # -- Create lidar DEM mosaic --
 
-lidar_folder = os.path.join(tmp_folder, "lidardem")
-os.makedirs(lidar_folder, exist_ok=True)
-lidar_dem_fn = os.path.join(outfolder, "reference_dem_zoom.tif")
-
-if overwrite or (not os.path.exists(lidar_dem_fn)):
+if OVERWRITE or (not os.path.exists(ZOOM_DEM_FILE)):
 
     print("\nProcessing Lidar DEM")
         
     # Download tiles
     # Note: the list of files has been manually restricted to only cover the zoom area
-    cmd = f"wget -c -r -np -nd -A '*isn2016*.tif' -P {lidar_folder} https://ftp.lmi.is/.stm/joaquin/history/iceland/refdem_original/"
+    cmd = f"wget -c -r -np -nd -A '*isn2016*.tif' -P {LIDARDEM_DIRECTORY} https://ftp.lmi.is/.stm/joaquin/history/iceland/refdem_original/"
     print(cmd); # TMP! subprocess.run(cmd, shell=True)
 
     # Create mosaic
     # Use nearest interpolation as no resampling is needed
     # Overwrite the CRS definition as WKT is not complete
-    list_fn = os.path.join(lidar_folder, "list_tiles.txt")
-    tiles_downloaded = pd.Series(glob(os.path.join(lidar_folder, "IslandsDEM*isn2016*tif"))).sort_values()
+    list_fn = os.path.join(LIDARDEM_DIRECTORY, "list_tiles.txt")
+    tiles_downloaded = pd.Series(glob(os.path.join(LIDARDEM_DIRECTORY, "IslandsDEM*isn2016*tif"))).sort_values()
     tiles_downloaded.to_csv(list_fn, header=False, index=False)
 
-    tmp_vrt_fn = os.path.join(lidar_folder, "tmp.vrt")
+    tmp_vrt_fn = os.path.join(LIDARDEM_DIRECTORY, "tmp.vrt")
     cmd = f"gdalbuildvrt -r nearest {tmp_vrt_fn} -input_file_list {list_fn} -a_srs EPSG:8088 -resolution highest"
     print(cmd); subprocess.run(cmd, shell=True, check=True)
 
     # Crop and reproject
     bbox_gdal = " ".join([str(bound) for bound in zoom_bounds])
-    cmd = f"gdalwarp {tmp_vrt_fn} {lidar_dem_fn} -te {bbox_gdal} -tr 2 2 -t_srs {epsg_str} -co COMPRESS=DEFLATE -co tiled=yes -co bigtiff=if_safer -r cubic"
+    cmd = f"gdalwarp {tmp_vrt_fn} {ZOOM_DEM_FILE} -te {bbox_gdal} -tr 2 2 -t_srs {epsg_str} -co COMPRESS=DEFLATE -co tiled=yes -co bigtiff=if_safer -r cubic"
     print(cmd); subprocess.run(cmd, shell=True, check=True)
 
     # Sanity check - the mosaic should be close to equal to the original tiles
     tile = xdem.DEM(tiles_downloaded.iloc[6])
-    lidar_dem = xdem.DEM(lidar_dem_fn)
+    lidar_dem = xdem.DEM(ZOOM_DEM_FILE)
     ddem = tile - lidar_dem.reproject(tile)
     # assert np.max(np.abs(ddem)) == 0
     assert np.std(ddem) < 0.2
@@ -145,21 +155,21 @@ if overwrite or (not os.path.exists(lidar_dem_fn)):
     # # lidar_dem = lidar_dem.to_vcrs("WGS84")
 
     # # Save - Takes ~2 min
-    # lidar_dem.save(lidar_dem_fn, tiled=True)
+    # lidar_dem.save(ZOOM_DEM_FILE, tiled=True)
 
     print("\nDone with Lidar DEM\n")
 else:
-    print(f"Using existing lidar dem {lidar_dem_fn}")
+    print(f"Using existing lidar dem {ZOOM_DEM_FILE}")
 
 
 # --- Create COP30 mosaic ---
 
-cop30_folder = os.path.join(tmp_folder, "cop30")
+cop30_folder = os.path.join(TMP_DIRECTORY, "cop30")
 os.makedirs(cop30_folder, exist_ok=True)
 
 cop30_uncoreg_fn = os.path.join(cop30_folder, "cop30_uncoreg.tif")
 
-if overwrite or (not os.path.exists(cop30_uncoreg_fn)):
+if OVERWRITE or (not os.path.exists(cop30_uncoreg_fn)):
 
     print("\nProcessing COP30 DEM")
     # - Download tiles -
@@ -173,7 +183,7 @@ if overwrite or (not os.path.exists(cop30_uncoreg_fn)):
                     dtype="int"
                     )
 
-    cop30_tiles = history.aux_data.download_tools.download_cop30_tiles(bbox, cop30_folder, overwrite=overwrite)
+    cop30_tiles = history.aux_data.download_tools.download_cop30_tiles(bbox, cop30_folder, overwrite=OVERWRITE)
 
     # - Create mosaic -
     cop30_tiles_avail = pd.Series([tile for tile in cop30_tiles if os.path.exists(tile)])
@@ -205,7 +215,7 @@ if overwrite or (not os.path.exists(cop30_uncoreg_fn)):
     # earlier attempt with gdal_translate. Note: bounds are UL corner to LR
     # bbox_gdal = " ".join([str(zoom_bounds[k]) for k in [0, 3, 2, 1]])
 
-    # final_cop30_fn = os.path.join(tmp_folder, "iceland_cop30_dem.tif")
+    # final_cop30_fn = os.path.join(TMP_DIRECTORY, "iceland_cop30_dem.tif")
     # cmd = f"gdal_translate -a_ullr {bbox_gdal} {tmp_vrt_fn} {final_cop30_fn} -co COMPRESS=LZW -co TILED=yes"
     # print(cmd); subprocess.run(cmd, shell=True, check=True)
 
@@ -226,16 +236,15 @@ else:
 # TODO
 # very memory consuming - see if can be improved?
 
-cop30_coreg_fn = os.path.join(outfolder, "reference_dem_large.tif")
 
-if overwrite or (not os.path.exists(cop30_coreg_fn)):
+if OVERWRITE or (not os.path.exists(LARGE_DEM_FILE)):
 
     print("\nRunning coregistration\n")
     
     # Load DEMs (time and memory consuming... ~1.5 min)
     from time import time
     t0 = time()
-    dem_tbc, dem_ref = gu.raster.load_multiple_rasters([cop30_uncoreg_fn, lidar_dem_fn], crop=True, ref_grid=0)
+    dem_tbc, dem_ref = gu.raster.load_multiple_rasters([cop30_uncoreg_fn, ZOOM_DEM_FILE], crop=True, ref_grid=0)
     ddem_before = dem_tbc - dem_ref
     print(f"Took {(time() - t0)/60.} min")
 
@@ -275,8 +284,8 @@ if overwrite or (not os.path.exists(cop30_coreg_fn)):
     print(f"- After coreg:\n\tmean: {np.mean(ddem_aft_inlier):.3f}\n\tmedian: {np.median(ddem_aft_inlier):.3f}\n\tNMAD: {xdem.spatialstats.nmad(ddem_aft_inlier):.3f}")
 
     # Save DEM diff and inlier mask
-    ddem_after.save(os.path.join(tmp_folder, "iceland_dem-diff.tif"), tiled=True)
-    inlier_mask_vert.save(os.path.join(tmp_folder, "coreg_mask.tif"), tiled=True)
+    ddem_after.save(os.path.join(TMP_DIRECTORY, "iceland_dem-diff.tif"), tiled=True)
+    inlier_mask_vert.save(os.path.join(TMP_DIRECTORY, "coreg_mask.tif"), tiled=True)
 
     # -- Plots --
 
@@ -351,55 +360,52 @@ if overwrite or (not os.path.exists(cop30_coreg_fn)):
     # Loading full extent COP30, applying transformation and saving
     cop30_uncoreg = xdem.DEM(cop30_uncoreg_fn)
     cop30_coreg = coreg_vert.apply(coreg_hori.apply(cop30_uncoreg))
-    cop30_coreg.save(cop30_coreg_fn, tiled=True)
+    cop30_coreg.save(LARGE_DEM_FILE, tiled=True)
 
     # Note: using coreg pipeline does not work...
     # coreg = coreg_hori + coreg_vert
     # coreg.apply(dem_tbc)
 
 else:
-    print(f"Using existing coregistered COP30 DEM {cop30_coreg_fn}")
+    print(f"Using existing coregistered COP30 DEM {LARGE_DEM_FILE}")
 
 
 # -- Reprojecting the landcover maps and creating masked DEMs --
 
 print("## Creating DEM masks ##")
 
-mask_large_fn = os.path.join(outfolder, "reference_dem_large_mask.tif")
-mask_zoom_fn = os.path.join(outfolder, "reference_dem_zoom_mask.tif")
-
-if overwrite or (not os.path.exists(mask_large_fn)) or (not os.path.exists(mask_zoom_fn)):
+if OVERWRITE or (not os.path.exists(LARGE_DEM_MASK_FILE)) or (not os.path.exists(ZOOM_DEM_MASK_FILE)):
     
     # Load input data
     landcover = gu.Raster(landcover_vrt_fn)
     glacier_poly = gu.Vector(glacier_poly_fn)
 
-    lidar_dem = xdem.DEM(lidar_dem_fn)
-    cop30_coreg = xdem.DEM(cop30_coreg_fn)
+    lidar_dem = xdem.DEM(ZOOM_DEM_FILE)
+    cop30_coreg = xdem.DEM(LARGE_DEM_FILE)
 
     # -  Creating mask for large area
 
-    landcover_large_fn = os.path.join(tmp_folder, "landcover_large.tif")
-    history.aux_data.download_tools.reproject_gdal(landcover_vrt_fn, cop30_coreg_fn, landcover_large_fn, resampling_algo="nearest")
+    landcover_large_fn = os.path.join(TMP_DIRECTORY, "IL_landcover_large.tif")
+    history.aux_data.download_tools.reproject_gdal(landcover_vrt_fn, LARGE_DEM_FILE, landcover_large_fn, resampling_algo="nearest")
     landcover_large = gu.Raster(landcover_large_fn)
 
     #landcover_large = landcover.reproject(cop30_coreg, resampling="nearest")
-    #landcover_large.save(os.path.join(tmp_folder, "landcover_large.tif"), tiled=True)
+    #landcover_large.save(os.path.join(TMP_DIRECTORY, "landcover_large.tif"), tiled=True)
     glacier_mask = glacier_poly.create_mask(cop30_coreg)
 
     # Masking anything but shrubland, grassland, bare/sparse vegetation, moss/lichen. + glacier
     mask_large = np.isin(landcover_large.data, [20, 30, 60, 100]) & ~glacier_mask
 
-    mask_large.save(mask_large_fn, tiled=True)
+    mask_large.save(LARGE_DEM_MASK_FILE, tiled=True)
 
     # -  Creating mask for zoom area
 
     landcover_zoom = landcover.reproject(lidar_dem, resampling="nearest")
-    landcover_zoom.save(os.path.join(tmp_folder, "landcover_zoom.tif"), tiled=True)
+    landcover_zoom.save(os.path.join(TMP_DIRECTORY, "IL_landcover_zoom.tif"), tiled=True)
     glacier_mask = glacier_poly.create_mask(lidar_dem)
     mask_zoom = np.isin(landcover_zoom.data, [20, 30, 60, 100]) & ~glacier_mask
 
     # mask_zoom = mask.reproject(lidar_dem, resampling="nearest")
-    mask_zoom.save(mask_zoom_fn, tiled=True)
+    mask_zoom.save(ZOOM_DEM_MASK_FILE, tiled=True)
 
 print("Done with DEM masks")
