@@ -1,12 +1,12 @@
 """
 Script to prepare the auxiliary data for the Casa Grande site for the History project. The following data are prepared:
-- reference lidar DEM over Maricopa county, provided by the USGS: https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/1m/Projects/AZ_MaricopaPinal_2020_B20/
+- reference lidar DEM over Maricopa county, provided by the USGS: https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/1m/Projects/AZ_MaricopaPinal_2020_B20/. Update: the lidar DEM is processed using UW lidar_tools.
 - Copernicus 30 m DEM: 1x1 degree tiles are downloaded, merged and reprojected on the same horizontal and vertical reference system as lidar DEM. It is then coregistered horizontally with a Nuth & Kaan (2011) algorithm and vertically by calculating a median shift in stable areas. Stable areas are defined as bare land, grassland and shrubland in the ESA worldcover (see below) and excluding sibsiding land (see below).
 - ESA worldcover dataset: each 1x1 degree tile are downloaded from the S3 bucket and merged
 - Land subsidence vector file downloaded from https://azgeo-open-data-agic.hub.arcgis.com/datasets/azwater::land-subsidence/explore
 
 Author: Amaury Dehecq
-Last modified: October 2025 
+Last modified: November 2025 
 """
 
 import os
@@ -32,14 +32,14 @@ OVERWRITE = False
 
 # PATH SETTINGS
 
-OUTPUT_DIRECTORY = "/mnt/summer/USERS/DEHECQA/history/data_prep/casa_grande/aux_data/"
-VISUALIZATION_DIRECTORY = "/mnt/summer/USERS/DEHECQA/history/data_prep/casa_grande/aux_data/visualizations"
+OUTPUT_DIRECTORY = "/mnt/summer/USERS/DEHECQA/history/data_prep/casa_grande/aux_dems/"
+VISUALIZATION_DIRECTORY = "/mnt/summer/USERS/DEHECQA/history/data_prep/casa_grande/aux_dems/visualizations"
 
 # final generated files
-LARGE_DEM_FILE = os.path.join(OUTPUT_DIRECTORY, "reference_dem_large.tif")
-ZOOM_DEM_FILE = os.path.join(OUTPUT_DIRECTORY, "reference_dem_zoom.tif")
-LARGE_DEM_MASK_FILE = os.path.join(OUTPUT_DIRECTORY, "reference_dem_large_mask.tif")
-ZOOM_DEM_MASK_FILE = os.path.join(OUTPUT_DIRECTORY, "reference_dem_zoom_mask.tif")
+LARGE_DEM_FILE = os.path.join(OUTPUT_DIRECTORY, "CG_reference_dem_large.tif")
+ZOOM_DEM_FILE = os.path.join(OUTPUT_DIRECTORY, "CG_reference_dem_zoom.tif")
+LARGE_DEM_MASK_FILE = os.path.join(OUTPUT_DIRECTORY, "CG_reference_dem_large_mask.tif")
+ZOOM_DEM_MASK_FILE = os.path.join(OUTPUT_DIRECTORY, "CG_reference_dem_zoom_mask.tif")
 
 # temporary directory to download tiles and process
 TMP_DIRECTORY = os.path.join(OUTPUT_DIRECTORY, "tmp")
@@ -57,17 +57,17 @@ os.makedirs(VISUALIZATION_DIRECTORY, exist_ok=True)
 # zoom_bounds = [414000, 3613020, 444000, 3650010]
 # large_bounds = [261990, 3405030, 612990, 3880020]
 
-epsg_str = "EPSG:32612"
+epsg_str = "EPSG:6341"
 zoom_bounds = [414000, 3613020, 444000, 3650010]
 large_bounds = [261990, 3405030, 612990, 3880020]
 
 
 # Save to gjson files
 zoom_gdf = gpd.GeoDataFrame(geometry=[gu.projtools.bounds2poly(zoom_bounds),], crs=epsg_str)
-zoom_gdf.to_file(os.path.join(TMP_DIRECTORY, "zoom_aoi.geojson"))
+zoom_gdf.to_file(os.path.join(TMP_DIRECTORY, "CG_zoom_aoi.geojson"))
 
 large_gdf = gpd.GeoDataFrame(geometry=[gu.projtools.bounds2poly(large_bounds),], crs=epsg_str)
-large_gdf.to_file(os.path.join(TMP_DIRECTORY, "large_aoi.geojson"))
+large_gdf.to_file(os.path.join(TMP_DIRECTORY, "CG_large_aoi.geojson"))
 
 zoom_bounds_latlon = gu.projtools.bounds2poly(zoom_bounds, in_crs=epsg_str, out_crs="EPSG:4326").bounds
 large_bounds_latlon = gu.projtools.bounds2poly(large_bounds, in_crs=epsg_str, out_crs="EPSG:4326").bounds
@@ -106,49 +106,51 @@ assert os.path.exists(land_subsidence_file)
 
 # -- Create lidar DEM mosaic --
 
-if OVERWRITE or (not os.path.exists(ZOOM_DEM_FILE)):
+# The lidar DSM mosaic has been created by David Shean with lidar_tools (https://github.com/uw-cryo/lidar_tools).
+# with the following command:
+# lidar-tools rasterize --geometry reference_dem_zoom.geojson --output 1m_NAD83_2011_UTM12N --dst-crs NAD83_2011_UTM12N_3D.wkt --num-process 7 --overwrite
 
-    print("\nProcessing Lidar DEM")
+# The file was briefly postprocessed to exactly match the zoom grid and include the CRS directly in metadata rather than the .aux.xml (used for defining 3d CRS).
+# gdalwarp -tr 1 1 -te 414000 3613020 444000 3650010 reference_dem_zoom-DSM_mos.tif reference_dem_zoom.tif -co compress=lzw -co tiled=yes -overwrite
+# gdal_edit -a_srs EPSG:6341 reference_dem_zoom.tif
+
+# if OVERWRITE or (not os.path.exists(ZOOM_DEM_FILE)):
+
+#     print("\nProcessing Lidar DEM")
         
-    # Download tiles
-    # Note: the list of files has been manually restricted to only cover the zoom area
-    cmd = f"wget -c -r -np -nd -A '*x4[1-4]*y36[1-5]*.tif' -P {LIDARDEM_DIRECTORY} https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/1m/Projects/AZ_MaricopaPinal_2020_B20/TIFF/"
-    print(cmd); #subprocess.run(cmd, shell=True)
+#     # Download tiles
+#     # Note: the list of files has been manually restricted to only cover the zoom area
+#     cmd = f"wget -c -r -np -nd -A '*x4[1-4]*y36[1-5]*.tif' -P {LIDARDEM_DIRECTORY} https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/1m/Projects/AZ_MaricopaPinal_2020_B20/TIFF/"
+#     print(cmd); #subprocess.run(cmd, shell=True)
 
-    # Create mosaic
-    list_fn = os.path.join(LIDARDEM_DIRECTORY, "list_tiles.txt")
-    tiles_downloaded = pd.Series(glob(os.path.join(LIDARDEM_DIRECTORY, "USGS_1M*tif")))
-    tiles_downloaded.to_csv(list_fn, header=False, index=False)
+#     # Create mosaic
+#     list_fn = os.path.join(LIDARDEM_DIRECTORY, "list_tiles.txt")
+#     tiles_downloaded = pd.Series(glob(os.path.join(LIDARDEM_DIRECTORY, "USGS_1M*tif")))
+#     tiles_downloaded.to_csv(list_fn, header=False, index=False)
 
-    tmp_vrt_fn = os.path.join(LIDARDEM_DIRECTORY, "tmp.vrt")
-    cmd = f"gdalbuildvrt -r cubic {tmp_vrt_fn} -input_file_list {list_fn} -resolution highest"
-    print(cmd); subprocess.run(cmd, shell=True, check=True)
+#     tmp_vrt_fn = os.path.join(LIDARDEM_DIRECTORY, "tmp.vrt")
+#     cmd = f"gdalbuildvrt -r cubic {tmp_vrt_fn} -input_file_list {list_fn} -resolution highest"
+#     print(cmd); subprocess.run(cmd, shell=True, check=True)
 
-    # Crop and reproject
-    bbox_gdal = " ".join([str(bound) for bound in zoom_bounds])
-    cmd = f"gdalwarp {tmp_vrt_fn} {ZOOM_DEM_FILE} -te {bbox_gdal} -tr 1 1 -t_srs {epsg_str} -co COMPRESS=DEFLATE -co tiled=yes -co bigtiff=if_safer -r cubic"
-    print(cmd); subprocess.run(cmd, shell=True, check=True)
+#     # Crop and reproject
+#     bbox_gdal = " ".join([str(bound) for bound in zoom_bounds])
+#     cmd = f"gdalwarp {tmp_vrt_fn} {ZOOM_DEM_FILE} -te {bbox_gdal} -tr 1 1 -t_srs {epsg_str} -co COMPRESS=DEFLATE -co tiled=yes -co bigtiff=if_safer -r cubic"
+#     print(cmd); subprocess.run(cmd, shell=True, check=True)
 
-    # Convert from NAVD88 geoid to ellipsoid - very memory intensive !
-    # According to report https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/metadata/AZ_MaricopaPinal_2020_B20/USGS_AZ_MaricopaPinal_2020_B20_Project_Report.pdf, the geoid should be GEOID18.
-    # The file was selected from https://cdn.proj.org/
-    print("\nChanging vertical datum - this takes a few minutes\n")
-    lidar_dem = xdem.DEM(ZOOM_DEM_FILE)#.crop(zoom_bounds)
-    lidar_dem.set_vcrs("us_noaa_g2018u0.tif") 
-    lidar_dem = lidar_dem.to_vcrs("WGS84")
-
-    # Possible one-line alternative with gdal? Not applying a vertical correction so far...
-    # projinfo -s EPSG:26912+4269 -t EPSG:32612 -o PROJ --hide-ballpark --single-line -q  # -> used to set PROJ_PIPELINE
-    # PROJ_PIPELINE='+proj=pipeline +step +inv +proj=utm +zone=12 +ellps=GRS80 +step +proj=utm +zone=12 +ellps=WGS84'
-    # gdalwarp /mnt/summer/USERS/DEHECQA/history/data_prep/casa_grande/aux_data/tmp/lidar_dem/tmp.vrt /mnt/summer/USERS/DEHECQA/history/data_prep/casa_grande/aux_data/reference_dem_zoom_vcrs.tif -te 414000 3613020 444000 3650010 -tr 10 10 -s_srs EPSG:26912+4269 -t_srs EPSG:32612 -ct "${PROJ_PIPELINE}" -co COMPRESS=DEFLATE -co tiled=yes -co bigtiff=if_safer -r cubic -overwrite
-
+#     # Convert from NAVD88 geoid to ellipsoid - very memory intensive !
+#     # According to report https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/metadata/AZ_MaricopaPinal_2020_B20/USGS_AZ_MaricopaPinal_2020_B20_Project_Report.pdf, the geoid should be GEOID18.
+#     # The file was selected from https://cdn.proj.org/
+#     print("\nChanging vertical datum - this takes a few minutes\n")
+#     lidar_dem = xdem.DEM(ZOOM_DEM_FILE)#.crop(zoom_bounds)
+#     lidar_dem.set_vcrs("us_noaa_g2018u0.tif") 
+#     lidar_dem = lidar_dem.to_vcrs("WGS84")
     
-    # Save
-    lidar_dem.save(ZOOM_DEM_FILE, tiled=True)
+#     # Save
+#     lidar_dem.save(ZOOM_DEM_FILE, tiled=True)
 
-    print("\nDone with Lidar DEM\n")
-else:
-    print(f"Using existing lidar dem {ZOOM_DEM_FILE}")
+#     print("\nDone with Lidar DEM\n")
+# else:
+print(f"Using existing lidar dem {ZOOM_DEM_FILE}")
 
 
 # --- Create COP30 mosaic ---
@@ -368,7 +370,7 @@ if OVERWRITE or (not os.path.exists(LARGE_DEM_MASK_FILE)) or (not os.path.exists
     # -  Creating mask for large area
 
     landcover_large = landcover.reproject(cop30_coreg, resampling="nearest")
-    landcover_large.save(os.path.join(OUTPUT_DIRECTORY, "landcover_large.tif"), tiled=True)
+    landcover_large.save(os.path.join(TMP_DIRECTORY, "CG_landcover_large.tif"), tiled=True)
     subsid_mask = subsid_poly.create_mask(cop30_coreg)
 
     # Masking anything but shrubland, grassland, bare/sparse vegetation, moss/lichen. + subsidence
@@ -378,7 +380,7 @@ if OVERWRITE or (not os.path.exists(LARGE_DEM_MASK_FILE)) or (not os.path.exists
     # -  Creating mask for zoom area
 
     landcover_zoom = landcover.reproject(lidar_dem, resampling="nearest")
-    landcover_zoom.save(os.path.join(OUTPUT_DIRECTORY, "landcover_zoom.tif"), tiled=True)
+    landcover_zoom.save(os.path.join(TMP_DIRECTORY, "CG_landcover_zoom.tif"), tiled=True)
     subsid_mask = subsid_poly.create_mask(lidar_dem)
     mask_zoom = np.isin(landcover_zoom.data, [20, 30, 60, 100]) & ~subsid_mask
 
