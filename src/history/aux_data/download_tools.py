@@ -10,6 +10,7 @@ import geoutils as gu
 import geopandas as gpd
 from tqdm.auto import tqdm
 from shapely.geometry import Polygon
+import numpy as np
 
 
 def retrieve_lat_lon_codes(lat, lon):
@@ -109,7 +110,22 @@ def geodiff(dem1_fn, dem2_fn, vmax=10, src_vcrs=None, dst_vcrs=None):
     ddem.plot(cmap="RdYlBu", vmin=-vmax, vmax=vmax)
     plt.show()
 
-    
+
+def reproject_gdal(src_fn, ref_fn, out_fn, resampling_algo="bilinear", overwrite=True):
+    """
+    Reproject file src_fn on the same CRS and grid as ref_fn using gdalwarp.
+    """
+
+    ref_rst = gu.Raster(ref_fn)
+    te_str = " ".join(np.array(ref_rst.bounds).astype("str"))
+    tr_str = " ".join(np.array(ref_rst.res).astype("str"))
+    crs_str = ref_rst.crs.to_proj4()
+    cmd = f"gdalwarp -r {resampling_algo} -te {te_str} -tr {tr_str} -t_srs '{crs_str}' {src_fn} {out_fn} -co compress=DEFLATE"
+    if overwrite:
+        cmd += " -overwrite"
+    print(cmd); subprocess.run(cmd, shell=True, check=True)
+
+
 def coregister(dem_ref_fn, dem_tbc_fn, gl_outlines_fn=None, vmax=10):
 
     dem_ref, dem_tbc = gu.raster.load_multiple_rasters([dem_ref_fn, dem_tbc_fn], crop=True, ref_grid=0)
