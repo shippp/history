@@ -1,22 +1,31 @@
 import argparse
-import os
 import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-
-
 # Defines the expected segments in the filename, separated by _
 SEGMENT_SPECS_v2 = [
-    ("author", r"[A-Za-z0-9]{4}", "exactly 4 alphanumeric characters"),
-    ("site", r"(?:CG|IL)",     "either 'CG' or 'IL'"),
-    ("dataset",   r"(?:AI|MC|PC)", "either AI, MC or PC"),
-    ("images", r"(?:PP|RA)",     "either 'PP' or 'RA'"),
-    ("calib_used",  r"C[YN]",   "either CY or CN"),
-    ("gcp_used",   r"G[MAN]",   "either of 'GM', 'GA', 'GN'"),
-    ("pointcloud_coregistration",  r"P[YN]",   "either of 'PY' or 'PN'"),
-    ("mtp_adjustments",   r"M[YN]",   "either of 'MY' or 'MN'"),
+    ("author", r"[A-Za-z0-9]{3,4}", "exactly 3 or 4 alphanumeric characters"),
+    ("site", r"(?:CG|IL)", "either 'CG' or 'IL'"),
+    ("dataset", r"(?:AI|MC|PC)", "either AI, MC or PC"),
+    ("images", r"(?:PP|RA)", "either 'PP' or 'RA'"),
+    ("calib_used", r"C[YN]", "either CY or CN"),
+    ("gcp_used", r"G[MAN]", "either of 'GM', 'GA', 'GN'"),
+    ("pointcloud_coregistration", r"P[YN]", "either of 'PY' or 'PN'"),
+    ("mtp_adjustments", r"M[YN]", "either of 'MY' or 'MN'"),
+]
+
+# Specs valid for initial round (v1), to be kept for reference
+SEGMENT_SPECS_v1 = [
+    ("author", r".*", "any characters"),
+    ("site", r"(?:CG|IL)", "either 'CG' or 'IL'"),
+    ("dataset", r"(?:AI|MC|PC)", "either AI, MC or PC"),
+    ("images", r"(?:PP|RA)", "either 'PP' or 'RA'"),
+    ("calib_used", r"C[YN]", "either CY or CN"),
+    ("gcp_used", r"G[YN]", "either of 'GY' or 'GN'"),
+    ("pointcloud_coregistration", r"P[YN]", "either of 'PY' or 'PN'"),
+    ("mtp_adjustments", r"M[YN]", "either of 'MY' or 'MN'"),
 ]
 
 # optional version segment
@@ -73,13 +82,13 @@ def parse_filename(fname: str | Path) -> tuple[str, dict[str, Any]]:
     if match:
         # identify each segment
         groups = match.groups()
-        segment_values = groups[:len(SEGMENT_SPECS_v2)]
+        segment_values = groups[: len(SEGMENT_SPECS_v2)]
         version = groups[len(SEGMENT_SPECS_v2)]
         suffix = groups[len(SEGMENT_SPECS_v2) + 1]
 
         # build normalized code
         code = "_".join([v for v in segment_values if v is not None])
-        
+
         # save all codes in dictionary
         metadatas = {name: value for (name, _, _), value in zip(SEGMENT_SPECS_v2, segment_values)}
         metadatas["version"] = version
@@ -92,10 +101,7 @@ def parse_filename(fname: str | Path) -> tuple[str, dict[str, Any]]:
     # 1. Validate suffix FIRST (robust to underscores)
     suffix_match = re.search(rf"_(?P<suffix>{SUFFIX_REGEX})$", fname)
     if not suffix_match:
-        raise ValueError(
-            f"Invalid or missing file suffix. "
-            f"Expected one of {sorted(ALLOWED_SUFFIXES)}"
-        )
+        raise ValueError(f"Invalid or missing file suffix. Expected one of {sorted(ALLOWED_SUFFIXES)}")
 
     suffix = suffix_match.group("suffix")
     prefix = fname[: suffix_match.start()]
@@ -105,9 +111,7 @@ def parse_filename(fname: str | Path) -> tuple[str, dict[str, Any]]:
     if version_match:
         prefix = prefix[: version_match.start()]
     elif "_v" in prefix:
-        raise ValueError(
-            "Invalid version segment: expected '_vX' where X is a digit"
-        )
+        raise ValueError("Invalid version segment: expected '_vX' where X is a digit")
 
     # 3. Segment validation
     parts = prefix.split("_")
@@ -117,16 +121,12 @@ def parse_filename(fname: str | Path) -> tuple[str, dict[str, Any]]:
             f"before the optional version, got {len(parts)}"
         )
 
-    for i, ((name, regex, description), value) in enumerate(
-        zip(SEGMENT_SPECS_v2, parts), start=1
-    ):
+    for i, ((name, regex, description), value) in enumerate(zip(SEGMENT_SPECS_v2, parts), start=1):
         if not re.fullmatch(regex, value):
-            raise ValueError(
-                f"Segment {i} ({name}) is invalid: '{value}' — "
-                f"expected {description}"
-            )
+            raise ValueError(f"Segment {i} ({name}) is invalid: '{value}' — expected {description}")
 
     raise ValueError("Filename does not match the expected pattern")
+
 
 def test_parsing():
     """
@@ -138,13 +138,13 @@ def test_parsing():
         "TAG1_CG_PC_PP_CY_GA_PY_MY_dense_pointcloud.las",  # correct despite las file
         "MyFullName_CG_MC_PP_CN_GN_PN_MN_dense_pointcloud.laz",  # incorrect author tag
         "TAG1_CA_MC_RA_CN_GN_PN_MN_dense_pointcloud.laz",  # incorrect site tag
-        "TAG1_CG_M9_PP_CN_GN_PN_MN_dense_pointcloud.laz",   # incorrect dataset tag M9 
-        "TAG1_CG_MC_PR_CN_GN_PN_MN_dense_pointcloud.laz",   # incorrect image tag PR
+        "TAG1_CG_M9_PP_CN_GN_PN_MN_dense_pointcloud.laz",  # incorrect dataset tag M9
+        "TAG1_CG_MC_PR_CN_GN_PN_MN_dense_pointcloud.laz",  # incorrect image tag PR
         "TAG1_CG_MC_PP_RN_GN_PN_MN_dense_pointcloud.laz",  # incorrect calib_used tag RN
         "TAG1_CG_MC_PP_CN_PY_PN_MN_dense_pointcloud.laz",  # incorrect gcp_used tag PY
         "TAG1_CG_MC_PP_CN_GN_PS_MN_dense_pointcloud.laz",  # incorrect pointcloud_coregistration tag PS
         "TAG1_CG_MC_PP_CN_GN_PY_MA_dense_pointcloud.laz",  # incorrect mtp_adjustments tag MA
-        "TAG1_CG_MC_PP_CN_GN_PN_MN_dense_pc.laz",   # incorrect suffix
+        "TAG1_CG_MC_PP_CN_GN_PN_MN_dense_pc.laz",  # incorrect suffix
         "TAG1_CG_MC_PP_CN_GN_PN_MN_v10_dense_pointcloud.laz",  # incorrect version
         "TAG1_CG_MC_PP_CN_GN_PN_dense_pointcloud.laz",  # incorrect number of segments
         "my-submission_dense_pointcloud.laz",  # completely wrong name
@@ -218,7 +218,6 @@ def main(input_dir: Path):
         else:
             missing_files = set(MANDATORY_PATTERNS) - set(file_codes)
             print(f"{RED}missing mandatory file(s): {missing_files}{RESET}")
-
 
 
 if __name__ == "__main__":
