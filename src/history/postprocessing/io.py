@@ -1,13 +1,38 @@
+import re
 import shutil
 import tarfile
 import zipfile
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Union
 
 import pandas as pd
 import py7zr
 
-from .io import *
+FILE_CODE_MAPPING: dict[str, dict[str, str]] = {
+    "site": {"CG": "casa_grande", "IL": "iceland"},
+    "dataset": {"AI": "aerial", "MC": "kh9mc", "PC": "kh9pc"},
+    "images": {"RA": "raw", "PP": "preprocessed"},
+    "use_of_camera_calibration": {"CY": "Yes", "CN": "No"},
+    "use_of_gcps": {"GM": "Manual (provided)", "GA": "Automated approch", "GN": "No", "GY": "Yes"},
+    "pointcloud_coregistration": {"PY": "Yes", "PN": "No"},
+    "mtb_adjustment": {"MY": "Yes", "MN": "No"},
+}
+
+FILENAME_PATTERN = re.compile(
+    r"""
+    ^(?P<author>[^_]+)_
+    (?P<site>[A-Z]{2})_
+    (?P<dataset>[A-Z]{2})_
+    (?P<images>[A-Z]{2})_
+    (?P<camera_used>[A-Z]{2})_
+    (?P<gcp_used>[A-Z]{2})_
+    (?P<pointcloud_coregistration>[A-Z]{2})_
+    (?P<mtp_adjustment>[A-Z]{2})
+    (?:_(?P<version>V\d+))?
+    .*$
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
 
 
 def check_disk_space_and_estimate(archive_files: List[Path], output_dir: Path) -> Dict[str, float]:
@@ -44,124 +69,6 @@ def check_disk_space_and_estimate(archive_files: List[Path], output_dir: Path) -
         "archive_size_gb": archive_size_gb,
         "estimated_extracted_gb": estimated_extracted_gb,
     }
-
-
-def uncompress_all_submissions(
-    data_dir: Union[str, Path] = "/path/to/submissions/",
-    output_dir: Optional[Union[str, Path]] = None,
-    overwrite: bool = False,
-    dry_run: bool = True,
-    verbose: bool = True,
-) -> Dict[str, str]:
-    """
-    Uncompress all archive files in the submissions data directory.
-
-    Supports multiple archive formats: .zip, .7z, .tgz, .tar.gz, .tar.bz2
-
-    Parameters
-    ----------
-    data_dir : str or Path
-        Directory containing the compressed submission files
-    output_dir : str or Path, optional
-        Directory to extract files to. If None, creates 'extracted' subdirectory
-    overwrite : bool, default False
-        Whether to overwrite existing extracted directories
-    dry_run : bool, default False
-        If True, only print what would be done without actually extracting
-
-    Returns
-    -------
-    Dict[str, str]
-        Dictionary mapping archive filename to extraction directory path
-
-    """
-    if verbose and dry_run:
-        print("Dry run:", dry_run)
-
-    data_dir = Path(data_dir)
-    if output_dir is None:
-        output_dir = data_dir
-    else:
-        output_dir = Path(output_dir)
-
-    # Create output directory
-    if not dry_run:
-        output_dir.mkdir(exist_ok=True)
-
-    # Define supported archive extensions
-    archive_extensions = {
-        ".zip": _extract_zip,
-        ".7z": _extract_7z,
-        ".tgz": _extract_tar,
-        ".tar.gz": _extract_tar,
-        ".tar.bz2": _extract_tar,
-        ".tar.xz": _extract_tar,
-    }
-
-    results = {}
-
-    # Find all archive files
-    archive_files = []
-    # Sort extensions by length (longest first) to handle .tar.gz before .gz
-    sorted_extensions = sorted(archive_extensions.keys(), key=len, reverse=True)
-    for ext in sorted_extensions:
-        archive_files.extend(data_dir.glob(f"*{ext}"))
-
-    # Remove duplicates and macOS metadata files
-    seen = set()
-    unique_files = []
-    for f in archive_files:
-        if f not in seen and not f.name.startswith("._"):
-            seen.add(f)
-            unique_files.append(f)
-    archive_files = unique_files
-
-    if verbose:
-        print(f"Found {len(archive_files)} archive files")
-        [print(i) for i in sorted(archive_files)]
-
-        # Check disk space and estimate requirements
-        space_info = check_disk_space_and_estimate(archive_files, output_dir)
-        print("\nDisk space analysis:")
-        print(f"  Available space: {space_info['available_gb']:.1f} GB")
-        print(f"  Archive size: {space_info['archive_size_gb']:.1f} GB")
-        print(f"  Estimated extracted size: {space_info['estimated_extracted_gb']:.1f} GB")
-
-        if space_info["estimated_extracted_gb"] > space_info["available_gb"]:
-            print("WARNING: Estimated extracted size exceeds available space!")
-        else:
-            print("Sufficient disk space available")
-        print()
-
-    # Process each archive file
-    for archive_file in sorted(archive_files):
-        result = extract_single_archive(archive_file, output_dir, overwrite=overwrite, dry_run=dry_run, verbose=verbose)
-        if result is not None:
-            results[archive_file.name] = result
-
-    # Check if any files are archives
-    archive_files_l2 = []
-    for ext in sorted_extensions:
-        archive_files_l2.extend(output_dir.glob(f"**/*{ext}"))
-
-    if verbose:
-        print(f"\nFound {len(archive_files_l2)} encapsulated archive files")
-        [print(i) for i in sorted(archive_files_l2)]
-
-    if len(archive_files_l2) > 0:
-        for archive_file in sorted(archive_files_l2):
-            archive_dir = archive_file.parent
-            result = extract_single_archive(
-                archive_file, archive_dir, overwrite=overwrite, dry_run=dry_run, verbose=verbose
-            )
-            if result is not None:
-                results[archive_file.name] = result
-                archive_file.unlink()  # delete encapsulated archive
-
-    if verbose:
-        print(f"Extraction complete. Processed {len(results)} files.")
-
-    return results
 
 
 def extract_single_archive(
@@ -307,14 +214,6 @@ def analyze_submissions(
         and dictionary mapping adjusted experiment codes to file paths
     """
     data_dir = Path(data_dir)
-
-    # Define the expected mandatory files
-    mandatory_files = [
-        "sparse_pointcloud.laz",  # or .las
-        "dense_pointcloud.laz",  # or .las
-        "extrinsics.csv",
-        "intrinsics.csv",
-    ]
 
     # Define code meanings
     codes = {
@@ -799,3 +698,191 @@ def filter_experiment_data(
         filtered_df = filtered_df[filtered_df["multi-temporal"] == multi_temporal]
 
     return filtered_df
+
+
+def mirror_as_symlinks(src_dir: str | Path, dst_dir: str | Path, overwrite: bool = False) -> None:
+    """
+    Create a mirrored directory structure where all files in the source directory
+    are reproduced as symbolic links in the destination directory.
+
+    The directory tree is preserved exactly, but every file becomes a symlink
+    pointing to the original file in `src_dir`.
+
+    Parameters
+    ----------
+    src_dir : str | Path
+        Source directory containing real files.
+    dst_dir : str | Path
+        Destination directory where symlink copies will be created.
+    overwrite : bool, optional
+        If True, existing symlinks or files in the dst_dir will be replaced.
+        Default is False.
+
+    Returns
+    -------
+    None
+        The function creates files/directories but returns nothing.
+    """
+    src_dir = Path(src_dir)
+    dst_dir = Path(dst_dir)
+
+    if not src_dir.is_dir():
+        raise NotADirectoryError(f"Source directory does not exist: {src_dir}")
+
+    # Create destination directory if needed
+    dst_dir.mkdir(parents=True, exist_ok=True)
+
+    for path in src_dir.rglob("*"):
+        relative_path = path.relative_to(src_dir)
+        target_path = dst_dir / relative_path
+
+        if path.is_dir():
+            # Recreate directory structure
+            target_path.mkdir(exist_ok=True)
+        else:
+            # Create parent directories if missing
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Handle overwriting
+            if target_path.exists():
+                if overwrite:
+                    if target_path.is_file() or target_path.is_symlink():
+                        target_path.unlink()
+                    else:
+                        shutil.rmtree(target_path)
+                else:
+                    continue
+
+            # Create symbolic link pointing to the source file
+            target_path.symlink_to(path.resolve())
+
+
+def parse_filename(file: str | Path) -> tuple[str, dict[str, Any]]:
+    """
+    Parse a filename following the predefined code convention described in FILE_CODE_MAPPING_V1.
+
+    This function extracts structured information from a filename built using a specific
+    naming convention such as:
+        AUTHOR_SITE_DATASET_IMAGES_CAMERAUSED_GCPUSED_POINTCLOUDCOREG_MTPADJ[_V1-DEM].tif
+
+    Each short code (e.g., 'CG', 'AI', 'RA', 'CY') is validated against FILE_CODE_MAPPING_V1
+    to ensure consistency and then mapped to its corresponding descriptive value.
+
+    Args:
+        file: Path or filename to parse.
+
+    Returns:
+        tuple[str, dict]:
+            - code: normalized filename code (e.g., "ALICE_CG_AI_RA_CY_GY_PY_MY_V1")
+            - metadatas: dictionary of parsed metadata fields mapped to their descriptive values.
+
+    Raises:
+        ValueError: If the filename does not respect the expected naming convention
+                    or contains unknown codes not defined in FILE_CODE_MAPPING_V1.
+    """
+    match = FILENAME_PATTERN.match(Path(file).stem)
+
+    if not match:
+        raise ValueError(f"The filename {Path(file).stem} don't respect the code convention")
+
+    match_dict = match.groupdict()
+    metadatas = {"author": match_dict["author"]}
+
+    for key, value in match_dict.items():
+        if key in FILE_CODE_MAPPING:
+            metadatas[key] = FILE_CODE_MAPPING[key].get(value)
+
+    metadatas["version"] = match_dict.get("version")
+
+    code = "_".join([v for v in match_dict.values() if v is not None])
+    return code, metadatas
+
+
+class ReferencesData:
+    def __init__(self, references_data_mapping: dict[tuple[str, str], dict[str, str | Path]]):
+        """
+        Initialize a ReferencesData instance, which manages access to reference data
+        for multiple sites and datasets, including DEMs, DEM masks, and landcover rasters.
+
+        The class provides methods to retrieve the appropriate reference files for a
+        given site and dataset, ensuring that all expected files exist.
+
+        Parameters
+        ----------
+        references_data_mapping : dict
+            A mapping from (site, dataset) tuples to dictionaries containing file paths for:
+            - "ref_dem": reference DEM raster
+            - "ref_dem_mask": corresponding DEM mask
+            - "landcover": landcover raster
+
+        Raises
+        ------
+        KeyError
+            If expected (site, dataset) keys or sub-keys are missing.
+        FileNotFoundError
+            If any referenced file does not exist.
+        """
+        self.__check_keys_validity(list(references_data_mapping.keys()))
+        self.__check_values_validity(references_data_mapping)
+        self.__references_data_mapping = references_data_mapping
+
+    def get_ref_dem(self, site: str, dataset: str) -> Path:
+        return Path(self.__references_data_mapping[(site, dataset)]["ref_dem"])
+
+    def get_ref_dem_mask(self, site: str, dataset: str) -> Path:
+        return Path(self.__references_data_mapping[(site, dataset)]["ref_dem_mask"])
+
+    def get_landcover(self, site: str, dataset: str) -> Path:
+        return Path(self.__references_data_mapping[(site, dataset)]["landcover"])
+
+    @staticmethod
+    def __check_keys_validity(keys: list[tuple[str, str]]) -> None:
+        expected_keys = {
+            (site, dataset)
+            for site in FILE_CODE_MAPPING["site"].values()
+            for dataset in FILE_CODE_MAPPING["dataset"].values()
+        }
+
+        # Detect missing keys
+        missing_keys = expected_keys - set(keys)
+        if missing_keys:
+            raise KeyError(
+                f"The following (site, dataset) keys are missing in references_data_mapping: {sorted(missing_keys)}"
+            )
+
+    @staticmethod
+    def __check_values_validity(references_data_mapping: dict[tuple[str, str], dict[str, str | Path]]) -> None:
+        expected_sub_keys = set(["ref_dem", "ref_dem_mask", "landcover"])
+
+        for (site, dataset), sub_dict in references_data_mapping.items():
+            sub_keys = set(sub_dict.keys())
+
+            # Detect missing keys
+            missing_keys = expected_sub_keys - set(sub_keys)
+            if missing_keys:
+                raise KeyError(
+                    f"The following ({site}, {dataset}) sub keys are missing in references_data_mapping: {sorted(missing_keys)}"
+                )
+
+            for file_type, file_path in sub_dict.items():
+                fp = Path(file_path)
+                if not fp.exists():
+                    raise FileNotFoundError(
+                        f"File '{fp}' for type '{file_type}' in ({site}, {dataset}) does not exist."
+                    )
+
+
+def get_filepaths_df(**kwargs: Iterable[str | Path]) -> pd.DataFrame:
+    df = pd.DataFrame()
+    df.index.name = "code"
+
+    for key, files in kwargs.items():
+        for f in files:
+            try:
+                code, metadatas = parse_filename(f)
+                for k, v in metadatas.items():
+                    df.at[code, k] = v
+                df.at[code, key] = str(f)
+            except ValueError:
+                continue
+    return df.sort_index()

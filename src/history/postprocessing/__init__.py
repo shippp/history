@@ -1,17 +1,14 @@
-from . import visualization
-from .core import (
-    PostProcessing,
-    find_pointclouds,
-)
-
-# from .coregistration import coregister_dem, iter_coregister_dems
-from .io import *
-from .plotting import *
+from . import pipeline, plotting
+from . import statistics as stats
+from . import visualization as viz
+from .io import ReferencesData
 
 # from .point2dem import iter_point2dem, point2dem
 
 __all__ = [
-    "find_pointclouds",
-    "visualization",
-    "PostProcessing",
+    "viz",
+    "stats",
+    "plotting",
+    "pipeline",
+    "ReferencesData",
 ]

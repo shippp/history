@@ -1,3 +1,3 @@
-from . import aux_data, postprocessing
+from . import aux_data, postprocessing, utils
 
-__all__ = ["aux_data", "postprocessing"]
+__all__ = ["aux_data", "postprocessing", "utils"]
