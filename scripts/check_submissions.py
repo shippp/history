@@ -6,7 +6,7 @@ from typing import Any
 
 # Defines the expected segments in the filename, separated by _
 SEGMENT_SPECS_v2 = [
-    ("author", r"[A-Za-z0-9]{3,4}", "exactly 3 or 4 alphanumeric characters"),
+    ("author", r"[A-Za-z0-9]{3,5}", "exactly 3 or 4 alphanumeric characters"),
     ("site", r"(?:CG|IL)", "either 'CG' or 'IL'"),
     ("dataset", r"(?:AI|MC|PC)", "either AI, MC or PC"),
     ("images", r"(?:PP|RA)", "either 'PP' or 'RA'"),
