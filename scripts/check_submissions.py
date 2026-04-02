@@ -11,7 +11,7 @@ SEGMENT_SPECS_v2 = [
     ("dataset", r"(?:AI|MC|PC)", "either AI, MC or PC"),
     ("images", r"(?:PP|RA)", "either 'PP' or 'RA'"),
     ("calib_used", r"C[YN]", "either CY or CN"),
-    ("gcp_used", r"G[MAN]", "either of 'GM', 'GA', 'GN'"),
+    ("georef", r"G[MACN]", "either of 'GM', 'GA', 'GC' or 'GN'"),
     ("pointcloud_coregistration", r"P[YN]", "either of 'PY' or 'PN'"),
     ("mtp_adjustments", r"M[YN]", "either of 'MY' or 'MN'"),
 ]
