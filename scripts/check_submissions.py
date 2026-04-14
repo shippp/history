@@ -202,22 +202,34 @@ def main(input_dir: Path):
             print(f" -> {file_code}", end="")
 
             try:
-                code, _ = parse_filename(f)
-                files_found[code].append(file_code)
+                code, meta = parse_filename(f)
+                if meta['version'] is not None:
+                    files_found[f"{code}_v{meta['version']}"].append(file_code)
+                else:
+                    files_found[code].append(file_code)
                 print(f", {GREEN}valid code{RESET}")
             except Exception as e:
                 print(f", {RED}invalid code{RESET}: {e}")
         else:
             print("")
 
-    print(f"\nDetected {len(files_found)} submission(s):")
-    for key, file_codes in files_found.items():
-        print(f" - {key}: ", end="")
-        if len(file_codes) == len(MANDATORY_PATTERNS):
-            print(f"{GREEN}all mandatory files present{RESET}")
-        else:
-            missing_files = set(MANDATORY_PATTERNS) - set(file_codes)
-            print(f"{RED}missing mandatory file(s): {missing_files}{RESET}")
+    versions = ['_'.join(f.split('_')[:7]) for f in files_found]
+    submissions = sorted(list(set(versions)))
+    subm_dict = defaultdict(dict)
+
+    for key in files_found:
+        subm_dict['_'.join(key.split('_')[:7])][key] = files_found[key]
+
+    print(f"\nDetected {len(submissions)} submission(s) and {len(versions)} versions:")
+    for subm in submissions:
+        print(f"\n{subm} ({len(subm_dict[subm])} versions):")
+        for key, file_codes in subm_dict[subm].items():
+            print(f" - {key}: ", end="")
+            if len(file_codes) == len(MANDATORY_PATTERNS):
+                print(f"{GREEN}all mandatory files present{RESET}")
+            else:
+                missing_files = set(MANDATORY_PATTERNS) - set(file_codes)
+                print(f"{RED}missing mandatory file(s): {missing_files}{RESET}")
 
 
 if __name__ == "__main__":
