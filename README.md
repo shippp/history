@@ -42,6 +42,14 @@ For more details on how the Historical Image Dataset was prepared, see this [REA
 The goal of the Post-Processing workflow is to compare, evaluate, and analyse the outcomes of the stereo reconstruction submissions.  
 It takes all user submissions as input, validates and organizes them, and then processes the data to generate a comprehensive set of analytical figures, statistical summaries, and cross-comparisons between methods and configurations.
 
+To set up a post-processing run on a SLURM cluster, use the `history-postprocess` CLI (available after `pip install -e .`):
+
+```bash
+history-postprocess <output_dir>
+```
+
+This copies the post-processing notebook into `<output_dir>` and generates a ready-to-submit `run.slurm.sh` script using the active environment's Python. Follow the printed instructions to configure and submit the job.
+
 For more details on how the Post-Processing work, see this [README](notebooks/postprocessing/README.md).
 
 ## Installation

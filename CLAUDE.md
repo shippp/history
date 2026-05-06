@@ -35,6 +35,22 @@ ruff format src/
 
 Line length is 120 (`[tool.ruff]` in `pyproject.toml`). There are no automated tests.
 
+## CLI Entry Point
+
+After `pip install -e .`, the `history-postprocess` command is available in the active environment. It sets up an output directory with the post-processing notebook and a ready-to-submit SLURM job script:
+
+```bash
+history-postprocess <output_dir>
+```
+
+The command copies `notebooks/postprocessing/post_process_workflow.ipynb` into `<output_dir>`, generates `run.slurm.sh` using the current Python executable (so no `conda activate` is needed at runtime), then prints step-by-step instructions:
+
+1. Adapt the notebook configuration to your data
+2. Review/adjust SLURM resources in `run.slurm.sh` (memory, time, CPUs, partition)
+3. Submit with `sbatch <output_dir>/run.slurm.sh`
+
+> **Note:** Run the command from within the `history` conda environment — the generated script embeds the absolute path to that environment's Python and jupytext binaries.
+
 ## Scripts
 
 Both post-processing scripts require `--config PATH` pointing to a JSON config file (see `scripts/postprocessing/config.exemple.json` for a template).
