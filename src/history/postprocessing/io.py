@@ -12,10 +12,10 @@ FILE_CODE_MAPPING: dict[str, dict[str, str]] = {
     "site": {"CG": "casa_grande", "IL": "iceland"},
     "dataset": {"AI": "aerial", "MC": "kh9mc", "PC": "kh9pc"},
     "images": {"RA": "raw", "PP": "preprocessed"},
-    "use_of_camera_calibration": {"CY": "Yes", "CN": "No"},
-    "use_of_gcps": {"GM": "Manual (provided)", "GA": "Automated approch", "GN": "No", "GY": "Yes"},
+    "camera_used": {"CY": "Yes", "CN": "No"},
+    "gcp_used": {"GM": "Manual (provided)", "GA": "Automated approach", "GN": "No", "GY": "Yes"},
     "pointcloud_coregistration": {"PY": "Yes", "PN": "No"},
-    "mtb_adjustment": {"MY": "Yes", "MN": "No"},
+    "mtp_adjustment": {"MY": "Yes", "MN": "No"},
 }
 
 FILENAME_PATTERN = re.compile(

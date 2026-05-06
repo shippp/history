@@ -1,0 +1,43 @@
+{
+    "base_dir": "/path/to/output",
+    "custom_paths":{
+        "iceland_ref_dem_zoom": "/path/to/output/processing/aux_data/iceland_ref_dem_zoom_5m.tif",
+        "casagrande_ref_dem_zoom": "/path/to/output/processing/aux_data/casagrande_ref_dem_zoom_5m.tif"
+    },
+    "references_data_mapping": {
+        "casa_grande": {
+            "aerial": {
+                "ref_dem": "/path/to/output/aux_data/casagrande_ref_dem_zoom_5m.tif",
+                "ref_dem_mask": "/path/to/output/aux_data/casagrande_ref_dem_zoom_5m_mask.tif",
+                "landcover": "/path/to/output/aux_data/casagrande_landcover_zoom.tif"
+            },
+            "kh9mc": {
+                "ref_dem": "/path/to/output/aux_data/casagrande_ref_dem_large.tif",
+                "ref_dem_mask": "/path/to/output/aux_data/casagrande_ref_dem_large_mask.tif",
+                "landcover": "/path/to/output/aux_data/casagrande_landcover_large.tif"
+            },
+            "kh9pc": {
+                "ref_dem": "/path/to/output/aux_data/casagrande_ref_dem_large.tif",
+                "ref_dem_mask": "/path/to/output/aux_data/casagrande_ref_dem_large_mask.tif",
+                "landcover": "/path/to/output/aux_data/casagrande_landcover_large.tif"
+            }
+        },
+        "iceland": {
+            "aerial": {
+                "ref_dem": "/path/to/output/aux_data/iceland_ref_dem_zoom_5m.tif",
+                "ref_dem_mask": "/path/to/output/aux_data/iceland_ref_dem_zoom_5m_mask.tif",
+                "landcover": "/path/to/output/aux_data/iceland_landcover_zoom.tif"
+            },
+            "kh9mc": {
+                "ref_dem": "/path/to/output/aux_data/iceland_ref_dem_large.tif",
+                "ref_dem_mask": "/path/to/output/aux_data/iceland_ref_dem_large_mask.tif",
+                "landcover": "/path/to/output/aux_data/iceland_landcover_large.tif"
+            },
+            "kh9pc": {
+                "ref_dem": "/path/to/output/aux_data/iceland_ref_dem_large.tif",
+                "ref_dem_mask": "/path/to/output/aux_data/iceland_ref_dem_large_mask.tif",
+                "landcover": "/path/to/output/aux_data/iceland_landcover_large.tif"
+            }
+        }
+    }
+}
