@@ -1,3 +1,32 @@
+"""
+Command-line interface for the post-processing pipeline.
+
+Two subcommands are available:
+
+``history-postprocess create <output_dir>``
+    Scaffold a new working directory by copying the config template into it.
+    Edit the generated ``config.toml`` to point to your data before running
+    any pipeline step.
+
+``history-postprocess run <STEP> --config <path/to/config.toml>``
+    Execute one or all pipeline steps in order. Available steps:
+
+    uncompress  Extract compressed submission archives into the extracted dir.
+    symlinks    Index submissions, parse filenames, and create typed symlinks.
+    point2dem   Convert dense point clouds to DEMs via PDAL; integrate any
+                user-provided DEMs by reprojecting them on the reference grid.
+    coregister  Coregister raw DEMs to the reference using Nuth–Kaab + vertical
+                shift.
+    ddem        Compute differential DEMs before and after coregistration.
+    std_dem     Build one standard-deviation DEM per (site, dataset) group from
+                all coregistered DEMs.
+    landcover   Compute and plot landcover-stratified statistics on dDEMs and
+                STD DEMs.
+    all         Run all steps in the order listed above.
+
+Verbosity is controlled with ``-v`` (INFO) or ``-vv`` (DEBUG).
+"""
+
 import argparse
 import dataclasses
 import logging
@@ -14,12 +43,14 @@ RUN_STEPS = ["uncompress", "symlinks", "point2dem", "coregister", "ddem", "std_d
 
 
 def _configure_logging(verbosity: int) -> None:
+    """Set the ``history`` logger level based on the ``-v`` / ``-vv`` count."""
     level = {0: logging.WARNING, 1: logging.INFO, 2: logging.DEBUG}.get(verbosity, logging.DEBUG)
     logging.basicConfig(format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S", stream=sys.stderr)
     logging.getLogger("history").setLevel(level)
 
 
-def _load_config(args: argparse.Namespace):
+def _load_config(args: argparse.Namespace) -> Config:
+    """Load ``Config`` from the TOML file and apply any CLI flag overrides."""
     config = Config.from_toml_file(Path(args.config))
 
     overrides = {}
@@ -39,6 +70,13 @@ def _load_config(args: argparse.Namespace):
 
 
 def cmd_create(args: argparse.Namespace) -> None:
+    """
+    Scaffold a new post-processing working directory.
+
+    Creates ``output_dir`` and copies the config template into it as
+    ``config.toml``. The user must then edit that file to set the correct
+    paths before running any pipeline step.
+    """
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -51,6 +89,7 @@ def cmd_create(args: argparse.Namespace) -> None:
 
 
 def _run_uncompress(config: Config) -> None:
+    """Extract all compressed submission archives into the extracted directory."""
     from history.postprocessing.pipeline import uncompress_all_submissions
 
     uncompress_all_submissions(
@@ -62,7 +101,8 @@ def _run_uncompress(config: Config) -> None:
 
 
 def _run_symlinks(config: Config) -> None:
-    from history.postprocessing.pipeline import index_submissions_and_link_files
+    """Index submissions, parse filenames, and create typed symlink directories."""
+    from history.postprocessing.pipeline import index_submissions_and_link_files, plot_symlinks
 
     index_submissions_and_link_files(
         config.extracted_dir,
@@ -71,16 +111,12 @@ def _run_symlinks(config: Config) -> None:
     )
 
     if not config.no_plots:
-        from history.postprocessing.statistics import compute_pcs_statistics_df
-        from history.postprocessing.visualization import barplot_var
-
-        pointcloud_files = list((config.proc_dir.symlinks_dir / "dense_pointclouds").iterdir())
-        df = compute_pcs_statistics_df(pointcloud_files)
-        barplot_var(df, config.plot_dir / "pointcloud_point_count.png", "point_count", "Point count in dense point-cloud file")
+        plot_symlinks(config.proc_dir.symlinks_dir, config.plot_dir)
 
 
 def _run_point2dem(config: Config) -> None:
-    from history.postprocessing.pipeline import process_pointclouds_to_dems, add_provided_dems
+    """Convert dense point clouds to DEMs via PDAL, and integrate any user-provided DEMs."""
+    from history.postprocessing.pipeline import process_pointclouds_to_dems, add_provided_dems, plot_point2dem
 
     dense_pc_dir = config.proc_dir.symlinks_dir / "dense_pointclouds"
     pointcloud_files = list(dense_pc_dir.glob("*.las")) + list(dense_pc_dir.glob("*.laz"))
@@ -107,23 +143,15 @@ def _run_point2dem(config: Config) -> None:
             )
 
     if not config.no_plots:
-        from history.postprocessing.statistics import compute_dems_statistics_df
-        from history.postprocessing.visualization import barplot_var, generate_dems_mosaic
-
-        df = compute_dems_statistics_df(config.proc_dir.raw_dems_dir.glob("*-DEM.tif"), max_workers=config.max_workers)
-        barplot_var(df, config.plot_dir / "raw_dem_voids.png", "percent_nodata", "Raw DEM nodata percent")
-        for (site, dataset), group in df.groupby(["site", "dataset"]):
-            output_path = config.plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_raw_dem.png"
-            vmin, vmax = group["min"].median(), group["max"].median()
-            generate_dems_mosaic(group["file"].to_dict(), output_path, vmin, vmax, f"({site} {dataset}) Mosaic Raw DEMs")
+        plot_point2dem(config.proc_dir.raw_dems_dir, config.plot_dir, config.max_workers)
 
 
 def _run_coregister(config: Config) -> None:
-    from history.postprocessing.pipeline import coregister_dems
+    """Coregister raw DEMs to the reference using Nuth–Kaab + vertical shift."""
+    from history.postprocessing.pipeline import coregister_dems, plot_coregistration
 
-    dem_files = list(config.proc_dir.raw_dems_dir.glob("*-DEM.tif"))
     coregister_dems(
-        dem_files=dem_files,
+        dem_files=list(config.proc_dir.raw_dems_dir.glob("*-DEM.tif")),
         output_dir=config.proc_dir.coreg_dems_dir,
         references_data=config.references_data_mapping,
         overwrite=config.overwrite,
@@ -131,36 +159,23 @@ def _run_coregister(config: Config) -> None:
     )
 
     if not config.no_plots:
-        from history.postprocessing.statistics import compute_dems_statistics_df, get_coregistration_statistics_df
-        from history.postprocessing.visualization import generate_dems_mosaic, generate_plot_coreg_shifts
-
-        df = compute_dems_statistics_df(config.proc_dir.coreg_dems_dir.glob("*-DEM.tif"), max_workers=config.max_workers)
-        for (site, dataset), group in df.groupby(["site", "dataset"]):
-            output_path = config.plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_coreg_dem.png"
-            vmin, vmax = group["min"].median(), group["max"].median()
-            generate_dems_mosaic(group["file"].to_dict(), output_path, vmin, vmax, f"({site} {dataset}) Mosaic Coregistered DEMs")
-
-        df_shifts = get_coregistration_statistics_df(config.proc_dir.coreg_dems_dir.glob("*-DEM.tif"))
-        for (site, dataset), group in df_shifts.groupby(["site", "dataset"]):
-            output_path = config.plot_dir / f"{site}_{dataset}" / "coregistration_shifts.png"
-            generate_plot_coreg_shifts(group, output_path, f"({site} {dataset}) Coregistration shifts")
+        plot_coregistration(config.proc_dir.coreg_dems_dir, config.plot_dir, config.max_workers)
 
 
 def _run_ddem(config: Config) -> None:
-    from history.postprocessing.pipeline import generate_ddems
+    """Compute differential DEMs against the reference, before and after coregistration."""
+    from history.postprocessing.pipeline import generate_ddems, plot_ddems
 
-    raw_dem_files = list(config.proc_dir.raw_dems_dir.glob("*-DEM.tif"))
     generate_ddems(
-        dem_files=raw_dem_files,
+        dem_files=list(config.proc_dir.raw_dems_dir.glob("*-DEM.tif")),
         output_dir=config.proc_dir.before_coreg_ddems_dir,
         references_data=config.references_data_mapping,
         overwrite=config.overwrite,
         max_workers=config.max_workers,
     )
 
-    coreg_dem_files = list(config.proc_dir.coreg_dems_dir.glob("*-DEM.tif"))
     generate_ddems(
-        dem_files=coreg_dem_files,
+        dem_files=list(config.proc_dir.coreg_dems_dir.glob("*-DEM.tif")),
         output_dir=config.proc_dir.after_coreg_ddems_dir,
         references_data=config.references_data_mapping,
         overwrite=config.overwrite,
@@ -168,115 +183,41 @@ def _run_ddem(config: Config) -> None:
     )
 
     if not config.no_plots:
-        import pandas as pd
-        from history.postprocessing.statistics import compute_dems_statistics_df
-        from history.postprocessing.visualization import (
-            barplot_var,
-            generate_coregistration_individual_plots,
-            generate_ddems_mosaic,
-            generate_hillshades_mosaic,
-            generate_plot_nmad_before_vs_after,
-            generate_slopes_mosaic,
+        plot_ddems(
+            config.proc_dir.before_coreg_ddems_dir,
+            config.proc_dir.after_coreg_ddems_dir,
+            config.plot_dir,
+            overwrite=config.overwrite,
+            max_workers=config.max_workers,
         )
-
-        ddem_before_df = compute_dems_statistics_df(
-            config.proc_dir.before_coreg_ddems_dir.glob("*-DDEM.tif"), "ddem_before_", config.max_workers
-        )
-        ddem_after_df = compute_dems_statistics_df(
-            config.proc_dir.after_coreg_ddems_dir.glob("*-DDEM.tif"), "ddem_after_", config.max_workers
-        )
-        df = pd.concat([ddem_before_df, ddem_after_df]).groupby(level=0).first()
-
-        barplot_var(
-            df,
-            config.plot_dir / "nmad_after_coregistration.png",
-            "ddem_after_nmad",
-            "NMAD of Altitude differences with ref DEM after coregistration by code",
-        )
-
-        for (site, dataset), group in df.groupby(["site", "dataset"]):
-            sub_dir = config.plot_dir / f"{site}_{dataset}"
-            generate_plot_nmad_before_vs_after(
-                group,
-                sub_dir / "nmad_before_vs_after_coregistration.png",
-                f"({site} {dataset}) NMAD of DEM differences before vs after coregistration",
-            )
-            generate_coregistration_individual_plots(group, sub_dir / "coregistrations", config.overwrite)
-
-            ddem_files_dict = group["ddem_after_file"].dropna().to_dict()
-            generate_ddems_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_ddem.png", f"({site} {dataset}) Mosaic of DDEMs after coregistration")
-            generate_slopes_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_slopes_ddem.png", f"({site} {dataset}) Mosaic slopes of DDEMs after coregistration")
-            generate_hillshades_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_hillshades_ddem.png", f"({site} {dataset}) Mosaic hillshades of DDEMs after coregistration")
 
 
 def _run_std_dem(config: Config) -> None:
-    from history.postprocessing.pipeline import create_std_dem
-    from history.postprocessing.io import parse_filename
+    """Build one standard-deviation DEM per (site, dataset) group from all coregistered DEMs."""
+    from history.postprocessing.pipeline import create_std_dems, plot_std_dems
 
-    coreg_dem_files = list(config.proc_dir.coreg_dems_dir.glob("*-DEM.tif"))
-
-    groups: dict[tuple[str, str], list[Path]] = {}
-    for file in coreg_dem_files:
-        try:
-            _, metadatas = parse_filename(file)
-            key = (metadatas["site"], metadatas["dataset"])
-            groups.setdefault(key, []).append(file)
-        except ValueError:
-            logger.warning(f"Cannot parse filename for std_dem grouping: {file.name}")
-
-    config.proc_dir.std_dems_dir.mkdir(exist_ok=True, parents=True)
-    for (site, dataset), dem_files in groups.items():
-        output_path = config.proc_dir.std_dems_dir / f"{site}_{dataset}_std_dem.tif"
-        create_std_dem(
-            dem_files=dem_files,
-            output_path=output_path,
-            overwrite=config.overwrite,
-        )
+    create_std_dems(
+        dem_files=list(config.proc_dir.coreg_dems_dir.glob("*-DEM.tif")),
+        output_dir=config.proc_dir.std_dems_dir,
+        overwrite=config.overwrite,
+    )
 
     if not config.no_plots:
-        from history.postprocessing.visualization import generate_std_dem_plots
-
-        for file in config.proc_dir.std_dems_dir.glob("*.tif"):
-            subdir = file.stem.replace("_std_dem", "")
-            output_path = config.plot_dir / subdir / file.with_suffix(".png").name
-            generate_std_dem_plots(file, output_path)
+        plot_std_dems(config.proc_dir.std_dems_dir, config.plot_dir)
 
 
 def _run_landcover(config: Config) -> None:
-    from history.postprocessing.statistics import compute_landcover_statistics, compute_landcover_statistics_on_std_dems
-
-    landcover_df = compute_landcover_statistics(
-        config.proc_dir.after_coreg_ddems_dir.glob("*-DDEM.tif"),
-        config.references_data_mapping,
-        config.max_workers,
-    )
-    std_lc_df = compute_landcover_statistics_on_std_dems(
-        config.proc_dir.std_dems_dir.glob("*.tif"),
-        config.references_data_mapping,
-        config.max_workers,
-    )
+    """Compute and plot landcover-stratified statistics on dDEMs and STD DEMs."""
+    from history.postprocessing.pipeline import plot_landcover
 
     if not config.no_plots:
-        from history.postprocessing.visualization import (
-            generate_landcover_grouped_boxplot,
-            generate_landcover_grouped_boxplot_from_std_dems,
-            generate_landcover_nmad,
+        plot_landcover(
+            config.proc_dir.after_coreg_ddems_dir,
+            config.proc_dir.std_dems_dir,
+            config.references_data_mapping,
+            config.plot_dir,
+            config.max_workers,
         )
-
-        for (site, dataset), group in landcover_df.groupby(["site", "dataset"]):
-            sub_dir = config.plot_dir / f"{site}_{dataset}"
-            generate_landcover_grouped_boxplot(
-                group,
-                sub_dir / "landcover_grouped_boxplot.png",
-                f"({site} {dataset}) Boxplot of Altitude difference with ref DEM by code/landcover",
-            )
-            generate_landcover_nmad(
-                group,
-                sub_dir / "landcover_nmad.png",
-                f"({site} {dataset}) NMAD of Altitude difference with ref DEM by code/landcover",
-            )
-
-        generate_landcover_grouped_boxplot_from_std_dems(std_lc_df, config.plot_dir / "landcover_boxplot_from_std_dems.png")
 
 
 _STEP_RUNNERS = {
@@ -291,6 +232,14 @@ _STEP_RUNNERS = {
 
 
 def cmd_run(args: argparse.Namespace) -> None:
+    """
+    Execute one or all post-processing pipeline steps.
+
+    Loads the config from the TOML file specified by ``--config``, applies any
+    CLI flag overrides, then dispatches to the appropriate step runner(s).
+    When ``step`` is ``"all"``, every step in ``_STEP_RUNNERS`` is executed in
+    insertion order.
+    """
     config = _load_config(args)
     step = args.step
 
@@ -303,6 +252,14 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """
+    Build and return the argument parser for the ``history-postprocess`` CLI.
+
+    Returns
+    -------
+    argparse.ArgumentParser
+        Parser with two subcommands: ``create`` and ``run``.
+    """
     parser = argparse.ArgumentParser(prog="history-postprocess", description="Postprocessing")
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (-v INFO, -vv DEBUG)")
 
@@ -331,7 +288,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main():
+def main() -> None:
+    """Entry point for the ``history-postprocess`` command."""
     parser = build_parser()
     args = parser.parse_args()
     _configure_logging(args.verbose)

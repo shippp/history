@@ -37,23 +37,52 @@ Line length is 120 (`[tool.ruff]` in `pyproject.toml`). There are no automated t
 
 ## CLI Entry Point
 
-After `pip install -e .`, the `history-postprocess` command is available in the active environment. It sets up an output directory with the post-processing notebook and a ready-to-submit SLURM job script:
+After `pip install -e .`, the `history-postprocess` command is available in the active environment. It exposes two subcommands.
+
+### `history-postprocess create <output_dir>`
+
+Scaffolds a working directory and copies the config template into it:
 
 ```bash
-history-postprocess <output_dir>
+history-postprocess create my_run/
+# → creates my_run/config.toml from the built-in template
 ```
 
-The command copies `notebooks/postprocessing/post_process_workflow.ipynb` into `<output_dir>`, generates `run.slurm.sh` using the current Python executable (so no `conda activate` is needed at runtime), then prints step-by-step instructions:
+Edit `config.toml` to set your paths before running any step.
 
-1. Adapt the notebook configuration to your data
-2. Review/adjust SLURM resources in `run.slurm.sh` (memory, time, CPUs, partition)
-3. Submit with `sbatch <output_dir>/run.slurm.sh`
+### `history-postprocess run <STEP> --config <path/to/config.toml>`
 
-> **Note:** Run the command from within the `history` conda environment — the generated script embeds the absolute path to that environment's Python and jupytext binaries.
+Executes one or all pipeline steps:
+
+```bash
+history-postprocess run all --config my_run/config.toml
+history-postprocess run point2dem --config my_run/config.toml --overwrite
+```
+
+Available steps (executed in this order when using `all`):
+
+| Step | Description |
+|---|---|
+| `uncompress` | Extract compressed submission archives into `extracted_dir` |
+| `symlinks` | Parse filenames and create typed symlink directories |
+| `point2dem` | Convert dense point clouds to DEMs via PDAL; integrate user-provided DEMs |
+| `coregister` | Coregister raw DEMs to the reference (Nuth–Kaab + vertical shift) |
+| `ddem` | Compute differential DEMs before and after coregistration |
+| `std_dem` | Build one STD DEM per (site, dataset) group from all coregistered DEMs |
+| `landcover` | Compute and plot landcover-stratified statistics on dDEMs and STD DEMs |
+| `all` | Run all steps above in order |
+
+**Common flags** (override the config file values):
+
+| Flag | Description |
+|---|---|
+| `--overwrite` | Recompute existing outputs |
+| `--dry-run` | Build PDAL pipelines without executing them |
+| `--no-plots` | Skip plot generation for this step |
+| `--max-workers N` | Number of parallel worker threads |
+| `-v` / `-vv` | Increase verbosity (INFO / DEBUG) |
 
 ## Scripts
-
-Both post-processing scripts require `--config PATH` pointing to a JSON config file (see `scripts/postprocessing/config.exemple.json` for a template).
 
 ```bash
 # Check a submission directory for valid filenames and mandatory files
@@ -61,22 +90,20 @@ python scripts/check_submissions.py <path/to/submission_dir>
 
 # Test filename parsing logic
 python scripts/check_submissions.py test
-
-# Extract compressed archives from <base_dir>/raw/ into <base_dir>/extracted/
-python scripts/postprocessing/extraction.py --config <path/to/config.json> [--overwrite] [--max-workers N]
-
-# Convert dense point clouds in the symlinks dir to DEMs via PDAL
-python scripts/postprocessing/point2dem.py --config <path/to/config.json> [--overwrite] [--pdal-exec-path pdal] [--max-workers 4] [--dry-run]
 ```
+
+> `scripts/postprocessing/extraction.py` and `point2dem.py` are legacy scripts superseded by `history-postprocess run uncompress` and `history-postprocess run point2dem`.
 
 ## Architecture
 
 ### `src/history/`
 
-- **`postprocessing/pipeline.py`** – core batch-processing logic: archive extraction, symlink creation, point-cloud→DEM conversion (via PDAL subprocess), DEM coregistration (Nuth–Kaab + vertical shift using `xdem`), dDEM generation, STD DEM computation. Supports parallel execution via `ThreadPoolExecutor`. Errors are logged without stopping batch runs.
+- **`postprocessing/cli.py`** – `history-postprocess` entry point. Two subcommands: `create` (scaffold a directory with `config.toml`) and `run` (dispatch one or all pipeline steps). CLI flags override config-file values.
+- **`postprocessing/config.py`** – `Config` and `ProcConfig` dataclasses. `Config.from_toml_file` loads the TOML config; `ProcConfig.from_base_dir` derives the full processing directory layout from a single root path.
+- **`postprocessing/pipeline.py`** – core batch-processing logic: archive extraction, symlink creation, point-cloud→DEM conversion (via PDAL subprocess), DEM coregistration (Nuth–Kaab + vertical shift using `xdem`), dDEM generation, STD DEM computation. Each main step has a matching `plot_*` function. Supports parallel execution via `ThreadPoolExecutor`; errors are logged without stopping batch runs.
 - **`postprocessing/io.py`** – filename parsing (`parse_filename`), `ReferencesData` loader, and several helper functions used in notebooks: `analyze_submissions`, `combine_intrinsics_files`, `combine_extrinsics_files`, `filter_experiment_data`, `mirror_as_symlinks`, `get_filepaths_df`. Defines `FILE_CODE_MAPPING` and `FILENAME_PATTERN` for the submission naming convention.
-- **`postprocessing/statistics.py`** – landcover-stratified statistics on dDEMs.
-- **`postprocessing/plotting.py`** / **`visualization.py`** – figure generation for analysis outputs.
+- **`postprocessing/statistics.py`** – statistics on DEMs and point clouds: basic raster stats, coregistration shifts, landcover-stratified dDEM statistics.
+- **`postprocessing/visualization.py`** – figure generation for all pipeline steps (mosaics, barplots, shift scatter plots, landcover boxplots, STD DEM maps).
 - **`aux_data/download_tools.py`** – helpers to download Copernicus DEM tiles and auxiliary geospatial data.
 - **`utils.py`** – `log_to_file` context manager for adding timestamped file handlers to loggers.
 
@@ -105,22 +132,38 @@ Parsing is implemented in both `src/history/postprocessing/io.py` (used by the p
 
 ### Post-processing Configuration
 
-The config JSON (`scripts/postprocessing/config.exemple.json`) has three top-level keys:
-- `base_dir` – root output directory
-- `custom_paths` – optional zoom reference DEMs
-- `references_data_mapping` – nested `{site: {dataset: {ref_dem, ref_dem_mask, landcover}}}` required by `point2dem.py` and `ReferencesData`
+The config file (`config.exemple.toml`, copied by `history-postprocess create`) uses TOML format with the following keys:
 
-Valid site values: `"casa_grande"`, `"iceland"`. Valid dataset values: `"aerial"`, `"kh9mc"`, `"kh9pc"`. `ReferencesData` requires all 6 (site, dataset) combinations to be present.
+| Key | Description |
+|---|---|
+| `raw_dir` | Directory containing compressed submission archives (input) |
+| `extracted_dir` | Where archives are extracted |
+| `proc_dir` | Root of the processing directory tree (see layout below) |
+| `plot_dir` | Where all output plots are saved |
+| `overwrite` | Recompute existing outputs (default `false`) |
+| `dry_run` | Prepare PDAL pipelines without executing (default `false`) |
+| `pdal_exec_path` | Path or name of the PDAL executable (default `"pdal"`) |
+| `max_workers` | Parallel worker threads (default `4`) |
+| `[references_data_mapping.<site>.<dataset>]` | `ref_dem`, `ref_dem_mask`, `landcover` paths for each combination |
 
-The scripts derive this directory layout from `base_dir`:
+Valid site values: `casa_grande`, `iceland`. Valid dataset values: `aerial`, `kh9mc`, `kh9pc`. All 6 (site, dataset) combinations must be present in `references_data_mapping`.
+
+`ProcConfig.from_base_dir` derives this layout from `proc_dir`:
 
 ```
-<base_dir>/
-├── raw/                              ← compressed submission archives (input)
-├── extracted/                        ← extracted submission folders
-└── processing/
-    ├── symlinks/dense_pointclouds/   ← symlinks created by indexing step
-    └── raw_dems/                     ← DEMs generated by point2dem script
+<proc_dir>/
+├── symlinks/
+│   ├── dense_pointclouds/            ← symlinks to .las/.laz files
+│   ├── sparse_pointclouds/
+│   ├── extrinsics/
+│   ├── intrinsics/
+│   └── dems/                         ← user-provided DEM symlinks
+├── raw_dems/                         ← *-DEM.tif from point2dem step
+├── coregistered_dems/                ← *-DEM.tif from coregister step
+├── ddems/
+│   ├── before_coregistration/        ← *-DDEM.tif
+│   └── after_coregistration/         ← *-DDEM.tif
+└── std_dems/                         ← <site>_<dataset>_std_dem.tif
 ```
 
 ### Notebooks

@@ -42,15 +42,37 @@ For more details on how the Historical Image Dataset was prepared, see this [REA
 The goal of the Post-Processing workflow is to compare, evaluate, and analyse the outcomes of the stereo reconstruction submissions.  
 It takes all user submissions as input, validates and organizes them, and then processes the data to generate a comprehensive set of analytical figures, statistical summaries, and cross-comparisons between methods and configurations.
 
-To set up a post-processing run on a SLURM cluster, use the `history-postprocess` CLI (available after `pip install -e .`):
+The `history-postprocess` CLI (available after `pip install -e .`) drives the full pipeline through two subcommands.
+
+**1. Scaffold a working directory**
 
 ```bash
-history-postprocess <output_dir>
+history-postprocess create my_run/
 ```
 
-This copies the post-processing notebook into `<output_dir>` and generates a ready-to-submit `run.slurm.sh` script using the active environment's Python. Follow the printed instructions to configure and submit the job.
+This creates `my_run/` and copies a `config.toml` template into it. Edit that file to set the paths to your submission archives, reference DEMs, landcover rasters, and output directories.
 
-For more details on how the Post-Processing work, see this [README](notebooks/postprocessing/README.md).
+**2. Run the pipeline**
+
+```bash
+history-postprocess run all --config my_run/config.toml
+```
+
+The pipeline runs the following steps in order:
+
+| Step | Description |
+|---|---|
+| `uncompress` | Extract compressed submission archives |
+| `symlinks` | Parse filenames and create typed symlink directories |
+| `point2dem` | Convert dense point clouds to DEMs via PDAL |
+| `coregister` | Coregister DEMs to the reference (Nuth–Kaab + vertical shift) |
+| `ddem` | Compute differential DEMs before and after coregistration |
+| `std_dem` | Build one standard-deviation DEM per (site, dataset) group |
+| `landcover` | Compute and plot landcover-stratified statistics |
+
+Each step can also be run individually (e.g. `history-postprocess run point2dem --config …`). Use `--overwrite` to recompute existing outputs, `--no-plots` to skip figures, and `-v`/`-vv` to increase log verbosity.
+
+For more details on the Post-Processing workflow, see this [README](notebooks/postprocessing/README.md).
 
 ## Installation
 
