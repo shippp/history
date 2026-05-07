@@ -45,6 +45,8 @@ from rasterio.windows import Window
 from shapely import box, transform
 from tqdm import tqdm
 
+import history.postprocessing.statistics as stats
+import history.postprocessing.visualization as viz
 from history.postprocessing.io import ReferencesData, parse_filename
 
 logger = logging.getLogger(__name__)
@@ -655,6 +657,46 @@ def create_std_dem(
     logger.info(f"STD DEM generated at {output_path}")
 
 
+def create_std_dems(
+    dem_files: Iterable[str | Path],
+    output_dir: str | Path,
+    overwrite: bool = False,
+) -> None:
+    """
+    Group coregistered DEMs by (site, dataset) and compute one STD DEM per group.
+
+    Parses each filename to extract site and dataset metadata, groups files
+    accordingly, and calls ``create_std_dem`` for each group. Output filenames
+    follow the pattern ``<site>_<dataset>_std_dem.tif`` inside ``output_dir``.
+    Files whose names cannot be parsed are skipped with a warning.
+
+    Parameters
+    ----------
+    dem_files : Iterable of str or Path
+        Iterable of coregistered DEM file paths to process.
+    output_dir : str or Path
+        Directory where the STD DEM files will be written. Created if missing.
+    overwrite : bool, optional
+        If True, existing STD DEMs are recomputed. Default is False.
+    """
+    dem_files = [Path(f) for f in dem_files]
+    output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True, parents=True)
+
+    groups: dict[tuple[str, str], list[Path]] = {}
+    for file in dem_files:
+        try:
+            _, metadatas = parse_filename(file)
+            key = (metadatas["site"], metadatas["dataset"])
+            groups.setdefault(key, []).append(file)
+        except ValueError:
+            logger.warning(f"Cannot parse filename for std_dem grouping: {file.name}")
+
+    for (site, dataset), files in groups.items():
+        output_path = output_dir / f"{site}_{dataset}_std_dem.tif"
+        create_std_dem(dem_files=files, output_path=output_path, overwrite=overwrite)
+
+
 #######################################################################################################################
 ##                                                  OTHERS FUNCTIONS
 #######################################################################################################################
@@ -1022,6 +1064,207 @@ def is_existing_std_dem(dem_files: list[str | Path], output_path: str | Path, me
         # Defensive: in case of malformed metadata or corrupted file
         logger.warning(f"Could not verify std_dem metadata ({output_path.name}): {e}")
         return False
+
+
+#######################################################################################################################
+##                                                  PLOT FUNCTIONS
+#######################################################################################################################
+
+
+def plot_symlinks(symlinks_dir: str | Path, plot_dir: str | Path) -> None:
+    """
+    Generate plots summarizing the indexed symlinks directory.
+
+    Computes point-cloud statistics from dense point cloud files and saves
+    a bar chart of point counts per submission.
+
+    Parameters
+    ----------
+    symlinks_dir : str or Path
+        Directory containing the symlinked submission files. Must include a
+        ``dense_pointclouds/`` subdirectory.
+    plot_dir : str or Path
+        Directory where the output plot will be saved.
+    """
+    symlinks_dir = Path(symlinks_dir)
+    plot_dir = Path(plot_dir)
+
+    pointcloud_files = list((symlinks_dir / "dense_pointclouds").iterdir())
+    df = stats.compute_pcs_statistics_df(pointcloud_files)
+    viz.barplot_var(df, plot_dir / "pointcloud_point_count.png", "point_count", "Point count in dense point-cloud file")
+
+
+def plot_point2dem(raw_dems_dir: str | Path, plot_dir: str | Path, max_workers: int | None = None) -> None:
+    """
+    Generate plots for the raw DEMs produced by the point-cloud-to-DEM step.
+
+    Saves a bar chart of nodata percentages and per-(site, dataset) DEM mosaics
+    for all raw DEMs found in ``raw_dems_dir``.
+
+    Parameters
+    ----------
+    raw_dems_dir : str or Path
+        Directory containing raw DEM files (``*-DEM.tif``).
+    plot_dir : str or Path
+        Directory where output plots will be saved.
+    max_workers : int or None, optional
+        Number of parallel workers for computing DEM statistics. Defaults to None.
+    """
+    raw_dems_dir = Path(raw_dems_dir)
+    plot_dir = Path(plot_dir)
+
+    df = stats.compute_dems_statistics_df(raw_dems_dir.glob("*-DEM.tif"), max_workers=max_workers)
+    viz.barplot_var(df, plot_dir / "raw_dem_voids.png", "percent_nodata", "Raw DEM nodata percent")
+    for (site, dataset), group in df.groupby(["site", "dataset"]):
+        output_path = plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_raw_dem.png"
+        vmin, vmax = group["min"].median(), group["max"].median()
+        viz.generate_dems_mosaic(group["file"].to_dict(), output_path, vmin, vmax, f"({site} {dataset}) Mosaic Raw DEMs")
+
+
+def plot_coregistration(coreg_dems_dir: str | Path, plot_dir: str | Path, max_workers: int | None = None) -> None:
+    """
+    Generate plots summarizing the coregistration step.
+
+    Saves per-(site, dataset) DEM mosaics and coregistration-shift scatter plots
+    for all coregistered DEMs in ``coreg_dems_dir``.
+
+    Parameters
+    ----------
+    coreg_dems_dir : str or Path
+        Directory containing coregistered DEM files (``*-DEM.tif``).
+    plot_dir : str or Path
+        Directory where output plots will be saved.
+    max_workers : int or None, optional
+        Number of parallel workers for computing DEM statistics. Defaults to None.
+    """
+    coreg_dems_dir = Path(coreg_dems_dir)
+    plot_dir = Path(plot_dir)
+
+    df = stats.compute_dems_statistics_df(coreg_dems_dir.glob("*-DEM.tif"), max_workers=max_workers)
+    for (site, dataset), group in df.groupby(["site", "dataset"]):
+        output_path = plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_coreg_dem.png"
+        vmin, vmax = group["min"].median(), group["max"].median()
+        viz.generate_dems_mosaic(group["file"].to_dict(), output_path, vmin, vmax, f"({site} {dataset}) Mosaic Coregistered DEMs")
+
+    df_shifts = stats.get_coregistration_statistics_df(coreg_dems_dir.glob("*-DEM.tif"))
+    for (site, dataset), group in df_shifts.groupby(["site", "dataset"]):
+        output_path = plot_dir / f"{site}_{dataset}" / "coregistration_shifts.png"
+        viz.generate_plot_coreg_shifts(group, output_path, f"({site} {dataset}) Coregistration shifts")
+
+
+def plot_ddems(
+    before_coreg_ddems_dir: str | Path,
+    after_coreg_ddems_dir: str | Path,
+    plot_dir: str | Path,
+    overwrite: bool = False,
+    max_workers: int | None = None,
+) -> None:
+    """
+    Generate plots comparing dDEMs before and after coregistration.
+
+    Saves a global NMAD bar chart, per-(site, dataset) NMAD before-vs-after plots,
+    per-submission coregistration plots, and mosaics of dDEMs, slopes, and hillshades.
+
+    Parameters
+    ----------
+    before_coreg_ddems_dir : str or Path
+        Directory containing dDEM files computed before coregistration (``*-DDEM.tif``).
+    after_coreg_ddems_dir : str or Path
+        Directory containing dDEM files computed after coregistration (``*-DDEM.tif``).
+    plot_dir : str or Path
+        Directory where output plots will be saved.
+    overwrite : bool, optional
+        If True, existing individual coregistration plots are overwritten. Default is False.
+    max_workers : int or None, optional
+        Number of parallel workers for computing DEM statistics. Defaults to None.
+    """
+    before_coreg_ddems_dir = Path(before_coreg_ddems_dir)
+    after_coreg_ddems_dir = Path(after_coreg_ddems_dir)
+    plot_dir = Path(plot_dir)
+
+    ddem_before_df = stats.compute_dems_statistics_df(before_coreg_ddems_dir.glob("*-DDEM.tif"), "ddem_before_", max_workers)
+    ddem_after_df = stats.compute_dems_statistics_df(after_coreg_ddems_dir.glob("*-DDEM.tif"), "ddem_after_", max_workers)
+    df = pd.concat([ddem_before_df, ddem_after_df]).groupby(level=0).first()
+
+    viz.barplot_var(df, plot_dir / "nmad_after_coregistration.png", "ddem_after_nmad", "NMAD of Altitude differences with ref DEM after coregistration by code")
+
+    for (site, dataset), group in df.groupby(["site", "dataset"]):
+        sub_dir = plot_dir / f"{site}_{dataset}"
+        viz.generate_plot_nmad_before_vs_after(group, sub_dir / "nmad_before_vs_after_coregistration.png", f"({site} {dataset}) NMAD of DEM differences before vs after coregistration")
+        viz.generate_coregistration_individual_plots(group, sub_dir / "coregistrations", overwrite)
+
+        ddem_files_dict = group["ddem_after_file"].dropna().to_dict()
+        viz.generate_ddems_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_ddem.png", f"({site} {dataset}) Mosaic of DDEMs after coregistration")
+        viz.generate_slopes_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_slopes_ddem.png", f"({site} {dataset}) Mosaic slopes of DDEMs after coregistration")
+        viz.generate_hillshades_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_hillshades_ddem.png", f"({site} {dataset}) Mosaic hillshades of DDEMs after coregistration")
+
+
+def plot_std_dems(std_dems_dir: str | Path, plot_dir: str | Path) -> None:
+    """
+    Generate plots for each STD DEM found in ``std_dems_dir``.
+
+    Parameters
+    ----------
+    std_dems_dir : str or Path
+        Directory containing STD DEM files (``*.tif``).
+    plot_dir : str or Path
+        Directory where output plots will be saved. Each STD DEM produces a
+        ``.png`` in a subdirectory named after the DEM stem (without ``_std_dem``).
+    """
+    std_dems_dir = Path(std_dems_dir)
+    plot_dir = Path(plot_dir)
+
+    for file in std_dems_dir.glob("*.tif"):
+        subdir = file.stem.replace("_std_dem", "")
+        output_path = plot_dir / subdir / file.with_suffix(".png").name
+        viz.generate_std_dem_plots(file, output_path)
+
+
+def plot_landcover(
+    after_coreg_ddems_dir: str | Path,
+    std_dems_dir: str | Path,
+    references_data: ReferencesData,
+    plot_dir: str | Path,
+    max_workers: int | None = None,
+) -> None:
+    """
+    Generate landcover-stratified plots for dDEMs and STD DEMs.
+
+    Computes landcover-stratified statistics on coregistered dDEMs and STD DEMs,
+    then saves per-(site, dataset) grouped boxplots and NMAD plots, as well as
+    a global boxplot aggregated from all STD DEMs.
+
+    Parameters
+    ----------
+    after_coreg_ddems_dir : str or Path
+        Directory containing coregistered dDEM files (``*-DDEM.tif``).
+    std_dems_dir : str or Path
+        Directory containing STD DEM files (``*.tif``).
+    references_data : ReferencesData
+        Object providing landcover raster paths for each (site, dataset) pair.
+    plot_dir : str or Path
+        Directory where output plots will be saved.
+    max_workers : int or None, optional
+        Number of parallel workers for computing statistics. Defaults to None.
+    """
+    after_coreg_ddems_dir = Path(after_coreg_ddems_dir)
+    std_dems_dir = Path(std_dems_dir)
+    plot_dir = Path(plot_dir)
+
+    landcover_df = stats.compute_landcover_statistics(after_coreg_ddems_dir.glob("*-DDEM.tif"), references_data, max_workers)
+    std_lc_df = stats.compute_landcover_statistics_on_std_dems(std_dems_dir.glob("*.tif"), references_data, max_workers)
+
+    for (site, dataset), group in landcover_df.groupby(["site", "dataset"]):
+        sub_dir = plot_dir / f"{site}_{dataset}"
+        viz.generate_landcover_grouped_boxplot(group, sub_dir / "landcover_grouped_boxplot.png", f"({site} {dataset}) Boxplot of Altitude difference with ref DEM by code/landcover")
+        viz.generate_landcover_nmad(group, sub_dir / "landcover_nmad.png", f"({site} {dataset}) NMAD of Altitude difference with ref DEM by code/landcover")
+
+    viz.generate_landcover_grouped_boxplot_from_std_dems(std_lc_df, plot_dir / "landcover_boxplot_from_std_dems.png")
+
+
+#######################################################################################################################
+##                                                  PRIVATE FUNCTIONS
+#######################################################################################################################
 
 
 def __estimate_extraction_time(

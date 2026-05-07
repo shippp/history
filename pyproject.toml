@@ -8,6 +8,9 @@ requires-python = ">=3.9"
 dependencies = [
 ]
 
+[project.scripts]
+history-postprocess = "history.postprocessing.cli:main"
+
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
