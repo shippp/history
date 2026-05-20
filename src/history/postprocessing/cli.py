@@ -261,7 +261,6 @@ def build_parser() -> argparse.ArgumentParser:
         Parser with two subcommands: ``create`` and ``run``.
     """
     parser = argparse.ArgumentParser(prog="history-postprocess", description="Postprocessing")
-    parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (-v INFO, -vv DEBUG)")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -283,6 +282,8 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Skip plot generation for this step")
     run_parser.add_argument("--max-workers", type=int, default=None, metavar="N", dest="max_workers",
                             help="Number of parallel workers (overrides config)")
+    run_parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (-v INFO, -vv DEBUG)")
+
     run_parser.set_defaults(func=cmd_run)
 
     return parser
