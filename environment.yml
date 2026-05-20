@@ -15,6 +15,7 @@ dependencies:
   - ruff
   - pdal
   - pip
+  - gdown
   - pip :
     - usgsxplore
     - hipp==0.2.0

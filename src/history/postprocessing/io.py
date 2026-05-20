@@ -4,9 +4,14 @@ import tarfile
 import zipfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Union
+import logging
 
 import pandas as pd
 import py7zr
+import gdown
+
+logger = logging.getLogger(__name__)
+
 
 FILE_CODE_MAPPING: dict[str, dict[str, str]] = {
     "site": {"CG": "casa_grande", "IL": "iceland"},
@@ -21,13 +26,13 @@ FILE_CODE_MAPPING: dict[str, dict[str, str]] = {
 FILENAME_PATTERN = re.compile(
     r"""
     ^(?P<author>[A-Za-z0-9]{3,6})_
-    (?P<site>[A-Z]{2})_
-    (?P<dataset>[A-Z]{2})_
-    (?P<images>[A-Z]{2})_
-    (?P<calib_used>[A-Z]{2})_
-    (?P<georef>[A-Z]{2})_
-    (?P<pointcloud_coregistration>[A-Z]{2})_
-    (?P<mtp_adjustments>[A-Z]{2})
+    (?P<site>CG|IL)_
+    (?P<dataset>AI|MC|PC)_
+    (?P<images>PP|RA)_
+    (?P<calib_used>C[YN])_
+    (?P<georef>G[MACN])_
+    (?P<pointcloud_coregistration>P[YN])_
+    (?P<mtp_adjustments>M[YN])
     (?:_(?P<version>V\d+))?
     .*$
     """,
@@ -783,7 +788,7 @@ def parse_filename(file: str | Path) -> tuple[str, dict[str, Any]]:
     match = FILENAME_PATTERN.match(Path(file).stem)
 
     if not match:
-        raise ValueError(f"The filename {Path(file).stem} don't respect the code convention")
+        raise ValueError(f"The filename {Path(file).stem} does not respect the code convention")
 
     match_dict = match.groupdict()
     metadatas = {"author": match_dict["author"]}
@@ -886,3 +891,28 @@ def get_filepaths_df(**kwargs: Iterable[str | Path]) -> pd.DataFrame:
             except ValueError:
                 continue
     return df.sort_index()
+
+
+def download_planned_submissions(outfile: str | Path) -> None:
+    """
+    Download the table of planned submissions from the shared Google sheet document.
+    File is downloaded to `outfile` in CSV format and unused rows/columns are deleted.
+    """
+    # Convert POSIX path to str
+    outfile= str(outfile)
+
+    sheet_url="https://docs.google.com/spreadsheets/d/1jGuoQYSfSd-DqbKp_7ZpkTYFIgC47camspTsgqkT_gQ/edit?usp=sharing"
+    verbose=(logger.getEffectiveLevel()<=20)
+    gdown.download(url=sheet_url, output=outfile, format="csv", quiet=(not verbose))
+
+    # Load as DataFrame and filter empty rows and Total row
+    submissions_df = pd.read_csv(outfile, skiprows=2, delimiter=",", usecols=[0, 1, 2, 3, 4])
+    submissions_df = submissions_df[~(submissions_df["Group name"] == "Total") & ~submissions_df["Group name"].isna()]
+
+    # Save to file
+    submissions_df.to_csv(outfile)
+
+    logger.info(f"Found {len(submissions_df)} planned submissions.")
+    logger.info(f"Saved CSV to file {outfile}.")
+
+    return submissions_df
