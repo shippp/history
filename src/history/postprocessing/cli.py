@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 _TEMPLATE_CONFIG = Path(__file__).parent / "config.exemple.toml"
 
-RUN_STEPS = ["uncompress", "symlinks", "point2dem", "coregister", "ddem", "std_dem", "landcover", "all"]
+RUN_STEPS = ["uncompress", "symlinks", "check_planned", "point2dem", "coregister", "ddem", "std_dem", "landcover", "all"]
 
 
 def _configure_logging(verbosity: int) -> None:
@@ -112,6 +112,20 @@ def _run_symlinks(config: Config) -> None:
 
     if not config.no_plots:
         plot_symlinks(config.proc_dir.symlinks_dir, config.plot_dir)
+
+
+def _run_check_planned(config: Config) -> None:
+    """Check extracted results against planned submissions sheet."""
+    from history.postprocessing.pipeline import check_planned_submissions
+
+    dense_pc_dir = config.proc_dir.symlinks_dir / "dense_pointclouds"
+    pointcloud_files = list(dense_pc_dir.glob("*.las")) + list(dense_pc_dir.glob("*.laz"))
+    planned_outfile = str(config.proc_dir.base_dir / "planned_submissions.csv")
+    
+    check_planned_submissions(
+        pointcloud_files,
+        planned_outfile,
+    )
 
 
 def _run_point2dem(config: Config) -> None:
@@ -223,6 +237,7 @@ def _run_landcover(config: Config) -> None:
 _STEP_RUNNERS = {
     "uncompress": _run_uncompress,
     "symlinks": _run_symlinks,
+    "check_planned": _run_check_planned,
     "point2dem": _run_point2dem,
     "coregister": _run_coregister,
     "ddem": _run_ddem,

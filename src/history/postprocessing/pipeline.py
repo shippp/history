@@ -31,6 +31,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable
+from collections import Counter
 
 import geoutils as gu
 import humanize
@@ -45,6 +46,7 @@ from rasterio.windows import Window
 from shapely import box, transform
 from tqdm import tqdm
 
+import history.postprocessing.io as io
 import history.postprocessing.statistics as stats
 import history.postprocessing.visualization as viz
 from history.postprocessing.io import ReferencesData, parse_filename
@@ -216,6 +218,79 @@ def index_submissions_and_link_files(input_dir: str | Path, output_dir: str, ove
                     link.unlink()
                 link.symlink_to(row[colname])
 
+
+def check_planned_submissions(
+    pointcloud_files: list[str | Path],
+    planned_outfile: str | Path,
+):
+    """
+    Check received/processed submissions against planned submissions filled in shared Google sheet.
+
+    Google sheet file is downloaded and converted to CSV with gdown.
+    Submitted experiment codes are extracted from point cloud filenames and compared to planned results.
+
+    Parameters
+    ----------
+    pointcloud_files : list[str | Path]
+        List of extracted point cloud file paths.
+    planned_outfile : str or Path
+        Location where to save the planned CSV file, that is downloaded from GDrive and updated.
+    """
+    pointcloud_files: list[Path] = [Path(f) for f in pointcloud_files]
+    planned_outfile = Path(planned_outfile)
+
+    # Download planned submissions from shared sheet
+    planned_df = io.download_planned_submissions(planned_outfile)
+
+    # Extract experiment codes of processed point clouds
+    processed_success_codes = []
+    processed_fail_codes = []
+    for file in pointcloud_files:
+        try:
+            code, metadatas = parse_filename(file)
+            processed_success_codes.append(code)
+        except Exception as e:
+            logger.error(f"Error processing {file.name}: {e}")
+            # Try to extract code even if not matching expected pattern
+            code = "_".join(file.stem.split("_")[:-2])
+            processed_fail_codes.append(code)
+            continue
+
+    # Check processed codes are unique
+    all_codes = processed_success_codes + processed_fail_codes
+    counts = Counter(all_codes)
+    non_uniques = [x for x in all_codes if counts[x] > 1]
+    if len(non_uniques) > 0:
+        logger.warning(f"Found {len(non_uniques)} non unique codes:")
+        for code in non_uniques:
+            logger.warning(f"\t{code}")
+
+    # Find received, successully processed and unplanned submissions
+    set_processed = set(processed_success_codes)
+    set_planned = set(planned_df["Submission code"])
+
+    received = planned_df["Submission code"].map(lambda x: x in all_codes)
+    planned_df["received"] = received
+
+    processed = planned_df["Submission code"].map(lambda x: x in processed_success_codes)
+    planned_df["processed"] = processed
+
+    unplanned = set_processed - set_planned
+
+    print(f"Found {len(planned_df[~planned_df['received']])} unsubmitted results")
+    for code in planned_df[~planned_df['received']]["Submission code"]:
+        print(f"\t{code}")
+
+    print(f"Found {len(unplanned)} unplanned results")
+    for code in sorted(unplanned):
+        print(f"\t{code}")
+
+    # print("\nTo update 'received' column on sheet, copy/paste below:")
+    # for res in planned_df["received"]:
+    #     print(f"{res}")
+    
+    planned_df.to_csv(planned_outfile)
+    print(f"Updated planned submissions saved to {planned_outfile}. \nOpen and copy in VSCode with command 'edit csv'.")
 
 def process_pointclouds_to_dems(
     pointcloud_files: list[str | Path],
