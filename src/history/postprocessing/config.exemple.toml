@@ -1,0 +1,39 @@
+raw_dir = "/path/to/raw"
+extracted_dir = "/path/to/extracted"
+proc_dir = "/path/to/processing"
+plot_dir = "/path/to/plots"
+
+overwrite = false
+dry_run = false
+pdal_exec_path = "pdal"
+max_workers = 4
+
+[references_data_mapping.casa_grande.aerial]
+ref_dem = "/path/to/casa_grande/aerial/ref_dem.tif"
+ref_dem_mask = "/path/to/casa_grande/aerial/ref_dem_mask.tif"
+landcover = "/path/to/casa_grande/aerial/landcover.tif"
+
+[references_data_mapping.casa_grande.kh9mc]
+ref_dem = "/path/to/casa_grande/kh9mc/ref_dem.tif"
+ref_dem_mask = "/path/to/casa_grande/kh9mc/ref_dem_mask.tif"
+landcover = "/path/to/casa_grande/kh9mc/landcover.tif"
+
+[references_data_mapping.casa_grande.kh9pc]
+ref_dem = "/path/to/casa_grande/kh9pc/ref_dem.tif"
+ref_dem_mask = "/path/to/casa_grande/kh9pc/ref_dem_mask.tif"
+landcover = "/path/to/casa_grande/kh9pc/landcover.tif"
+
+[references_data_mapping.iceland.aerial]
+ref_dem = "/path/to/iceland/aerial/ref_dem.tif"
+ref_dem_mask = "/path/to/iceland/aerial/ref_dem_mask.tif"
+landcover = "/path/to/iceland/aerial/landcover.tif"
+
+[references_data_mapping.iceland.kh9mc]
+ref_dem = "/path/to/iceland/kh9mc/ref_dem.tif"
+ref_dem_mask = "/path/to/iceland/kh9mc/ref_dem_mask.tif"
+landcover = "/path/to/iceland/kh9mc/landcover.tif"
+
+[references_data_mapping.iceland.kh9pc]
+ref_dem = "/path/to/iceland/kh9pc/ref_dem.tif"
+ref_dem_mask = "/path/to/iceland/kh9pc/ref_dem_mask.tif"
+landcover = "/path/to/iceland/kh9pc/landcover.tif"

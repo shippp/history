@@ -9,7 +9,9 @@ dependencies:
   - contextily
   - laspy
   - jupyterlab
+  - jupytext
   - nb_conda_kernels
+  - humanize
   - ruff
   - pdal
   - pip
