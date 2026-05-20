@@ -12,22 +12,22 @@ FILE_CODE_MAPPING: dict[str, dict[str, str]] = {
     "site": {"CG": "casa_grande", "IL": "iceland"},
     "dataset": {"AI": "aerial", "MC": "kh9mc", "PC": "kh9pc"},
     "images": {"RA": "raw", "PP": "preprocessed"},
-    "camera_used": {"CY": "Yes", "CN": "No"},
-    "gcp_used": {"GM": "Manual (provided)", "GA": "Automated approach", "GN": "No", "GY": "Yes"},
+    "calib_used": {"CY": "Yes", "CN": "No"},
+    "georef": {"GM": "Manual (provided)", "GA": "Automated approach", "GC": "Coregistration", "GN": "No/other"},
     "pointcloud_coregistration": {"PY": "Yes", "PN": "No"},
-    "mtp_adjustment": {"MY": "Yes", "MN": "No"},
+    "mtp_adjustments": {"MY": "Yes", "MN": "No"},
 }
 
 FILENAME_PATTERN = re.compile(
     r"""
-    ^(?P<author>[^_]+)_
+    ^(?P<author>[A-Za-z0-9]{3,6})_
     (?P<site>[A-Z]{2})_
     (?P<dataset>[A-Z]{2})_
     (?P<images>[A-Z]{2})_
-    (?P<camera_used>[A-Z]{2})_
-    (?P<gcp_used>[A-Z]{2})_
+    (?P<calib_used>[A-Z]{2})_
+    (?P<georef>[A-Z]{2})_
     (?P<pointcloud_coregistration>[A-Z]{2})_
-    (?P<mtp_adjustment>[A-Z]{2})
+    (?P<mtp_adjustments>[A-Z]{2})
     (?:_(?P<version>V\d+))?
     .*$
     """,
@@ -759,13 +759,13 @@ def mirror_as_symlinks(src_dir: str | Path, dst_dir: str | Path, overwrite: bool
 
 def parse_filename(file: str | Path) -> tuple[str, dict[str, Any]]:
     """
-    Parse a filename following the predefined code convention described in FILE_CODE_MAPPING_V1.
+    Parse a filename following the predefined code convention described in FILE_CODE_MAPPING.
 
     This function extracts structured information from a filename built using a specific
     naming convention such as:
         AUTHOR_SITE_DATASET_IMAGES_CAMERAUSED_GCPUSED_POINTCLOUDCOREG_MTPADJ[_V1-DEM].tif
 
-    Each short code (e.g., 'CG', 'AI', 'RA', 'CY') is validated against FILE_CODE_MAPPING_V1
+    Each short code (e.g., 'CG', 'AI', 'RA', 'CY') is validated against FILE_CODE_MAPPING
     to ensure consistency and then mapped to its corresponding descriptive value.
 
     Args:
@@ -778,7 +778,7 @@ def parse_filename(file: str | Path) -> tuple[str, dict[str, Any]]:
 
     Raises:
         ValueError: If the filename does not respect the expected naming convention
-                    or contains unknown codes not defined in FILE_CODE_MAPPING_V1.
+                    or contains unknown codes not defined in FILE_CODE_MAPPING.
     """
     match = FILENAME_PATTERN.match(Path(file).stem)
 
