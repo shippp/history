@@ -21,7 +21,6 @@ libraries, ensuring consistent handling of CRS, raster grids, and metadata.
 
 import json
 import logging
-import re
 import shutil
 import subprocess
 import sys
@@ -31,7 +30,6 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable
-from collections import Counter
 
 import geoutils as gu
 import humanize
@@ -49,7 +47,7 @@ from tqdm import tqdm
 import history.postprocessing.io as io
 import history.postprocessing.statistics as stats
 import history.postprocessing.visualization as viz
-from history.postprocessing.io import FilenameParseError, ReferencesData, parse_filename
+from history.postprocessing.io import ReferencesData, parse_filename
 
 logger = logging.getLogger(__name__)
 
@@ -120,182 +118,92 @@ def uncompress_all_submissions(
                 continue
 
 
-def index_submissions_and_link_files(input_dir: str | Path, output_dir: str, overwrite: bool = False) -> None:
-    """
-    Index all submissions contained in the input directory, extract metadata from
-    filenames, and create a standardized directory of symbolic links pointing to
-    the detected files.
+def create_symlinks(df: pd.DataFrame, output_dir: str | Path, overwrite: bool = False) -> None:
+    """Create typed symlink directories from a scanned submissions DataFrame.
 
-    This function scans each subdirectory of `input_dir`, identifies relevant data
-    files based on predefined regex patterns (mandatory and optional), extracts
-    metadata using `parse_filename()`, and stores the results in an internal
-    DataFrame indexed by submission code. For each detected file, a corresponding
-    symbolic link is created in a structured output directory. Missing mandatory
-    files are reported but do not stop the processing.
-
-    If `overwrite` is True, all existing symlink directories inside the output
-    directory are removed before any new links are created.
+    Each file column in *df* is mapped to a subdirectory under *output_dir*
+    (e.g. ``dense_pointcloud_file`` → ``dense_pointclouds/``). Existing symlinks at
+    the target path are replaced without following them (avoids permission errors on
+    inaccessible mounts). Non-symlink files at the target path are left untouched.
 
     Parameters
     ----------
-    input_dir : str or Path
-        Directory containing submission subfolders to index. Each subfolder is
-        expected to contain files with names that match the configured patterns.
-    output_dir : str or Path
-        Target directory in which symbolic links will be created, organized by
-        file type.
-    overwrite : bool, optional
-        If True, existing symlink directories within `output_dir` are removed
-        before new links are generated. Default is False.
-
-    Notes
-    -----
-    - Mandatory files are defined by regex patterns such as point cloud, intrinsic,
-      and extrinsic calibration files. Their absence is logged as a warning.
-    - File metadata (extracted by `parse_filename`) is added to the indexing
-      DataFrame prior to link creation.
-    - Symlinks are always recreated: existing links or files at the target
-      location are removed before new ones are written.
+    df:
+        DataFrame returned by :func:`io.scan_submissions`, indexed by submission code.
+    output_dir:
+        Root directory where symlink subdirectories will be created.
+    overwrite:
+        If True, *output_dir* is deleted entirely before creating new links.
     """
-    input_dir = Path(input_dir)
     output_dir = Path(output_dir)
 
-    # if overwrite remove each symlinks directory
-    if overwrite:
-        for sub_dir in output_dir.sub_dirs.values():
-            if sub_dir.symlinks_dir.base_dir.exists():
-                shutil.rmtree(sub_dir.symlinks_dir.base_dir)
+    if overwrite and output_dir.exists():
+        shutil.rmtree(output_dir)
 
-    # Define regex patterns mapping to dataframe column names
-    mandatory_patterns = {
-        "dense_pointcloud_file": r"_dense_pointcloud\.(las|laz)$",
-        "sparse_pointcloud_file": r"_sparse_pointcloud\.(las|laz)$",
-        "extrinsics_file": r"_extrinsics\.csv$",
-        "intrinsics_file": r"_intrinsics\.csv$",
-    }
-    optional_patterns = {"dem_file": r".*dem.*\.tif$", "orthoimage_file": r".*orthoimage.*\.tif$"}
-
-    patterns = {**mandatory_patterns, **optional_patterns}
-
-    df = pd.DataFrame()
-    df.index.name = "code"
-    for subdir in input_dir.iterdir():
-        if not subdir.is_dir():
-            continue
-
-        all_files = list(subdir.rglob("*"))
-
-        for file in all_files:
-            try:
-                code, metadatas = parse_filename(file)
-            except FilenameParseError as e:
-                relevant_extensions = {".las", ".laz", ".tif", ".csv"}
-                if file.suffix.lower() in relevant_extensions:
-                    logger.warning(f"Cannot parse filename: {e}")
-                else:
-                    logger.debug(f"Skipping non-submission file: {e}")
+    for _code, row in df.iterrows():
+        for col, subdir_name in io._FILE_COL_TO_SUBDIR.items():
+            if col not in row or pd.isna(row[col]):
                 continue
-            
-            for column, pattern in patterns.items():
-                if re.search(pattern, file.name, re.IGNORECASE):
-                    df.at[code, "submission"] = subdir.name
-                    for k, v in metadatas.items():
-                        df.at[code, k] = v
-                    df.at[code, column] = str(file)
+            link = output_dir / subdir_name / Path(row[col]).name
+            link.parent.mkdir(exist_ok=True, parents=True)
+            if link.is_symlink():
+                link.unlink()
+            link.symlink_to(row[col])
 
-                    break  # Stop at first match
 
-    for code, row in df.iterrows():
-        missing_files = [c for c in mandatory_patterns if pd.isna(row[c])]
-        if missing_files:
-            logger.warning(f"{code} - Missing the following mandatory file(s): {missing_files}")
-        for colname in patterns:
-            if not pd.isna(row[colname]):
-                sub_dirname = colname.replace("_file", "")
-                if not sub_dirname.endswith("s"):
-                    sub_dirname += "s"
+def index_submissions_and_link_files(input_dir: str | Path, output_dir: str | Path, overwrite: bool = False) -> None:
+    """Scan, validate, and create symlinks for all submissions in *input_dir*.
 
-                link = output_dir / sub_dirname / Path(row[colname]).name
-                link.parent.mkdir(exist_ok=True, parents=True)
-
-                # Remove existing link if it already exists
-                if link.exists() or link.is_symlink():
-                    link.unlink()
-                link.symlink_to(row[colname])
+    Convenience wrapper combining :func:`io.scan_submissions`,
+    :func:`io.validate_submissions`, and :func:`create_symlinks`.
+    Kept for backwards compatibility with existing notebooks.
+    """
+    df = io.scan_submissions(input_dir)
+    io.validate_submissions(df)
+    create_symlinks(df, output_dir, overwrite=overwrite)
 
 
 def check_planned_submissions(
-    pointcloud_files: list[str | Path],
+    submission_codes: list[str],
     planned_outfile: str | Path,
-):
-    """
-    Check received/processed submissions against planned submissions filled in shared Google sheet.
+) -> None:
+    """Compare received submission codes against the planned list from the shared Google Sheet.
 
-    Google sheet file is downloaded and converted to CSV with gdown.
-    Submitted experiment codes are extracted from point cloud filenames and compared to planned results.
+    Downloads and updates the planned-submissions CSV at *planned_outfile*, then logs
+    which planned submissions are missing and which received submissions were unplanned.
 
     Parameters
     ----------
-    pointcloud_files : list[str | Path]
-        List of extracted point cloud file paths.
-    planned_outfile : str or Path
-        Location where to save the planned CSV file, that is downloaded from GDrive and updated.
+    submission_codes:
+        Experiment codes to compare (e.g. ``df.index.tolist()`` from :func:`io.scan_submissions`).
+    planned_outfile:
+        Path where the downloaded/updated planned-submissions CSV is saved.
     """
-    pointcloud_files: list[Path] = [Path(f) for f in pointcloud_files]
     planned_outfile = Path(planned_outfile)
-
-    # Download planned submissions from shared sheet
     planned_df = io.download_planned_submissions(planned_outfile)
 
-    # Extract experiment codes of processed point clouds
-    processed_success_codes = []
-    processed_fail_codes = []
-    for file in pointcloud_files:
-        try:
-            code, metadatas = parse_filename(file)
-            processed_success_codes.append(code)
-        except Exception as e:
-            logger.error(f"Error processing {file.name}: {e}")
-            # Try to extract code even if not matching expected pattern
-            code = "_".join(file.stem.split("_")[:-2])
-            processed_fail_codes.append(code)
-            continue
-
-    # Check processed codes are unique
-    all_codes = processed_success_codes + processed_fail_codes
-    counts = Counter(all_codes)
-    non_uniques = [x for x in all_codes if counts[x] > 1]
-    if len(non_uniques) > 0:
-        logger.warning(f"Found {len(non_uniques)} non unique codes:")
-        for code in non_uniques:
-            logger.warning(f"\t{code}")
-
-    # Find received, successully processed and unplanned submissions
-    set_processed = set(processed_success_codes)
+    set_received = set(submission_codes)
     set_planned = set(planned_df["Submission code"])
 
-    received = planned_df["Submission code"].map(lambda x: x in all_codes)
-    planned_df["received"] = received
+    planned_df["received"] = planned_df["Submission code"].map(lambda x: x in set_received)
 
-    processed = planned_df["Submission code"].map(lambda x: x in processed_success_codes)
-    planned_df["processed"] = processed
+    unsubmitted = planned_df.loc[~planned_df["received"], "Submission code"].tolist()
+    unplanned = sorted(set_received - set_planned)
 
-    unplanned = set_processed - set_planned
+    logger.info(f"{len(planned_df) - len(unsubmitted)}/{len(planned_df)} planned submissions received")
 
-    print(f"Found {len(planned_df[~planned_df['received']])} unsubmitted results")
-    for code in planned_df[~planned_df['received']]["Submission code"]:
-        print(f"\t{code}")
+    if unsubmitted:
+        logger.warning(f"{len(unsubmitted)} planned submissions not yet received:")
+        for code in sorted(unsubmitted):
+            logger.warning(f"  {code}")
 
-    print(f"Found {len(unplanned)} unplanned results")
-    for code in sorted(unplanned):
-        print(f"\t{code}")
+    if unplanned:
+        logger.warning(f"{len(unplanned)} unplanned submissions received:")
+        for code in unplanned:
+            logger.warning(f"  {code}")
 
-    # print("\nTo update 'received' column on sheet, copy/paste below:")
-    # for res in planned_df["received"]:
-    #     print(f"{res}")
-    
     planned_df.to_csv(planned_outfile)
-    print(f"Updated planned submissions saved to {planned_outfile}. \nOpen and copy in VSCode with command 'edit csv'.")
+    logger.info(f"Updated planned submissions saved to {planned_outfile}.")
 
 def process_pointclouds_to_dems(
     pointcloud_files: list[str | Path],

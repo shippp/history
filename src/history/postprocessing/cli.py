@@ -102,13 +102,12 @@ def _run_uncompress(config: Config) -> None:
 
 def _run_symlinks(config: Config) -> None:
     """Index submissions, parse filenames, and create typed symlink directories."""
-    from history.postprocessing.pipeline import index_submissions_and_link_files, plot_symlinks
+    from history.postprocessing import io
+    from history.postprocessing.pipeline import create_symlinks, plot_symlinks
 
-    index_submissions_and_link_files(
-        config.extracted_dir,
-        config.proc_dir.symlinks_dir,
-        overwrite=config.overwrite,
-    )
+    df = io.scan_submissions(config.extracted_dir)
+    io.validate_submissions(df)
+    create_symlinks(df, config.proc_dir.symlinks_dir, overwrite=config.overwrite)
 
     if not config.no_plots:
         plot_symlinks(config.proc_dir.symlinks_dir, config.plot_dir)
@@ -116,16 +115,12 @@ def _run_symlinks(config: Config) -> None:
 
 def _run_check_planned(config: Config) -> None:
     """Check extracted results against planned submissions sheet."""
+    from history.postprocessing import io
     from history.postprocessing.pipeline import check_planned_submissions
 
-    dense_pc_dir = config.proc_dir.symlinks_dir / "dense_pointclouds"
-    pointcloud_files = list(dense_pc_dir.glob("*.las")) + list(dense_pc_dir.glob("*.laz"))
-    planned_outfile = str(config.proc_dir.base_dir / "planned_submissions.csv")
-    
-    check_planned_submissions(
-        pointcloud_files,
-        planned_outfile,
-    )
+    df = io.scan_submissions(config.extracted_dir)
+    planned_outfile = config.proc_dir.base_dir / "planned_submissions.csv"
+    check_planned_submissions(df.index.tolist(), planned_outfile)
 
 
 def _run_point2dem(config: Config) -> None:

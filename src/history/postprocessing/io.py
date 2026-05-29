@@ -833,6 +833,94 @@ def parse_filename(file: str | Path) -> tuple[str, dict[str, Any]]:
     return code, metadatas
 
 
+# Regex patterns for recognising submission file types, keyed by DataFrame column name.
+_MANDATORY_FILE_PATTERNS: dict[str, str] = {
+    "dense_pointcloud_file": r"_dense_pointcloud\.(las|laz)$",
+    "sparse_pointcloud_file": r"_sparse_pointcloud\.(las|laz)$",
+    "extrinsics_file": r"_extrinsics\.csv$",
+    "intrinsics_file": r"_intrinsics\.csv$",
+}
+_OPTIONAL_FILE_PATTERNS: dict[str, str] = {
+    "dem_file": r".*dem.*\.tif$",
+    "orthoimage_file": r".*orthoimage.*\.tif$",
+}
+_ALL_FILE_PATTERNS: dict[str, str] = {**_MANDATORY_FILE_PATTERNS, **_OPTIONAL_FILE_PATTERNS}
+
+# Maps DataFrame column names to their symlink subdirectory names.
+_FILE_COL_TO_SUBDIR: dict[str, str] = {
+    "dense_pointcloud_file": "dense_pointclouds",
+    "sparse_pointcloud_file": "sparse_pointclouds",
+    "extrinsics_file": "extrinsics",
+    "intrinsics_file": "intrinsics",
+    "dem_file": "dems",
+    "orthoimage_file": "orthoimages",
+}
+
+
+def scan_submissions(input_dir: str | Path) -> pd.DataFrame:
+    """Scan submission subdirectories and return a DataFrame indexed by submission code.
+
+    Each row represents one submission with columns for parsed metadata fields and file
+    paths (one per recognised file type). Parse errors on relevant extensions (.las,
+    .laz, .tif, .csv) are logged as warnings; all other extensions are logged at DEBUG.
+    If the same code appears in multiple submission folders, the first folder wins and a
+    warning is emitted.
+    """
+    input_dir = Path(input_dir)
+    _relevant_extensions = {".las", ".laz", ".tif", ".csv"}
+    rows: dict[str, dict] = {}
+
+    for subdir in sorted(input_dir.iterdir()):
+        if not subdir.is_dir():
+            continue
+        for file in subdir.rglob("*"):
+            try:
+                code, metadata = parse_filename(file)
+            except FilenameParseError as e:
+                if file.suffix.lower() in _relevant_extensions:
+                    logger.warning(f"Cannot parse filename: {e}")
+                else:
+                    logger.debug(f"Skipping non-submission file: {e}")
+                continue
+
+            if code in rows and rows[code]["submission"] != subdir.name:
+                logger.warning(
+                    f"{code}: found in multiple submission folders, keeping '{rows[code]['submission']}'"
+                )
+                continue
+
+            row = rows.setdefault(code, {"submission": subdir.name, **metadata})
+            for col, pattern in _ALL_FILE_PATTERNS.items():
+                if re.search(pattern, file.name, re.IGNORECASE):
+                    row[col] = str(file)
+                    break
+
+    df = pd.DataFrame.from_dict(rows, orient="index")
+    df.index.name = "code"
+    return df
+
+
+def validate_submissions(df: pd.DataFrame) -> None:
+    """Log a validation summary of mandatory file completeness across all submissions.
+
+    Logs an INFO message when all submissions are complete, or a WARNING summary
+    listing each submission with missing mandatory files.
+    """
+    issues: dict[str, list[str]] = {}
+    for code, row in df.iterrows():
+        missing = [col for col in _MANDATORY_FILE_PATTERNS if pd.isna(row.get(col))]
+        if missing:
+            issues[code] = missing
+
+    if not issues:
+        logger.info(f"All {len(df)} submissions are complete.")
+        return
+
+    logger.warning(f"{len(issues)}/{len(df)} submissions have missing mandatory files:")
+    for code, missing in sorted(issues.items()):
+        logger.warning(f"  {code}: missing {missing}")
+
+
 class ReferencesData:
     def __init__(self, references_data_mapping: dict[tuple[str, str], dict[str, str | Path]]):
         """
