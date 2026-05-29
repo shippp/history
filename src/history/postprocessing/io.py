@@ -23,21 +23,45 @@ FILE_CODE_MAPPING: dict[str, dict[str, str]] = {
     "mtp_adjustments": {"MY": "Yes", "MN": "No"},
 }
 
-FILENAME_PATTERN = re.compile(
-    r"""
-    ^(?P<author>[A-Za-z0-9]{3,6})_
-    (?P<site>CG|IL)_
-    (?P<dataset>AI|MC|PC)_
-    (?P<images>PP|RA)_
-    (?P<calib_used>C[YN])_
-    (?P<georef>G[MACN])_
-    (?P<pointcloud_coregistration>P[YN])_
-    (?P<mtp_adjustments>M[YN])
-    (?:_(?P<version>V\d+))?
-    .*$
-    """,
-    re.VERBOSE | re.IGNORECASE,
-)
+# Per-segment patterns — used for both parsing and error diagnosis.
+_SEGMENT_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("author", re.compile(r"^[A-Za-z0-9]{3,6}$")),
+    ("site", re.compile(r"^(CG|IL)$", re.IGNORECASE)),
+    ("dataset", re.compile(r"^(AI|MC|PC)$", re.IGNORECASE)),
+    ("images", re.compile(r"^(PP|RA)$", re.IGNORECASE)),
+    ("calib_used", re.compile(r"^C[YN]$", re.IGNORECASE)),
+    ("georef", re.compile(r"^G[MACN]$", re.IGNORECASE)),
+    ("pointcloud_coregistration", re.compile(r"^P[YN]$", re.IGNORECASE)),
+    ("mtp_adjustments", re.compile(r"^M[YN]$", re.IGNORECASE)),
+]
+
+_VERSION_PATTERN = re.compile(r"^V\d+$", re.IGNORECASE)
+
+
+class FilenameParseError(ValueError):
+    """Raised when a filename does not conform to the submission naming convention.
+
+    Attributes
+    ----------
+    stem : str
+        The filename stem that failed to parse.
+    segment : str or None
+        Name of the first segment that caused the failure, if identifiable.
+    got : str or None
+        The actual value found in the failing segment.
+    """
+
+    def __init__(self, stem: str, reason: str, segment: str | None = None, got: str | None = None):
+        self.stem = stem
+        self.segment = segment
+        self.got = got
+        msg = f"'{stem}': {reason}"
+        if segment and got is not None:
+            expected = list(FILE_CODE_MAPPING[segment]) if segment in FILE_CODE_MAPPING else None
+            msg += f" — segment '{segment}': got '{got}'"
+            if expected:
+                msg += f", expected one of {expected}"
+        super().__init__(msg)
 
 
 def check_disk_space_and_estimate(archive_files: List[Path], output_dir: Path) -> Dict[str, float]:
@@ -785,21 +809,27 @@ def parse_filename(file: str | Path) -> tuple[str, dict[str, Any]]:
         ValueError: If the filename does not respect the expected naming convention
                     or contains unknown codes not defined in FILE_CODE_MAPPING.
     """
-    match = FILENAME_PATTERN.match(Path(file).stem)
+    stem = Path(file).stem
+    parts = stem.split("_")
 
-    if not match:
-        raise ValueError(f"The filename {Path(file).stem} does not respect the code convention")
+    raw: dict[str, str | None] = {}
+    for i, (seg_name, seg_pattern) in enumerate(_SEGMENT_PATTERNS):
+        if i >= len(parts):
+            raise FilenameParseError(stem, f"filename too short, missing segment '{seg_name}'", seg_name, None)
+        if not seg_pattern.match(parts[i]):
+            raise FilenameParseError(stem, "invalid segment value", seg_name, parts[i])
+        raw[seg_name] = parts[i]
 
-    match_dict = match.groupdict()
-    metadatas = {"author": match_dict["author"]}
+    version_idx = len(_SEGMENT_PATTERNS)
+    raw["version"] = parts[version_idx] if version_idx < len(parts) and _VERSION_PATTERN.match(parts[version_idx]) else None
 
-    for key, value in match_dict.items():
-        if key in FILE_CODE_MAPPING:
+    metadatas: dict[str, Any] = {"author": raw["author"]}
+    for key, value in raw.items():
+        if key in FILE_CODE_MAPPING and value is not None:
             metadatas[key] = FILE_CODE_MAPPING[key].get(value)
+    metadatas["version"] = raw["version"]
 
-    metadatas["version"] = match_dict.get("version")
-
-    code = "_".join([v for v in match_dict.values() if v is not None])
+    code = "_".join(v for v in raw.values() if v is not None)
     return code, metadatas
 
 

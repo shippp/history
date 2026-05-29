@@ -49,7 +49,7 @@ from tqdm import tqdm
 import history.postprocessing.io as io
 import history.postprocessing.statistics as stats
 import history.postprocessing.visualization as viz
-from history.postprocessing.io import ReferencesData, parse_filename
+from history.postprocessing.io import FilenameParseError, ReferencesData, parse_filename
 
 logger = logging.getLogger(__name__)
 
@@ -188,9 +188,14 @@ def index_submissions_and_link_files(input_dir: str | Path, output_dir: str, ove
         for file in all_files:
             try:
                 code, metadatas = parse_filename(file)
-            except ValueError:
+            except FilenameParseError as e:
+                relevant_extensions = {".las", ".laz", ".tif", ".csv"}
+                if file.suffix.lower() in relevant_extensions:
+                    logger.warning(f"Cannot parse filename: {e}")
+                else:
+                    logger.debug(f"Skipping non-submission file: {e}")
                 continue
-
+            
             for column, pattern in patterns.items():
                 if re.search(pattern, file.name, re.IGNORECASE):
                     df.at[code, "submission"] = subdir.name
