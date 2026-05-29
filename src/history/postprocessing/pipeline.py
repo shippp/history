@@ -144,7 +144,9 @@ def create_symlinks(df: pd.DataFrame, output_dir: str | Path, overwrite: bool = 
         for col, subdir_name in io._FILE_COL_TO_SUBDIR.items():
             if col not in row or pd.isna(row[col]):
                 continue
-            link = output_dir / subdir_name / Path(row[col]).name
+            name_col = col.removesuffix("_file") + "_name"
+            link_name = row[name_col] if (name_col in row and pd.notna(row.get(name_col))) else Path(row[col]).name
+            link = output_dir / subdir_name / link_name
             link.parent.mkdir(exist_ok=True, parents=True)
             if link.is_symlink():
                 link.unlink()

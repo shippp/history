@@ -1,11 +1,4 @@
 raw_dir = "/path/to/raw"
-
-# Optional: correct mis-named submission files without touching the files on disk.
-# Keys are the bad file stem (without extension), values are the corrected stems.
-# One entry per mis-named file (e.g. one for _dense_pointcloud, one for _extrinsics, …).
-# [filename_renames]
-# "ALICE_cg_AI_RA_CY_GN_PN_MN_dense_pointcloud" = "ALICE_CG_AI_RA_CY_GN_PN_MN_dense_pointcloud"
-# "ALICE_cg_AI_RA_CY_GN_PN_MN_sparse_pointcloud" = "ALICE_CG_AI_RA_CY_GN_PN_MN_sparse_pointcloud"
 extracted_dir = "/path/to/extracted"
 proc_dir = "/path/to/processing"
 plot_dir = "/path/to/plots"
@@ -44,3 +37,10 @@ landcover = "/path/to/iceland/kh9mc/landcover.tif"
 ref_dem = "/path/to/iceland/kh9pc/ref_dem.tif"
 ref_dem_mask = "/path/to/iceland/kh9pc/ref_dem_mask.tif"
 landcover = "/path/to/iceland/kh9pc/landcover.tif"
+
+# Optional: correct mis-named submission files without touching the files on disk.
+# Keys are Python re.sub patterns, values are replacement strings (use \1, \2 for groups).
+# Patterns are tried in order; the first match wins. Actual files on disk are never modified.
+# [filename_renames]
+# '(.+_extrinsics)\.txt$' = '\1.csv'          # fix wrong extension
+# '(.+)_tie\.laz$' = '\1_sparse_pointcloud.laz'  # fix wrong suffix

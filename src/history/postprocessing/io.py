@@ -858,15 +858,19 @@ _FILE_COL_TO_SUBDIR: dict[str, str] = {
 
 
 def _apply_filename_rename(filename: str, filename_renames: dict[str, str] | None) -> str:
-    """Return *filename* with its stem replaced if it appears in *filename_renames*."""
+    """Return *filename* renamed according to *filename_renames*.
+
+    Keys are Python ``re.sub`` patterns; values are replacement strings. Patterns are
+    tried in insertion order and the first match wins.
+    Example: ``{r'(.+_extrinsics)\\.txt$': r'\\1.csv'}``
+    """
     if not filename_renames:
         return filename
-    ext = Path(filename).suffix
-    bare_stem = Path(filename).stem
-    if bare_stem in filename_renames:
-        new_stem = filename_renames[bare_stem]
-        logger.debug(f"Applying filename rename: '{bare_stem}' → '{new_stem}'")
-        return new_stem + ext
+    for pattern, replacement in filename_renames.items():
+        new_filename, n = re.subn(pattern, replacement, filename)
+        if n > 0:
+            logger.debug(f"Applying filename rename: '{filename}' → '{new_filename}' (pattern: {pattern!r})")
+            return new_filename
     return filename
 
 
@@ -884,11 +888,11 @@ def scan_submissions(input_dir: str | Path, filename_renames: dict[str, str] | N
     input_dir:
         Directory containing one subdirectory per submission.
     filename_renames:
-        Optional mapping from bad file stems (without extension) to corrected stems.
-        Applied before parsing, so that mis-named files are treated as if they had the
-        corrected name. The actual files on disk are never modified.
-        Example: ``{"ALICE_cg_AI_RA_CY_GN_PN_MN_dense_pointcloud":
-                     "ALICE_CG_AI_RA_CY_GN_PN_MN_dense_pointcloud"}``
+        Optional mapping of Python ``re.sub`` patterns to replacement strings. Applied
+        before parsing; actual files on disk are never modified. Patterns are tried in
+        insertion order; the first match wins.
+        Example: ``{r'(.+_extrinsics)\\.txt$': r'\\1.csv',
+                     r'(.+)_tie\\.laz$': r'\\1_sparse_pointcloud.laz'}``
     """
     input_dir = Path(input_dir)
     _relevant_extensions = {".las", ".laz", ".tif", ".csv"}
@@ -897,6 +901,7 @@ def scan_submissions(input_dir: str | Path, filename_renames: dict[str, str] | N
     for subdir in sorted(input_dir.iterdir()):
         if not subdir.is_dir():
             continue
+        logger.debug(f"Scanning {subdir.name}...")
         for file in subdir.rglob("*"):
             virtual_name = _apply_filename_rename(file.name, filename_renames)
             try:
@@ -916,15 +921,17 @@ def scan_submissions(input_dir: str | Path, filename_renames: dict[str, str] | N
 
             row = rows.setdefault(code, {"submission": subdir.name, **metadata})
             for col, pattern in _ALL_FILE_PATTERNS.items():
-                if re.search(pattern, file.name, re.IGNORECASE):
+                if re.search(pattern, virtual_name, re.IGNORECASE):
                     if col in row:
                         logger.warning(
                             f"{code}: duplicate {col} — keeping '{row[col]}', ignoring '{file}'"
                         )
                     else:
                         row[col] = str(file)
+                        row[col.removesuffix("_file") + "_name"] = virtual_name
                     break
-
+    
+    logger.info(f"scan_submissions: found {len(rows)} submissions in {input_dir}")
     df = pd.DataFrame.from_dict(rows, orient="index")
     df.index.name = "code"
     return df
