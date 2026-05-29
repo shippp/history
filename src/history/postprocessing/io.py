@@ -892,7 +892,12 @@ def scan_submissions(input_dir: str | Path) -> pd.DataFrame:
             row = rows.setdefault(code, {"submission": subdir.name, **metadata})
             for col, pattern in _ALL_FILE_PATTERNS.items():
                 if re.search(pattern, file.name, re.IGNORECASE):
-                    row[col] = str(file)
+                    if col in row:
+                        logger.warning(
+                            f"{code}: duplicate {col} — keeping '{row[col]}', ignoring '{file}'"
+                        )
+                    else:
+                        row[col] = str(file)
                     break
 
     df = pd.DataFrame.from_dict(rows, orient="index")
