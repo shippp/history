@@ -857,7 +857,20 @@ _FILE_COL_TO_SUBDIR: dict[str, str] = {
 }
 
 
-def scan_submissions(input_dir: str | Path) -> pd.DataFrame:
+def _apply_filename_rename(filename: str, filename_renames: dict[str, str] | None) -> str:
+    """Return *filename* with its stem replaced if it appears in *filename_renames*."""
+    if not filename_renames:
+        return filename
+    ext = Path(filename).suffix
+    bare_stem = Path(filename).stem
+    if bare_stem in filename_renames:
+        new_stem = filename_renames[bare_stem]
+        logger.debug(f"Applying filename rename: '{bare_stem}' → '{new_stem}'")
+        return new_stem + ext
+    return filename
+
+
+def scan_submissions(input_dir: str | Path, filename_renames: dict[str, str] | None = None) -> pd.DataFrame:
     """Scan submission subdirectories and return a DataFrame indexed by submission code.
 
     Each row represents one submission with columns for parsed metadata fields and file
@@ -865,6 +878,17 @@ def scan_submissions(input_dir: str | Path) -> pd.DataFrame:
     .laz, .tif, .csv) are logged as warnings; all other extensions are logged at DEBUG.
     If the same code appears in multiple submission folders, the first folder wins and a
     warning is emitted.
+
+    Parameters
+    ----------
+    input_dir:
+        Directory containing one subdirectory per submission.
+    filename_renames:
+        Optional mapping from bad file stems (without extension) to corrected stems.
+        Applied before parsing, so that mis-named files are treated as if they had the
+        corrected name. The actual files on disk are never modified.
+        Example: ``{"ALICE_cg_AI_RA_CY_GN_PN_MN_dense_pointcloud":
+                     "ALICE_CG_AI_RA_CY_GN_PN_MN_dense_pointcloud"}``
     """
     input_dir = Path(input_dir)
     _relevant_extensions = {".las", ".laz", ".tif", ".csv"}
@@ -874,8 +898,9 @@ def scan_submissions(input_dir: str | Path) -> pd.DataFrame:
         if not subdir.is_dir():
             continue
         for file in subdir.rglob("*"):
+            virtual_name = _apply_filename_rename(file.name, filename_renames)
             try:
-                code, metadata = parse_filename(file)
+                code, metadata = parse_filename(virtual_name)
             except FilenameParseError as e:
                 if file.suffix.lower() in _relevant_extensions:
                     logger.warning(f"Cannot parse filename: {e}")

@@ -1,4 +1,11 @@
 raw_dir = "/path/to/raw"
+
+# Optional: correct mis-named submission files without touching the files on disk.
+# Keys are the bad file stem (without extension), values are the corrected stems.
+# One entry per mis-named file (e.g. one for _dense_pointcloud, one for _extrinsics, …).
+# [filename_renames]
+# "ALICE_cg_AI_RA_CY_GN_PN_MN_dense_pointcloud" = "ALICE_CG_AI_RA_CY_GN_PN_MN_dense_pointcloud"
+# "ALICE_cg_AI_RA_CY_GN_PN_MN_sparse_pointcloud" = "ALICE_CG_AI_RA_CY_GN_PN_MN_sparse_pointcloud"
 extracted_dir = "/path/to/extracted"
 proc_dir = "/path/to/processing"
 plot_dir = "/path/to/plots"

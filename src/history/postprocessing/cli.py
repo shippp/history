@@ -105,7 +105,7 @@ def _run_symlinks(config: Config) -> None:
     from history.postprocessing import io
     from history.postprocessing.pipeline import create_symlinks, plot_symlinks
 
-    df = io.scan_submissions(config.extracted_dir)
+    df = io.scan_submissions(config.extracted_dir, filename_renames=config.filename_renames)
     io.validate_submissions(df)
     create_symlinks(df, config.proc_dir.symlinks_dir, overwrite=config.overwrite)
 
@@ -118,7 +118,7 @@ def _run_check_planned(config: Config) -> None:
     from history.postprocessing import io
     from history.postprocessing.pipeline import check_planned_submissions
 
-    df = io.scan_submissions(config.extracted_dir)
+    df = io.scan_submissions(config.extracted_dir, filename_renames=config.filename_renames)
     planned_outfile = config.proc_dir.base_dir / "planned_submissions.csv"
     check_planned_submissions(df.index.tolist(), planned_outfile)
 

@@ -101,6 +101,7 @@ class Config:
     no_plots: bool = False
     pdal_exec_path: str = "pdal"
     max_workers: int = 4
+    filename_renames: dict[str, str] | None = None
 
     @classmethod
     def from_toml_file(cls, path: Path) -> "Config":
@@ -137,6 +138,7 @@ class Config:
             dry_run=data.get("dry_run", False),
             pdal_exec_path=data.get("pdal_exec_path", "pdal"),
             max_workers=data.get("max_workers", 4),
+            filename_renames=data.get("filename_renames") or None,
         )
 
 
