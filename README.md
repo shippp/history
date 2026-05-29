@@ -64,6 +64,7 @@ The pipeline runs the following steps in order:
 |---|---|
 | `uncompress` | Extract compressed submission archives |
 | `symlinks` | Parse filenames and create typed symlink directories |
+| `check_planned` | Check extracted experiments against planned experiment |
 | `point2dem` | Convert dense point clouds to DEMs via PDAL |
 | `coregister` | Coregister DEMs to the reference (Nuth–Kaab + vertical shift) |
 | `ddem` | Compute differential DEMs before and after coregistration |
