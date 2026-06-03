@@ -737,10 +737,10 @@ def convert_pointcloud_to_dem(
     ref_dem = gu.Raster(reference_dem_path)
     ref_crs = ref_dem.crs
     if ref_crs is None:
-        raise ValueError(f"The reference dem {reference_dem_path} as no CRS.")
+        raise ValueError(f"The reference dem {reference_dem_path} has no CRS.")
     ref_box = box(*ref_dem.bounds)
 
-    # if not crs found in pc_crs test with a list of CRS
+    # if no crs found in pc_crs, tests with a list of CRS
     if pc_crs is None:
         test_crs_list = [str(ref_crs), "EPSG:4326"]
 
@@ -1152,9 +1152,9 @@ def plot_ddems(config: Config) -> None:
         viz.generate_coregistration_individual_plots(group, sub_dir / "coregistrations", config.overwrite)
 
         ddem_files_dict = group["ddem_after_file"].dropna().to_dict()
-        viz.generate_ddems_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_ddem.png", f"({site} {dataset}) Mosaic of DDEMs after coregistration")
-        viz.generate_slopes_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_slopes_ddem.png", f"({site} {dataset}) Mosaic slopes of DDEMs after coregistration")
-        viz.generate_hillshades_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_hillshades_ddem.png", f"({site} {dataset}) Mosaic hillshades of DDEMs after coregistration")
+        viz.generate_ddems_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_ddem.png", title=f"({site} {dataset}) Mosaic of DDEMs after coregistration")
+        viz.generate_slopes_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_slopes_ddem.png", title=f"({site} {dataset}) Mosaic slopes of DDEMs after coregistration")
+        viz.generate_hillshades_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_hillshades_ddem.png", title=f"({site} {dataset}) Mosaic hillshades of DDEMs after coregistration")
 
 
 def plot_std_dems(config: Config) -> None:

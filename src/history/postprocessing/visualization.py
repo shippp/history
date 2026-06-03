@@ -4,6 +4,7 @@ Contains functions to generate post-processing Visualization
 
 import math
 from contextlib import contextmanager
+import logging
 from pathlib import Path
 from typing import Generator
 
@@ -19,6 +20,8 @@ from matplotlib.patches import Patch
 from rasterio.enums import Resampling
 
 from history.postprocessing.io import parse_filename
+
+logger = logging.getLogger(__name__)
 
 #######################################################################################################################
 ##                                                  MOSAIC VISUALIZATION
@@ -118,11 +121,15 @@ def generate_ddems_mosaic(
     """
     with _generate_mosaic_figure_and_axes(len(ddem_files_dict), output_path) as (fig, axes):
         for i, (subtitle, file) in enumerate(ddem_files_dict.items()):
-            dem = _read_raster_with_max_size(file)
-            dem = np.clip(dem, vmin, vmax)
+            try:
+                dem = _read_raster_with_max_size(file)
+                dem = np.clip(dem, vmin, vmax)
 
-            axes[i].imshow(dem, cmap="coolwarm", vmin=vmin, vmax=vmax)
-            axes[i].set_title(subtitle)
+                axes[i].imshow(dem, cmap="coolwarm", vmin=vmin, vmax=vmax)
+                axes[i].set_title(subtitle)
+            except Exception as e:
+                logger.error(f"Issue plotting file {file}: {e}")
+                continue
 
         # add the global color bar
         cbar = fig.colorbar(
