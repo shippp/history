@@ -110,7 +110,7 @@ def _run_symlinks(config: Config) -> None:
     create_symlinks(df, config.proc_dir.symlinks_dir, overwrite=config.overwrite)
 
     if not config.no_plots:
-        plot_symlinks(config)
+        plot_symlinks(config, submissions_df=df)
 
 
 def _run_check_planned(config: Config) -> None:

@@ -694,26 +694,175 @@ def visualize_files_presence_map(directories: list[str | Path], output_path: str
     ----------
     directories : list[str | Path]
         List of directories to scan for files. Only files with parsable codes are considered.
-
-    Returns
-    -------
-    None
-        The function generates a plot showing the presence/absence map; it does not return a value.
+    output_path : str or Path or None, optional
+        If provided the plot is saved there; otherwise it is displayed interactively.
     """
     directories: list[Path] = [Path(d) for d in directories]
-    df = pd.DataFrame()
-    df.index.name = "code"
+    rows: dict[str, dict] = {}
 
     for directory in directories:
         if directory.is_dir():
             for file in directory.iterdir():
                 if file.is_file():
-                    code, _ = parse_filename(file)
+                    code, metadata = parse_filename(file)
+                    row = rows.setdefault(code, {"site": metadata.get("site", ""), "dataset": metadata.get("dataset", "")})
+                    row[directory.name] = True
 
-                    df.at[code, directory.name] = True
+    df = pd.DataFrame.from_dict(rows, orient="index")
+    df.index.name = "code"
+    col_labels = [c for c in df.columns if c not in ("site", "dataset")]
+    df[col_labels] = df[col_labels].astype(pd.BooleanDtype()).fillna(False)
 
-    df = df.astype(pd.BooleanDtype()).fillna(False).sort_index()
-    _plot_boolean_df(df, cell_height=0.2, output_path=output_path, show=(output_path is None))
+    group_cols = [c for c in ("site", "dataset") if c in df.columns and df[c].notna().any()]
+    groups = [(key, grp[col_labels].sort_index()) for key, grp in df.groupby(group_cols, sort=True)] if group_cols else [("all", df[col_labels].sort_index())]
+
+    n_groups = len(groups)
+    ncols_fig = min(3, n_groups)
+    nrows_fig = math.ceil(n_groups / ncols_fig)
+
+    cell_w, cell_h = 1.2, 0.28
+    subplot_w = max(3.5, len(col_labels) * cell_w + 1.5)
+    subplot_h = max(2.0, max(len(grp) for _, grp in groups) * cell_h + 1.2)
+    fig, axes = plt.subplots(nrows_fig, ncols_fig, figsize=(ncols_fig * subplot_w + 1.0, nrows_fig * subplot_h + 0.6), squeeze=False)
+    for ax in axes.ravel():
+        ax.axis("off")
+
+    for idx, (key, grp) in enumerate(groups):
+        ax = axes[idx // ncols_fig][idx % ncols_fig]
+        ax.axis("on")
+        _plot_boolean_df(grp, ax=ax, title=" / ".join(key) if isinstance(key, tuple) else str(key))
+
+    fig.suptitle("Submission file presence", fontsize=13, weight="bold", y=1.01)
+    fig.tight_layout()
+
+    if output_path:
+        plt.savefig(output_path, bbox_inches="tight")
+
+    if output_path is None:
+        plt.show()
+    else:
+        plt.close()
+
+
+def visualize_files_size_map(df: pd.DataFrame, output_path: str | Path | None = None) -> None:
+    """
+    Create a visual file-size matrix for submission files.
+
+    Rows are submission codes; columns are the file-type columns recognised by
+    ``scan_submissions`` (dense/sparse point clouds, DEM, orthoimage).  Each cell
+    is colour-coded by size and annotated with a human-readable label (e.g. "1.2 GB").
+    Missing files are shown in light grey with a dash.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame returned by ``scan_submissions``, indexed by submission code.
+        Expected columns (subset): ``dense_pointcloud_file``, ``sparse_pointcloud_file``,
+        ``dem_file``, ``orthoimage_file``.
+    output_path : str or Path or None, optional
+        If provided the plot is saved there; otherwise it is displayed interactively.
+    """
+    _SIZE_COLS = {
+        "dense_pointcloud_file": "dense PC",
+        "sparse_pointcloud_file": "sparse PC",
+        "dem_file": "DEM",
+        "orthoimage_file": "ortho",
+    }
+
+    def _fmt_size(n_bytes: float) -> str:
+        for unit, threshold in (("GB", 1e9), ("MB", 1e6), ("KB", 1e3)):
+            if n_bytes >= threshold:
+                return f"{n_bytes / threshold:.1f} {unit}"
+        return f"{n_bytes:.0f} B"
+
+    def _fill_size_arrays(group_df: pd.DataFrame, cols: list[str]) -> tuple[np.ndarray, list[list[str]]]:
+        values = np.full((len(group_df), len(cols)), np.nan)
+        labels = [["—"] * len(cols) for _ in range(len(group_df))]
+        for j, col in enumerate(cols):
+            for i, (_, row) in enumerate(group_df.iterrows()):
+                path = row.get(col)
+                if pd.notna(path) and Path(path).is_file():
+                    size = Path(path).stat().st_size
+                    values[i, j] = size
+                    labels[i][j] = _fmt_size(size)
+        return values, labels
+
+    def _draw_matrix(ax: plt.Axes, group_df: pd.DataFrame, size_values: np.ndarray, text_labels: list, col_labels: list, title: str) -> None:
+        n_rows, n_cols = size_values.shape
+        cmap = plt.get_cmap("YlOrRd")
+        missing_color = np.array([0.827, 0.827, 0.827, 1.0])  # lightgrey
+
+        # Build an RGBA image where each column is normalised independently.
+        rgba = np.ones((n_rows, n_cols, 4))
+        for j in range(n_cols):
+            col_vals = size_values[:, j]
+            valid = col_vals[~np.isnan(col_vals)]
+            col_vmin = float(valid.min()) if len(valid) else 0.0
+            col_vmax = float(valid.max()) if len(valid) else 1.0
+            col_range = col_vmax - col_vmin if col_vmax != col_vmin else 1.0
+            for i in range(n_rows):
+                if np.isnan(col_vals[i]):
+                    rgba[i, j] = missing_color
+                else:
+                    rgba[i, j] = cmap((col_vals[i] - col_vmin) / col_range)
+
+        ax.imshow(rgba, aspect="auto", origin="lower", extent=(0, n_cols, 0, n_rows))
+        # Grid lines
+        for x in range(n_cols + 1):
+            ax.axvline(x, color="grey", linewidth=0.8)
+        for y in range(n_rows + 1):
+            ax.axhline(y, color="grey", linewidth=0.8)
+
+        for i in range(n_rows):
+            for j in range(n_cols):
+                ax.text(j + 0.5, i + 0.5, text_labels[i][j], ha="center", va="center", fontsize=7.5)
+        ax.set_xticks(np.arange(n_cols) + 0.5)
+        ax.set_yticks(np.arange(n_rows) + 0.5)
+        ax.set_xticklabels(col_labels, rotation=30, ha="right", fontsize=9)
+        ax.set_yticklabels(group_df.index, fontsize=8)
+        ax.set_title(title, fontsize=10, weight="bold")
+
+    present_cols = [c for c in _SIZE_COLS if c in df.columns]
+    col_labels = [_SIZE_COLS[c] for c in present_cols]
+
+    group_cols = [c for c in ("site", "dataset") if c in df.columns]
+    if group_cols:
+        groups = [(key, grp) for key, grp in df.groupby(group_cols, sort=True)]
+    else:
+        groups = [("all", df)]
+
+    n_groups = len(groups)
+    ncols_fig = min(3, n_groups)
+    nrows_fig = math.ceil(n_groups / ncols_fig)
+
+    # Each sub-table: width fixed by number of file columns; height by number of rows.
+    cell_w, cell_h = 1.4, 0.30
+    subplot_w = max(3.5, len(present_cols) * cell_w + 1.5)
+    subplot_h = max(2.0, max(len(grp) for _, grp in groups) * cell_h + 1.2)
+    fig_width = ncols_fig * subplot_w + 1.0
+    fig_height = nrows_fig * subplot_h + 0.6
+
+    fig, axes = plt.subplots(nrows_fig, ncols_fig, figsize=(fig_width, fig_height), squeeze=False)
+    for ax in axes.ravel():
+        ax.axis("off")
+
+    for idx, (key, grp) in enumerate(groups):
+        ax = axes[idx // ncols_fig][idx % ncols_fig]
+        ax.axis("on")
+        size_values, text_labels = _fill_size_arrays(grp, present_cols)
+        title = " / ".join(key) if isinstance(key, tuple) else str(key)
+        _draw_matrix(ax, grp, size_values, text_labels, col_labels, title)
+
+    fig.suptitle("Submission file sizes", fontsize=13, weight="bold", y=1.01)
+    fig.tight_layout()
+
+    if output_path:
+        plt.savefig(output_path, bbox_inches="tight")
+
+    if output_path is None:
+        plt.show()
+    else:
+        plt.close()
 
 
 def generate_coregistration_individual_plots(
@@ -828,67 +977,48 @@ def _plot_boolean_df(
     cell_height: float = 0.4,
     min_width: float = 6,
     min_height: float = 4,
+    ax: Axes | None = None,
 ) -> None:
     """
     Plot a boolean DataFrame as a black/white matrix using pcolormesh,
     with automatic figure size based on the DataFrame shape.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        DataFrame containing only boolean values.
-    title : str, optional
-        Title of the plot.
-    output_path : str or None, optional
-        If provided, the plot is saved to the given file path.
-    show : bool, optional
-        Whether to display the plot.
-    cell_width : float, optional
-        Width (in inches) allocated per column.
-    cell_height : float, optional
-        Height (in inches) allocated per row.
-    min_width : float, optional
-        Minimum figure width in inches.
-    min_height : float, optional
-        Minimum figure height in inches.
+    If *ax* is provided, draws into that axes and skips figure creation/saving.
     """
-    # Convert boolean DataFrame to integer matrix (1=True, 0=False)
     matrix = df.astype(int).values
-
-    # Compute figure size based on DataFrame shape
     n_rows, n_cols = df.shape
-    fig_width = max(min_width, n_cols * cell_width)
-    fig_height = max(min_height, n_rows * cell_height)
 
-    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+    if ax is None:
+        fig_width = max(min_width, n_cols * cell_width)
+        fig_height = max(min_height, n_rows * cell_height)
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+        standalone = True
+    else:
+        fig = None
+        standalone = False
 
-    # Use a binary colormap for black/white representation
     cmap = plt.get_cmap("binary")
     ax.pcolormesh(matrix, cmap=cmap, edgecolors="grey", linewidth=1, shading="auto")
 
-    # Set tick positions
     ax.set_xticks(np.arange(n_cols) + 0.5)
     ax.set_yticks(np.arange(n_rows) + 0.5)
     ax.set_xticklabels(df.columns, rotation=30, ha="right", fontsize=9)
     ax.set_yticklabels(df.index, fontsize=9)
 
-    # Add visible grid
     ax.set_xticks(np.arange(n_cols), minor=True)
     ax.set_yticks(np.arange(n_rows), minor=True)
     ax.grid(which="minor", color="grey", linestyle="-", linewidth=0.8, alpha=0.7)
     ax.tick_params(which="minor", bottom=False, left=False)
 
-    # Title and layout
-    ax.set_title(title, fontsize=14, weight="bold")
-    fig.tight_layout()
+    ax.set_title(title, fontsize=10 if not standalone else 14, weight="bold")
 
-    if output_path:
-        plt.savefig(output_path)
-
-    if show:
-        plt.show()
-    else:
-        plt.close()
+    if standalone:
+        fig.tight_layout()
+        if output_path:
+            plt.savefig(output_path)
+        if show:
+            plt.show()
+        else:
+            plt.close()
 
 
 def _plot_grouped_boxplot(df: pd.DataFrame, category_col: str, hue_col: str, y_label: str = "", title: str = ""):

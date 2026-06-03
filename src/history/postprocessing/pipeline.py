@@ -1062,18 +1062,28 @@ def is_existing_std_dem(dem_files: list[str | Path], output_path: str | Path, me
 #######################################################################################################################
 
 
-def plot_symlinks(config: Config) -> None:
+def plot_symlinks(config: Config, submissions_df: pd.DataFrame | None = None) -> None:
     """
     Generate plots summarizing the indexed symlinks directory.
 
     Computes point-cloud statistics from dense point cloud files and saves
     a bar chart of point counts per submission.
+
+    Parameters
+    ----------
+    config : Config
+    submissions_df : pd.DataFrame, optional
+        DataFrame returned by :func:`io.scan_submissions`.  When provided, a
+        file-size matrix is saved alongside the presence map.
     """
     pointcloud_files = list((config.proc_dir.symlinks_dir / "dense_pointclouds").iterdir())
     df = stats.compute_pcs_statistics_df(pointcloud_files)
     viz.barplot_var(df, config.plot_dir / "pointcloud_point_count.png", "point_count", "Point count in dense point-cloud file")
-    
+
     viz.visualize_files_presence_map(list(config.proc_dir.symlinks_dir.iterdir()), config.plot_dir / "submissions_presence_map.png")
+
+    if submissions_df is not None:
+        viz.visualize_files_size_map(submissions_df, config.plot_dir / "submissions_file_sizes.png")
 
 def plot_point2dem(config: Config) -> None:
     """
