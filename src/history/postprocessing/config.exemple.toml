@@ -7,6 +7,7 @@ overwrite = false
 dry_run = false
 pdal_exec_path = "pdal"
 max_workers = 4
+pdf_orientation = "auto"
 
 [references_data_mapping.casa_grande.aerial]
 ref_dem = "/path/to/casa_grande/aerial/ref_dem.tif"

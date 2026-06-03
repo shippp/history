@@ -681,7 +681,7 @@ def generate_landcover_grouped_boxplot_from_std_dems(std_landcover_df: pd.DataFr
 #######################################################################################################################
 
 
-def visualize_files_presence_map(directories: list[str | Path]) -> None:
+def visualize_files_presence_map(directories: list[str | Path], output_path: str | Path | None = None) -> None:
     """
     Create a visual presence/absence map of files across multiple directories.
 
@@ -713,7 +713,7 @@ def visualize_files_presence_map(directories: list[str | Path]) -> None:
                     df.at[code, directory.name] = True
 
     df = df.astype(pd.BooleanDtype()).fillna(False).sort_index()
-    _plot_boolean_df(df, cell_height=0.2)
+    _plot_boolean_df(df, cell_height=0.2, output_path=output_path, show=(output_path is None))
 
 
 def generate_coregistration_individual_plots(

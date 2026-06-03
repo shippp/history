@@ -102,6 +102,7 @@ class Config:
     pdal_exec_path: str = "pdal"
     max_workers: int = 4
     filename_renames: dict[str, str] | None = None
+    pdf_orientation: str = "auto"
 
     @classmethod
     def from_toml_file(cls, path: Path) -> "Config":

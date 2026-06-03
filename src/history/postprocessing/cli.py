@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 _TEMPLATE_CONFIG = Path(__file__).parent / "config.exemple.toml"
 
-RUN_STEPS = ["uncompress", "symlinks", "check_planned", "point2dem", "coregister", "ddem", "std_dem", "landcover", "all"]
+RUN_STEPS = ["uncompress", "symlinks", "check_planned", "point2dem", "coregister", "ddem", "std_dem", "landcover", "generate_pdf", "all"]
 
 
 def _configure_logging(verbosity: int) -> None:
@@ -110,7 +110,7 @@ def _run_symlinks(config: Config) -> None:
     create_symlinks(df, config.proc_dir.symlinks_dir, overwrite=config.overwrite)
 
     if not config.no_plots:
-        plot_symlinks(config.proc_dir.symlinks_dir, config.plot_dir)
+        plot_symlinks(config)
 
 
 def _run_check_planned(config: Config) -> None:
@@ -152,7 +152,7 @@ def _run_point2dem(config: Config) -> None:
             )
 
     if not config.no_plots:
-        plot_point2dem(config.proc_dir.raw_dems_dir, config.plot_dir, config.max_workers)
+        plot_point2dem(config)
 
 
 def _run_coregister(config: Config) -> None:
@@ -168,7 +168,7 @@ def _run_coregister(config: Config) -> None:
     )
 
     if not config.no_plots:
-        plot_coregistration(config.proc_dir.coreg_dems_dir, config.plot_dir, config.max_workers)
+        plot_coregistration(config)
 
 
 def _run_ddem(config: Config) -> None:
@@ -192,13 +192,7 @@ def _run_ddem(config: Config) -> None:
     )
 
     if not config.no_plots:
-        plot_ddems(
-            config.proc_dir.before_coreg_ddems_dir,
-            config.proc_dir.after_coreg_ddems_dir,
-            config.plot_dir,
-            overwrite=config.overwrite,
-            max_workers=config.max_workers,
-        )
+        plot_ddems(config)
 
 
 def _run_std_dem(config: Config) -> None:
@@ -212,7 +206,7 @@ def _run_std_dem(config: Config) -> None:
     )
 
     if not config.no_plots:
-        plot_std_dems(config.proc_dir.std_dems_dir, config.plot_dir)
+        plot_std_dems(config)
 
 
 def _run_landcover(config: Config) -> None:
@@ -220,13 +214,19 @@ def _run_landcover(config: Config) -> None:
     from history.postprocessing.pipeline import plot_landcover
 
     if not config.no_plots:
-        plot_landcover(
-            config.proc_dir.after_coreg_ddems_dir,
-            config.proc_dir.std_dems_dir,
-            config.references_data_mapping,
-            config.plot_dir,
-            config.max_workers,
-        )
+        plot_landcover(config)
+
+
+def _run_generate_pdf(config: Config) -> None:
+    """Assemble all pipeline output PNGs into a single PDF report."""
+    from history.postprocessing.pdf_report import generate_pdf_report
+
+    generate_pdf_report(
+        extracted_dir=config.extracted_dir,
+        plot_dir=config.plot_dir,
+        filename_renames=config.filename_renames,
+        orientation=config.pdf_orientation,
+    )
 
 
 _STEP_RUNNERS = {
@@ -238,6 +238,7 @@ _STEP_RUNNERS = {
     "ddem": _run_ddem,
     "std_dem": _run_std_dem,
     "landcover": _run_landcover,
+    "generate_pdf": _run_generate_pdf,
 }
 
 
