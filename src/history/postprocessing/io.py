@@ -809,7 +809,7 @@ def parse_filename(file: str | Path) -> tuple[str, dict[str, Any]]:
         ValueError: If the filename does not respect the expected naming convention
                     or contains unknown codes not defined in FILE_CODE_MAPPING.
     """
-    stem = Path(file).stem
+    stem = Path(file).stem.split("-")[0]  # strip file-type suffix (e.g. -DEM, -orthoimage)
     parts = stem.split("_")
 
     raw: dict[str, str | None] = {}
