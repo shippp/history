@@ -126,30 +126,35 @@ def _run_check_planned(config: Config) -> None:
 def _run_point2dem(config: Config) -> None:
     """Convert dense point clouds to DEMs via PDAL, and integrate any user-provided DEMs."""
     from history.postprocessing.pipeline import process_pointclouds_to_dems, add_provided_dems, plot_point2dem
+    from history.utils import log_to_file
 
     dense_pc_dir = config.proc_dir.symlinks_dir / "dense_pointclouds"
     pointcloud_files = list(dense_pc_dir.glob("*.las")) + list(dense_pc_dir.glob("*.laz"))
 
-    process_pointclouds_to_dems(
-        pointcloud_files=pointcloud_files,
-        output_directory=config.proc_dir.raw_dems_dir,
-        references_data=config.references_data_mapping,
-        pdal_exec_path=config.pdal_exec_path,
-        overwrite=config.overwrite,
-        dry_run=config.dry_run,
-        max_workers=config.max_workers,
-    )
+    logs_dir = config.proc_dir.raw_dems_dir / "logs"
+    with log_to_file(logs_dir, logging.getLogger("history.postprocessing")) as log_path:
+        process_pointclouds_to_dems(
+            pointcloud_files=pointcloud_files,
+            output_directory=config.proc_dir.raw_dems_dir,
+            references_data=config.references_data_mapping,
+            pdal_exec_path=config.pdal_exec_path,
+            overwrite=config.overwrite,
+            dry_run=config.dry_run,
+            max_workers=config.max_workers,
+        )
 
-    dems_symlink_dir = config.proc_dir.symlinks_dir / "dems"
-    if dems_symlink_dir.exists():
-        dem_files = list(dems_symlink_dir.glob("*.tif"))
-        if dem_files:
-            add_provided_dems(
-                dem_files=dem_files,
-                output_dir=config.proc_dir.raw_dems_dir,
-                references_data=config.references_data_mapping,
-                overwrite=config.overwrite,
-            )
+        dems_symlink_dir = config.proc_dir.symlinks_dir / "dems"
+        if dems_symlink_dir.exists():
+            dem_files = list(dems_symlink_dir.glob("*.tif"))
+            if dem_files:
+                add_provided_dems(
+                    dem_files=dem_files,
+                    output_dir=config.proc_dir.raw_dems_dir,
+                    references_data=config.references_data_mapping,
+                    overwrite=config.overwrite,
+                )
+
+    logger.info(f"point2dem log saved at {log_path}")
 
     if not config.no_plots:
         plot_point2dem(config)
