@@ -42,6 +42,7 @@ def _add_png_page(
     pdf: PdfPages,
     path: Path,
     orientation: Literal["auto", "portrait", "landscape"] = "auto",
+    dpi: int = 300,
 ) -> None:
     """Insert an existing PNG as a new PDF page; warn and skip if absent.
 
@@ -77,7 +78,7 @@ def _add_png_page(
         ax_w = img_aspect / page_aspect
 
     ax.set_position([(1 - ax_w) / 2, (1 - ax_h) / 2, ax_w, ax_h])
-    pdf.savefig(fig)
+    pdf.savefig(fig, dpi=dpi)
     plt.close(fig)
 
 
