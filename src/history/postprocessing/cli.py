@@ -44,8 +44,30 @@ RUN_STEPS = ["uncompress", "symlinks", "check_planned", "point2dem", "coregister
 
 def _configure_logging(verbosity: int) -> None:
     """Set the ``history`` logger level based on the ``-v`` / ``-vv`` count."""
+    import os
+
     level = {0: logging.WARNING, 1: logging.INFO, 2: logging.DEBUG}.get(verbosity, logging.DEBUG)
-    logging.basicConfig(format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S", stream=sys.stderr)
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
+
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setFormatter(fmt)
+
+    root = logging.getLogger()
+    root.addHandler(stdout_handler)
+
+    # Only add a separate stderr handler when stdout and stderr go to different places (e.g. Slurm).
+    # In an interactive terminal both point to the same fd, which would cause duplicates.
+    try:
+        stdout_stderr_differ = os.fstat(sys.stdout.fileno()) != os.fstat(sys.stderr.fileno())
+    except Exception:
+        stdout_stderr_differ = False
+
+    if stdout_stderr_differ:
+        stderr_handler = logging.StreamHandler(sys.stderr)
+        stderr_handler.setFormatter(fmt)
+        stderr_handler.setLevel(logging.WARNING)
+        root.addHandler(stderr_handler)
+
     logging.getLogger("history").setLevel(level)
 
 
