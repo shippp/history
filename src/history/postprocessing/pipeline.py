@@ -88,14 +88,9 @@ def uncompress_all_submissions(
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
 
-    supported_extensions = [".zip", ".7z", ".tgz", ".tar.gz", ".tar.bz2", ".tar.xz"]
-
-    archives = [
-        (fp, output_dir / fp.name[: -len(ext)]) for ext in supported_extensions for fp in input_dir.glob(f"*{ext}")
-    ]
-
     args_list = []
-    for input_path, output_path in archives:
+    for input_path in input_dir.iterdir():
+        output_path = output_dir / input_path.name.split(".")[0]
         if output_path.exists() and not overwrite:
             logger.info(f"Skipping extraction (folder exists): {output_path}")
             continue
@@ -938,6 +933,10 @@ def extract_archive(archive_path: Path | str, output_dir: Path | str, flatten_ne
     archive_path = Path(archive_path)
     output_dir = Path(output_dir)
 
+    # Check format before touching the filesystem so failed extractions leave no empty folder
+    if archive_path.suffix not in [".zip", ".7z", ".tar", ".tgz", ".gz", ".bz2", ".xz"]:
+        raise ValueError(f"Extraction for this type not implemented: {archive_path.suffix}")
+
     # overwrite if existing
     if output_dir.exists():
         shutil.rmtree(output_dir)
@@ -954,8 +953,6 @@ def extract_archive(archive_path: Path | str, output_dir: Path | str, flatten_ne
     elif archive_path.suffix in [".tar", ".tgz", ".gz", ".bz2", ".xz"]:
         with tarfile.open(archive_path, "r:*") as tf:
             tf.extractall(output_dir)
-    else:
-        raise ValueError(f"Extraction for this type not implemented: {archive_path.suffix}")
 
     # remove macOS metadata if exists
     macosx_dir = output_dir / "__MACOSX"
