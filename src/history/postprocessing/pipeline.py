@@ -40,6 +40,7 @@ import pandas as pd
 import py7zr
 import rasterio
 import xdem
+from pyproj import CRS as ProjCRS
 from pyproj import Transformer
 from rasterio.windows import Window
 from shapely import box, transform
@@ -757,6 +758,12 @@ def convert_pointcloud_to_dem(
     if pc_crs is None:
         raise ValueError(f"{pointcloud_path.name} : Can't find a valid CRS")
 
+    if not ProjCRS.from_user_input(pc_crs).equals(ProjCRS.from_user_input(ref_crs)):
+        logger.warning(
+            f"{pointcloud_path.name}: CRS mismatch — point cloud CRS is {ProjCRS.from_user_input(pc_crs).to_epsg() or pc_crs},"
+            f" reference CRS is {ref_crs}."
+        )
+
     # --- PDAL pipeline definition ---
     pipeline_dict = {
         "pipeline": [
@@ -1124,7 +1131,7 @@ def plot_coregistration(config: Config) -> None:
 
     if symlinks_dir is not None and raw_dems_dir is not None:
         directories = list(Path(symlinks_dir).iterdir()) + [Path(raw_dems_dir), coreg_dems_dir]
-        viz.visualize_files_presence_map(directories, config.plot_dir / "submissions_presence_map.png")
+        viz.visualize_files_presence_map(directories, config.plot_dir / "files_presence_map.png")
 
 
 def plot_ddems(config: Config) -> None:

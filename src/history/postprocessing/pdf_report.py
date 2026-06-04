@@ -198,7 +198,7 @@ def generate_pdf_report(
         _build_summary_page(pdf, df)
 
         # 2. Submissions presence map + file sizes
-        _add_png_page(pdf, plot_dir / "submissions_presence_map.png", orientation)
+        _add_png_page(pdf, plot_dir / "files_presence_map.png", orientation)
         _add_png_page(pdf, plot_dir / "submissions_file_sizes.png", orientation)
 
         # 3. Global plots
