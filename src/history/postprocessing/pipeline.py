@@ -150,6 +150,39 @@ def create_symlinks(df: pd.DataFrame, output_dir: str | Path, overwrite: bool = 
             link.symlink_to(row[col])
 
 
+def report_symlinks(config: Config) -> None:
+    """Scan extracted_dir and raw_dir to create symlinks for all report founds"""
+    output_dir = config.proc_dir.symlinks_dir / "reports"
+
+    # remove old symlinks dir and recreate it
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(exist_ok=True, parents=True)
+
+    # find all report 
+    files = list(config.extracted_dir.rglob("*report*")) + list(config.raw_dir.rglob("*report*"))
+
+    # link all files
+    for f in files:
+        link = output_dir / f.name
+        n = 1
+        while link.exists():
+            link = output_dir / f"{f.stem} ({n}){f.suffix}"
+            n += 1
+        link.symlink_to(f)
+
+    # extensions
+    extensions = list(set(f.suffix for f in files))
+
+    logger.info(f"Saved {len(files)} reports to {output_dir} ({len(extensions)} format(s): {', '.join(extensions) or 'none'})")
+        
+
+
+
+     
+
+
+
 def index_submissions_and_link_files(input_dir: str | Path, output_dir: str | Path, overwrite: bool = False) -> None:
     """Scan, validate, and create symlinks for all submissions in *input_dir*.
 

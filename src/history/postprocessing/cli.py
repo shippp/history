@@ -34,6 +34,7 @@ import shutil
 import sys
 from pathlib import Path
 from history.postprocessing.config import Config
+from history.postprocessing.pipeline import report_symlinks
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,7 @@ def _run_symlinks(config: Config) -> None:
     df = io.scan_submissions(config.extracted_dir, filename_renames=config.filename_renames)
     io.validate_submissions(df)
     create_symlinks(df, config.proc_dir.symlinks_dir, overwrite=config.overwrite)
+    report_symlinks(config)
 
     if not config.no_plots:
         plot_symlinks(config, submissions_df=df)
