@@ -91,6 +91,10 @@ def uncompress_all_submissions(
 
     args_list = []
     for input_path in input_dir.iterdir():
+        if input_path.suffix in [".docx", ".pdf", ".odt"]:
+            logger.debug(f"Ignoring file {input_path} which is not an archive")
+            continue
+
         output_path = output_dir / input_path.name.split(".")[0]
         if output_path.exists() and not overwrite:
             logger.info(f"Skipping extraction (folder exists): {output_path}")
@@ -320,23 +324,39 @@ def process_pointclouds_to_dems(
             logger.error(f"Error processing {file.name}: {e}")
             continue
 
-    if not args_dict:
-        return
+    if len(args_dict) > 0:
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(convert_pointcloud_to_dem, *args, pdal_exec_path=pdal_exec_path, dry_run=dry_run): code
-            for code, args in args_dict.items()
-        }
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(convert_pointcloud_to_dem, *args, pdal_exec_path=pdal_exec_path, dry_run=dry_run): code
+                for code, args in args_dict.items()
+            }
 
-        # Wait for all point2dem tasks to finish
-        for fut in tqdm(as_completed(futures), total=len(futures), desc="point2dem"):
-            code = futures[fut]
-            try:
-                fut.result()
-            except Exception as e:
-                logger.error(f"Point2dem error for {code}: {e}")
-                continue
+            # Wait for all point2dem tasks to finish
+            for fut in tqdm(as_completed(futures), total=len(futures), desc="point2dem"):
+                code = futures[fut]
+                try:
+                    fut.result()
+                except Exception as e:
+                    logger.error(f"Point2dem error for {code}: {e}")
+                    continue
+
+    # Check that no results from deleted submissions exist
+    raw_dem_files = list(output_directory.glob("*-DEM.tif"))
+    dem_prefixes = [f.stem[:-4] for f in raw_dem_files]
+    pc_prefixes = [f.stem[:-17] for f in pointcloud_files]
+    if len(dem_prefixes) != len(pc_prefixes):
+        unexpected_exp = list(set(dem_prefixes) - set(pc_prefixes))
+        unexpected_str = ", ".join(list(unexpected_exp))
+
+        logger.warning(f"Found the following experiments in the raw DEM folder: {unexpected_str}")
+        logger.warning("Consider deleting the following files:")
+
+        for code in unexpected_exp:
+            found_files = list(output_directory.parent.glob(f"**/*{code}*"))
+            print("command: rm " + str(output_directory.parent) + f"/**/*{code}*")
+            for f in found_files:
+                print(f)
 
 
 def add_provided_dems(
