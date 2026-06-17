@@ -1153,6 +1153,7 @@ def plot_point2dem(config: Config) -> None:
     df = stats.compute_dems_statistics_df(config.proc_dir.raw_dems_dir.glob("*-DEM.tif"), max_workers=config.max_workers)
     viz.barplot_var(df, config.plot_dir / "raw_dem_voids.png", "percent_nodata", "Raw DEM nodata percent")
     for (site, dataset), group in df.groupby(["site", "dataset"]):
+        logger.debug(f"Plotting **** {site} - {dataset} ****")
         output_path = config.plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_raw_dem.png"
         vmin, vmax = group["min"].median(), group["max"].median()
         viz.generate_dems_mosaic(group["file"].to_dict(), output_path, vmin, vmax, f"({site} {dataset}) Mosaic Raw DEMs", config.overwrite)
@@ -1173,12 +1174,21 @@ def plot_coregistration(config: Config) -> None:
 
     df = stats.compute_dems_statistics_df(coreg_dems_dir.glob("*-DEM.tif"), max_workers=config.max_workers)
     for (site, dataset), group in df.groupby(["site", "dataset"]):
+        logger.debug(f"Plotting **** {site} - {dataset} ****")
         sub_dir = config.plot_dir / f"{site}_{dataset}"
         dem_files_dict = group["file"].to_dict()
         vmin, vmax = group["min"].median(), group["max"].median()
+
+        logger.debug("Plotting coregistered DEMs mosaic")
         viz.generate_dems_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_coreg_dem.png", vmin, vmax, f"({site} {dataset}) Mosaic Coregistered DEMs", config.overwrite)
-        viz.generate_slopes_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_slopes.png", f"({site} {dataset}) Mosaic slopes of DDEMs after coregistration", config.overwrite)
-        viz.generate_hillshades_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_hillshades.png", f"({site} {dataset}) Mosaic hillshades of DDEMs after coregistration", config.overwrite)
+
+        logger.debug("Plotting slope mosaic")
+        viz.generate_slopes_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_slopes.png", 
+                                   title=f"({site} {dataset}) Mosaic slopes of DEMs after coregistration", overwrite=config.overwrite)
+
+        logger.debug("Plotting hillshade mosaic")
+        viz.generate_hillshades_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_hillshades.png", 
+                                       title=f"({site} {dataset}) Mosaic hillshades of DEMs after coregistration", overwrite=config.overwrite)
 
     df_shifts = stats.get_coregistration_statistics_df(coreg_dems_dir.glob("*-DEM.tif"))
     for (site, dataset), group in df_shifts.groupby(["site", "dataset"]):
@@ -1212,7 +1222,8 @@ def plot_ddems(config: Config) -> None:
         viz.generate_coregistration_individual_plots(group, sub_dir / "coregistrations", config.overwrite)
 
         ddem_files_dict = group["ddem_after_file"].dropna().to_dict()
-        viz.generate_ddems_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_ddem.png", f"({site} {dataset}) Mosaic of DDEMs after coregistration", config.overwrite)
+        viz.generate_ddems_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_ddem.png", 
+                                  title=f"({site} {dataset}) Mosaic of DDEMs after coregistration", overwrite=config.overwrite)
 
 
 def plot_std_dems(config: Config) -> None:

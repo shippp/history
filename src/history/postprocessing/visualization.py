@@ -168,7 +168,7 @@ def generate_slopes_mosaic(
     dem_files_dict: dict[str, list[str | Path]],
     output_path: str | Path,
     vmin: float = 0,
-    vmax: float = 15,
+    vmax: float = 40,
     title: str = "",
     overwrite: bool = False,
 ) -> None:

@@ -201,6 +201,7 @@ def _run_coregister(config: Config) -> None:
     )
 
     if not config.no_plots:
+        logger.info("Plotting coregistered DEMs mosaics and figures")
         plot_coregistration(config)
 
 
