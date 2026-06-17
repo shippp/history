@@ -71,6 +71,9 @@ def _configure_logging(verbosity: int) -> None:
 
     logging.getLogger("history").setLevel(level)
 
+    # Always print high level info for CLI steps (start, finish), regardless of verbose option.
+    logging.getLogger("history.postprocessing.cli").setLevel(logging.INFO)
+
 
 def _load_config(args: argparse.Namespace) -> Config:
     """Load ``Config`` from the TOML file and apply any CLI flag overrides."""
@@ -130,7 +133,7 @@ def _run_symlinks(config: Config) -> None:
 
     df = io.scan_submissions(config.extracted_dir, filename_renames=config.filename_renames)
     io.validate_submissions(df)
-    create_symlinks(df, config.proc_dir.symlinks_dir, overwrite=config.overwrite)
+    create_symlinks(df, config.proc_dir.symlinks_dir, overwrite=True)  # force overwriting the symlinks to avoid issues
     report_symlinks(config)
 
     if not config.no_plots:
@@ -246,6 +249,7 @@ def _run_landcover(config: Config) -> None:
     if not config.no_plots:
         plot_landcover(config)
 
+    logger.info("Step `landcover` finished")
 
 def _run_generate_pdf(config: Config) -> None:
     """Assemble all pipeline output PNGs into a single PDF report."""
@@ -288,6 +292,8 @@ def cmd_run(args: argparse.Namespace) -> None:
         for name, runner in _STEP_RUNNERS.items():
             logger.info(f"Running step: {name}")
             runner(config)
+            logger.info(f"Step `{name}` finished")
+
     else:
         _STEP_RUNNERS[step](config)
 
