@@ -707,8 +707,15 @@ def visualize_files_presence_map(directories: list[str | Path], output_path: str
     directories: list[Path] = [Path(d) for d in directories]
     rows: dict[str, dict] = {}
 
+    expected_dir = ["dense_pointclouds", "sparse_pointclouds", "intrinsics", "extrinsics", "dems", "orthoimages"]
+
     for directory in directories:
         if directory.is_dir():
+            # skip additional folders like "reports"
+            if directory.stem not in expected_dir:
+                logger.debug(f"Skipping folder {directory}")
+                continue
+
             for file in directory.iterdir():
                 if file.is_file():
                     code, metadata = parse_filename(file)

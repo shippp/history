@@ -181,6 +181,7 @@ def _run_point2dem(config: Config) -> None:
     logger.info(f"point2dem log saved at {log_path}")
 
     if not config.no_plots:
+        logger.info("Plotting raw DEMs mosaics")
         plot_point2dem(config)
 
 
