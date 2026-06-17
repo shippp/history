@@ -7,6 +7,7 @@ from contextlib import contextmanager
 import logging
 from pathlib import Path
 from typing import Generator
+import os
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -34,6 +35,7 @@ def generate_dems_mosaic(
     vmin: float,
     vmax: float,
     title: str = "",
+    overwrite: bool = False,
 ) -> None:
     """
     Generate a mosaic figure composed of multiple DEM images.
@@ -59,6 +61,8 @@ def generate_dems_mosaic(
     title : str, optional
         A global title displayed above the entire mosaic figure. Default is an
         empty string.
+    overwrite : bool, optional
+        Set to True to force overwriting existing output. Default is False.
 
     Returns
     -------
@@ -66,6 +70,14 @@ def generate_dems_mosaic(
         The function saves the generated figure to ``output_path`` and does not
         return any value.
     """
+    # If output figure exists and is newer than all input files, does not plot
+    if os.path.exists(output_path) and (not overwrite):
+        all_input_mtimes = [os.path.getmtime(fname) for fname in list(dem_files_dict.values())]
+        output_mtime = os.path.getmtime(output_path)
+        if output_mtime > np.max(all_input_mtimes):
+            logger.debug(f"File {output_path} already exists -> skipping.")
+            return
+
     with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
         for i, (subtitle, file) in enumerate(dem_files_dict.items()):
             dem = _read_raster_with_max_size(file)
@@ -89,6 +101,7 @@ def generate_ddems_mosaic(
     vmin: float = -10,
     vmax: float = 10,
     title: str = "",
+    overwrite: bool = False,
 ) -> None:
     """
     Generate a mosaic of dDEM (differential DEM) rasters and save it as an image.
@@ -112,6 +125,8 @@ def generate_ddems_mosaic(
         Maximum value for clipping and colormap normalization. Default is 10.
     title : str, optional
         Global title for the mosaic figure. Default is an empty string.
+    overwrite : bool, optional
+        Set to True to force overwriting existing output. Default is False.
 
     Returns
     -------
@@ -119,6 +134,14 @@ def generate_ddems_mosaic(
         The function saves the generated mosaic to `output_path` and does not
         return any value.
     """
+    # If output figure exists and is newer than all input files, does not plot
+    if os.path.exists(output_path) and (not overwrite):
+        all_input_mtimes = [os.path.getmtime(fname) for fname in list(ddem_files_dict.values())]
+        output_mtime = os.path.getmtime(output_path)
+        if output_mtime > np.max(all_input_mtimes):
+            logger.debug(f"File {output_path} already exists -> skipping.")
+            return
+        
     with _generate_mosaic_figure_and_axes(len(ddem_files_dict), output_path) as (fig, axes):
         for i, (subtitle, file) in enumerate(ddem_files_dict.items()):
             try:
@@ -142,11 +165,12 @@ def generate_ddems_mosaic(
 
 
 def generate_slopes_mosaic(
-    ddem_files_dict: dict[str, list[str | Path]],
+    dem_files_dict: dict[str, list[str | Path]],
     output_path: str | Path,
     vmin: float = 0,
     vmax: float = 15,
     title: str = "",
+    overwrite: bool = False,
 ) -> None:
     """
     Generate a mosaic of slope maps derived from elevation rasters.
@@ -160,7 +184,7 @@ def generate_slopes_mosaic(
 
     Parameters
     ----------
-    ddem_files_dict : dict[str, list[str | Path]]
+    dem_files_dict : dict[str, list[str | Path]]
         A dictionary mapping subplot titles to one or more elevation raster files
         from which slopes will be computed.
     output_path : str | Path
@@ -171,6 +195,8 @@ def generate_slopes_mosaic(
         Maximum value for clipping and colormap normalization. Default is 15.
     title : str, optional
         Global title for the mosaic figure. Default is an empty string.
+    overwrite : bool, optional
+        Set to True to force overwriting existing output. Default is False.
 
     Returns
     -------
@@ -178,8 +204,16 @@ def generate_slopes_mosaic(
         The function saves the generated mosaic to `output_path` and does not
         return any value.
     """
-    with _generate_mosaic_figure_and_axes(len(ddem_files_dict), output_path) as (fig, axes):
-        for i, (subtitle, file) in enumerate(ddem_files_dict.items()):
+    # If output figure exists and is newer than all input files, does not plot
+    if os.path.exists(output_path) and (not overwrite):
+        all_input_mtimes = [os.path.getmtime(fname) for fname in list(dem_files_dict.values())]
+        output_mtime = os.path.getmtime(output_path)
+        if output_mtime > np.max(all_input_mtimes):
+            logger.debug(f"File {output_path} already exists -> skipping.")
+            return
+
+    with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
+        for i, (subtitle, file) in enumerate(dem_files_dict.items()):
             dem = _read_raster_with_max_size(file)
 
             with rasterio.open(file) as src:
@@ -207,11 +241,12 @@ def generate_slopes_mosaic(
 
 
 def generate_hillshades_mosaic(
-    ddem_files_dict: dict[str, list[str | Path]],
+    dem_files_dict: dict[str, list[str | Path]],
     output_path: str | Path,
     vmin: float = 0,
     vmax: float = 1,
     title: str = "",
+    overwrite: bool = False,
 ) -> None:
     """
     Generate a mosaic of hillshade visualizations from elevation rasters.
@@ -226,7 +261,7 @@ def generate_hillshades_mosaic(
 
     Parameters
     ----------
-    ddem_files_dict : dict[str, list[str | Path]]
+    dem_files_dict : dict[str, list[str | Path]]
         A dictionary mapping subplot titles to elevation raster file paths
         from which hillshades will be computed.
     output_path : str | Path
@@ -237,14 +272,24 @@ def generate_hillshades_mosaic(
         Maximum value for colormap normalization. Default is 1.
     title : str, optional
         Global title for the hillshade mosaic. Default is an empty string.
+    overwrite : bool, optional
+        Set to True to force overwriting existing output. Default is False.
 
     Returns
     -------
     None
         The function saves the generated hillshade mosaic to `output_path`.
     """
-    with _generate_mosaic_figure_and_axes(len(ddem_files_dict), output_path) as (fig, axes):
-        for i, (subtitle, file) in enumerate(ddem_files_dict.items()):
+    # If output figure exists and is newer than all input files, does not plot
+    if os.path.exists(output_path) and (not overwrite):
+        all_input_mtimes = [os.path.getmtime(fname) for fname in list(dem_files_dict.values())]
+        output_mtime = os.path.getmtime(output_path)
+        if output_mtime > np.max(all_input_mtimes):
+            logger.debug(f"File {output_path} already exists -> skipping.")
+            return
+
+    with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
+        for i, (subtitle, file) in enumerate(dem_files_dict.items()):
             dem = _read_raster_with_max_size(file)
 
             with rasterio.open(file) as src:
