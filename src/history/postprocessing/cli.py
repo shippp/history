@@ -226,6 +226,7 @@ def _run_ddem(config: Config) -> None:
     )
 
     if not config.no_plots:
+        logger.info("Plotting dDEMs mosaics")
         plot_ddems(config)
 
 

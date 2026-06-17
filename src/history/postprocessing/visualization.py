@@ -79,7 +79,7 @@ def generate_dems_mosaic(
             return
 
     with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
-        for i, (subtitle, file) in enumerate(dem_files_dict.items()):
+        for i, (subtitle, file) in enumerate(sorted(dem_files_dict.items())):
             dem = _read_raster_with_max_size(file)
 
             axes[i].imshow(dem, cmap="terrain", vmin=vmin, vmax=vmax)
@@ -143,7 +143,7 @@ def generate_ddems_mosaic(
             return
         
     with _generate_mosaic_figure_and_axes(len(ddem_files_dict), output_path) as (fig, axes):
-        for i, (subtitle, file) in enumerate(ddem_files_dict.items()):
+        for i, (subtitle, file) in enumerate(sorted(ddem_files_dict.items())):
             try:
                 dem = _read_raster_with_max_size(file)
                 dem = np.clip(dem, vmin, vmax)
@@ -213,7 +213,7 @@ def generate_slopes_mosaic(
             return
 
     with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
-        for i, (subtitle, file) in enumerate(dem_files_dict.items()):
+        for i, (subtitle, file) in enumerate(sorted(dem_files_dict.items())):
             dem = _read_raster_with_max_size(file)
 
             with rasterio.open(file) as src:
@@ -289,7 +289,7 @@ def generate_hillshades_mosaic(
             return
 
     with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
-        for i, (subtitle, file) in enumerate(dem_files_dict.items()):
+        for i, (subtitle, file) in enumerate(sorted(dem_files_dict.items())):
             dem = _read_raster_with_max_size(file)
 
             with rasterio.open(file) as src:

@@ -30,6 +30,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable
+import os
 
 import geoutils as gu
 from history.postprocessing.config import Config
@@ -649,8 +650,11 @@ def create_std_dem(
         return
 
     if is_existing_std_dem(dem_files, output_path, metadata_key) and not overwrite:
-        logger.info(f"Skip {output_path.name}: output already exists.")
-        return
+        all_input_mtimes = [os.path.getmtime(fname) for fname in list(dem_files)]
+        output_mtime = os.path.getmtime(output_path)
+        if output_mtime > np.max(all_input_mtimes):
+            logger.info(f"Skip {output_path.name}: output already exists.")
+            return
 
     # first open the first raster of the list to have a reference profile
     with rasterio.open(dem_files[0]) as src_ref:
@@ -1217,6 +1221,7 @@ def plot_ddems(config: Config) -> None:
     viz.barplot_var(df, config.plot_dir / "nmad_after_coregistration.png", "ddem_after_nmad", "NMAD of Altitude differences with ref DEM after coregistration by code")
 
     for (site, dataset), group in df.groupby(["site", "dataset"]):
+        logger.debug(f"Plotting **** {site} - {dataset} ****")
         sub_dir = config.plot_dir / f"{site}_{dataset}"
         viz.generate_plot_nmad_before_vs_after(group, sub_dir / "nmad_before_vs_after_coregistration.png", f"({site} {dataset}) NMAD of DEM differences before vs after coregistration")
         viz.generate_coregistration_individual_plots(group, sub_dir / "coregistrations", config.overwrite)
