@@ -212,8 +212,8 @@ def generate_pdf_report(
 
             _add_png_page(pdf, sub_dir / "mosaic" / "mosaic_raw_dem.png", orientation)
             _add_png_page(pdf, sub_dir / "mosaic" / "mosaic_ddem.png", orientation)
-            _add_png_page(pdf, sub_dir / "mosaic" / "mosaic_hillshades_ddem.png", orientation)
-            _add_png_page(pdf, sub_dir / "mosaic" / "mosaic_slopes_ddem.png", orientation)
+            _add_png_page(pdf, sub_dir / "mosaic" / "mosaic_hillshades.png", orientation)
+            _add_png_page(pdf, sub_dir / "mosaic" / "mosaic_slopes.png", orientation)
             _add_png_page(pdf, sub_dir / "nmad_before_vs_after_coregistration.png", orientation)
             _add_png_page(pdf, sub_dir / "coregistration_shifts.png", orientation)
 
