@@ -159,6 +159,7 @@ def generate_pdf_report(
     filename_renames: dict[str, str] | None = None,
     output_path: Path | None = None,
     orientation: Literal["auto", "portrait", "landscape"] = "auto",
+    overwrite: bool = False,
 ) -> Path:
     """
     Assemble all pipeline output PNGs into a single PDF report.
@@ -185,10 +186,17 @@ def generate_pdf_report(
         Path to the generated PDF file.
     """
     from history.postprocessing import io
+    from history.postprocessing.io import is_output_up_to_date
 
     plot_dir = Path(plot_dir)
     output_path = Path(output_path) if output_path else plot_dir / "report.pdf"
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not overwrite:
+        png_files = list(plot_dir.rglob("*.png"))
+        if png_files and is_output_up_to_date(png_files, output_path):
+            logger.info(f"PDF report {output_path} is up to date -> skipping.")
+            return output_path
 
     df = io.scan_submissions(extracted_dir, filename_renames=filename_renames)
 

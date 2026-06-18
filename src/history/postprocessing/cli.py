@@ -264,6 +264,7 @@ def _run_generate_pdf(config: Config) -> None:
         plot_dir=config.plot_dir,
         filename_renames=config.filename_renames,
         orientation=config.pdf_orientation,
+        overwrite=config.overwrite,
     )
 
 

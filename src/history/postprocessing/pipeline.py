@@ -1137,7 +1137,8 @@ def plot_symlinks(config: Config, submissions_df: pd.DataFrame | None = None) ->
         df = stats.compute_pcs_statistics_df(pointcloud_files)
         viz.barplot_var(df, output_pc_count, "point_count", "Point count in dense point-cloud file", overwrite=True)
 
-    viz.visualize_files_presence_map(list(config.proc_dir.symlinks_dir.iterdir()), config.plot_dir / "submissions_presence_map.png", overwrite=config.overwrite_plots)
+    directories = [d for d in config.proc_dir.symlinks_dir.iterdir() if d.name != "reports"]
+    viz.visualize_files_presence_map(directories, config.plot_dir / "submissions_presence_map.png", overwrite=config.overwrite_plots)
 
     if submissions_df is not None:
         viz.visualize_files_size_map(submissions_df, config.plot_dir / "submissions_file_sizes.png", overwrite=config.overwrite_plots)
@@ -1190,13 +1191,17 @@ def plot_coregistration(config: Config) -> None:
         viz.generate_hillshades_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_hillshades.png", 
                                        title=f"({site} {dataset}) Mosaic hillshades of DEMs after coregistration", overwrite=config.overwrite_plots)
 
+    # Build per-(site, dataset) file mapping from df (which has the "file" column)
+    coreg_files_by_group = {key: list(g["file"]) for key, g in df.groupby(["site", "dataset"])}
+
     df_shifts = stats.get_coregistration_statistics_df(coreg_dems_dir.glob("*-DEM.tif"))
     for (site, dataset), group in df_shifts.groupby(["site", "dataset"]):
         output_path = config.plot_dir / f"{site}_{dataset}" / "coregistration_shifts.png"
-        viz.generate_plot_coreg_shifts(group, output_path, f"({site} {dataset}) Coregistration shifts", overwrite=config.overwrite_plots)
+        viz.generate_plot_coreg_shifts(group, output_path, f"({site} {dataset}) Coregistration shifts",
+                                       overwrite=config.overwrite_plots, inputs=coreg_files_by_group.get((site, dataset)))
 
     if symlinks_dir is not None and raw_dems_dir is not None:
-        directories = list(Path(symlinks_dir).iterdir()) + [Path(raw_dems_dir), coreg_dems_dir]
+        directories = [d for d in Path(symlinks_dir).iterdir() if d.name != "reports"] + [Path(raw_dems_dir), coreg_dems_dir]
         viz.visualize_files_presence_map(directories, config.plot_dir / "files_presence_map.png", overwrite=config.overwrite_plots)
 
 
@@ -1248,15 +1253,30 @@ def plot_landcover(config: Config) -> None:
     after_coreg_ddems_dir = config.proc_dir.after_coreg_ddems_dir
     std_dems_dir = config.proc_dir.std_dems_dir
 
-    landcover_df = stats.compute_landcover_statistics(after_coreg_ddems_dir.glob("*-DDEM.tif"), config.references_data_mapping, config.max_workers)
+    all_ddem_files = list(after_coreg_ddems_dir.glob("*-DDEM.tif"))
+    ddem_files_by_group: dict[tuple, list[Path]] = {}
+    for f in all_ddem_files:
+        try:
+            _, meta = parse_filename(f)
+            key = (meta["site"], meta["dataset"])
+            ddem_files_by_group.setdefault(key, []).append(f)
+        except Exception:
+            pass
+
+    landcover_df = stats.compute_landcover_statistics(all_ddem_files, config.references_data_mapping, config.max_workers)
     std_lc_df = stats.compute_landcover_statistics_on_std_dems(std_dems_dir.glob("*.tif"), config.references_data_mapping, config.max_workers)
 
     for (site, dataset), group in landcover_df.groupby(["site", "dataset"]):
         sub_dir = config.plot_dir / f"{site}_{dataset}"
-        viz.generate_landcover_grouped_boxplot(group, sub_dir / "landcover_grouped_boxplot.png", f"({site} {dataset}) Boxplot of Altitude difference with ref DEM by code/landcover", overwrite=config.overwrite_plots)
-        viz.generate_landcover_nmad(group, sub_dir / "landcover_nmad.png", f"({site} {dataset}) NMAD of Altitude difference with ref DEM by code/landcover", overwrite=config.overwrite_plots)
+        group_inputs = ddem_files_by_group.get((site, dataset))
+        viz.generate_landcover_grouped_boxplot(group, sub_dir / "landcover_grouped_boxplot.png", f"({site} {dataset}) Boxplot of Altitude difference with ref DEM by code/landcover",
+                                               overwrite=config.overwrite_plots, inputs=group_inputs)
+        viz.generate_landcover_nmad(group, sub_dir / "landcover_nmad.png", f"({site} {dataset}) NMAD of Altitude difference with ref DEM by code/landcover",
+                                    overwrite=config.overwrite_plots, inputs=group_inputs)
 
-    viz.generate_landcover_grouped_boxplot_from_std_dems(std_lc_df, config.plot_dir / "landcover_boxplot_from_std_dems.png", overwrite=config.overwrite_plots)
+    std_dem_files = list(std_dems_dir.glob("*.tif"))
+    viz.generate_landcover_grouped_boxplot_from_std_dems(std_lc_df, config.plot_dir / "landcover_boxplot_from_std_dems.png",
+                                                         overwrite=config.overwrite_plots, inputs=std_dem_files)
 
 
 #######################################################################################################################

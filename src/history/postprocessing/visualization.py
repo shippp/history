@@ -372,10 +372,13 @@ def barplot_var(global_df: pd.DataFrame, output_path: str | Path, colname: str, 
     - Each unique combination of `site` and `dataset` is treated as a separate color group.
     - The x-axis labels correspond to the DataFrame index, rotated for readability.
     """
-    inputs = global_df.file.values
-    if not overwrite and is_output_up_to_date(inputs, output_path):
-        logger.debug(f"File {output_path} is up to date -> skipping.")
-        return
+    file_cols = [c for c in global_df.columns if c == "file" or c.endswith("_file")]
+    inputs = pd.concat([global_df[c].dropna() for c in file_cols]).values if file_cols else None
+    if not overwrite:
+        check = is_output_up_to_date(inputs, output_path) if inputs is not None and len(inputs) > 0 else Path(output_path).exists()
+        if check:
+            logger.debug(f"File {output_path} is up to date -> skipping.")
+            return
 
     df = global_df.dropna(subset=[colname]).copy(True)
 
@@ -421,7 +424,7 @@ def barplot_var(global_df: pd.DataFrame, output_path: str | Path, colname: str, 
     fig.savefig(output_path)
 
 
-def generate_plot_coreg_shifts(df: pd.DataFrame, output_path: str | Path, title: str = "", overwrite: bool = False) -> None:
+def generate_plot_coreg_shifts(df: pd.DataFrame, output_path: str | Path, title: str = "", overwrite: bool = False, inputs=None) -> None:
     """
     Generate a bar plot of coregistration shifts (X, Y, Z) from a DataFrame and save it to a file.
 
@@ -448,9 +451,11 @@ def generate_plot_coreg_shifts(df: pd.DataFrame, output_path: str | Path, title:
     - Rows with NaN values in any of the shift columns are ignored.
     - Shifts are displayed in meters with labels above each bar.
     """
-    if not overwrite and Path(output_path).exists():
-        logger.debug(f"File {output_path} already exists -> skipping.")
-        return
+    if not overwrite:
+        check = is_output_up_to_date(inputs, output_path) if inputs is not None else Path(output_path).exists()
+        if check:
+            logger.debug(f"File {output_path} is up to date -> skipping.")
+            return
 
     colnames = ["coreg_shift_x", "coreg_shift_y", "coreg_shift_z"]
     dropped_df = (
@@ -499,9 +504,13 @@ def generate_plot_nmad_before_vs_after(df: pd.DataFrame, output_path: str | Path
     None
         The plot is saved to the specified path without returning a value.
     """
-    if not overwrite and Path(output_path).exists():
-        logger.debug(f"File {output_path} already exists -> skipping.")
-        return
+    if not overwrite:
+        file_cols = [c for c in ("ddem_before_file", "ddem_after_file") if c in df.columns]
+        inputs = pd.concat([df[c].dropna() for c in file_cols]).values if file_cols else None
+        check = is_output_up_to_date(inputs, output_path) if inputs is not None and len(inputs) > 0 else Path(output_path).exists()
+        if check:
+            logger.debug(f"File {output_path} is up to date -> skipping.")
+            return
 
     colnames = ["ddem_before_nmad", "ddem_after_nmad"]
     dropped_df = df.dropna(subset=colnames).sort_values(by="ddem_after_nmad")
@@ -527,7 +536,7 @@ def generate_plot_nmad_before_vs_after(df: pd.DataFrame, output_path: str | Path
 #######################################################################################################################
 
 
-def generate_landcover_grouped_boxplot(landcover_df: pd.DataFrame, output_path: str | Path, title: str = "", overwrite: bool = False) -> None:
+def generate_landcover_grouped_boxplot(landcover_df: pd.DataFrame, output_path: str | Path, title: str = "", overwrite: bool = False, inputs=None) -> None:
     """
     Generate a grouped boxplot of NMAD (or other elevation differences) per landcover class.
 
@@ -549,9 +558,11 @@ def generate_landcover_grouped_boxplot(landcover_df: pd.DataFrame, output_path: 
     None
         The plot is saved to the specified path without returning a value.
     """
-    if not overwrite and Path(output_path).exists():
-        logger.debug(f"File {output_path} already exists -> skipping.")
-        return
+    if not overwrite:
+        check = is_output_up_to_date(inputs, output_path) if inputs is not None else Path(output_path).exists()
+        if check:
+            logger.debug(f"File {output_path} is up to date -> skipping.")
+            return
 
     # order group with the mean of nmad
     code_order = landcover_df.groupby("code")["nmad"].mean().sort_values().index
@@ -574,7 +585,7 @@ def generate_landcover_grouped_boxplot(landcover_df: pd.DataFrame, output_path: 
     fig.savefig(output_path)
 
 
-def generate_landcover_boxplot(landcover_df: pd.DataFrame, output_path: str | Path, overwrite: bool = False) -> None:
+def generate_landcover_boxplot(landcover_df: pd.DataFrame, output_path: str | Path, overwrite: bool = False, inputs=None) -> None:
     """
     Generate a boxplot of mean elevation statistics grouped by landcover class.
 
@@ -594,9 +605,11 @@ def generate_landcover_boxplot(landcover_df: pd.DataFrame, output_path: str | Pa
     None
         The plot is saved to the specified path without returning a value.
     """
-    if not overwrite and Path(output_path).exists():
-        logger.debug(f"File {output_path} already exists -> skipping.")
-        return
+    if not overwrite:
+        check = is_output_up_to_date(inputs, output_path) if inputs is not None else Path(output_path).exists()
+        if check:
+            logger.debug(f"File {output_path} is up to date -> skipping.")
+            return
 
     box_data = []
     labels = []
@@ -625,7 +638,7 @@ def generate_landcover_boxplot(landcover_df: pd.DataFrame, output_path: str | Pa
     fig.savefig(output_path)
 
 
-def generate_landcover_nmad(landcover_df: pd.DataFrame, output_path: str | Path, title: str = "", overwrite: bool = False) -> None:
+def generate_landcover_nmad(landcover_df: pd.DataFrame, output_path: str | Path, title: str = "", overwrite: bool = False, inputs=None) -> None:
     """
     Generate a grouped barplot of NMAD values for each raster, separated by landcover class.
 
@@ -647,9 +660,11 @@ def generate_landcover_nmad(landcover_df: pd.DataFrame, output_path: str | Path,
     None
         The plot is saved to the specified path.
     """
-    if not overwrite and Path(output_path).exists():
-        logger.debug(f"File {output_path} already exists -> skipping.")
-        return
+    if not overwrite:
+        check = is_output_up_to_date(inputs, output_path) if inputs is not None else Path(output_path).exists()
+        if check:
+            logger.debug(f"File {output_path} is up to date -> skipping.")
+            return
 
     df_plot = landcover_df.pivot_table(
         index="landcover_label",  # x axe
@@ -683,7 +698,7 @@ def generate_landcover_nmad(landcover_df: pd.DataFrame, output_path: str | Path,
     fig.savefig(output_path)
 
 
-def generate_landcover_grouped_boxplot_from_std_dems(std_landcover_df: pd.DataFrame, output_path: str | Path, overwrite: bool = False) -> None:
+def generate_landcover_grouped_boxplot_from_std_dems(std_landcover_df: pd.DataFrame, output_path: str | Path, overwrite: bool = False, inputs=None) -> None:
     """
     Generate and save a grouped boxplot of altitude standard deviations (STD)
     by landcover class across dataset–site combinations.
@@ -714,9 +729,11 @@ def generate_landcover_grouped_boxplot_from_std_dems(std_landcover_df: pd.DataFr
         - The y-axis represents altitude standard deviation in meters.
         - The landcover labels include mean percentage values for readability.
     """
-    if not overwrite and Path(output_path).exists():
-        logger.debug(f"File {output_path} already exists -> skipping.")
-        return
+    if not overwrite:
+        check = is_output_up_to_date(inputs, output_path) if inputs is not None else Path(output_path).exists()
+        if check:
+            logger.debug(f"File {output_path} is up to date -> skipping.")
+            return
 
     df = std_landcover_df.copy()
 
@@ -763,27 +780,21 @@ def visualize_files_presence_map(directories: list[str | Path], output_path: str
     output_path : str or Path or None, optional
         If provided the plot is saved there; otherwise it is displayed interactively.
     """
-    if not overwrite and output_path is not None and Path(output_path).exists():
-        logger.debug(f"File {output_path} already exists -> skipping.")
-        return
+    directories: list[Path] = [Path(d) for d in directories if d.is_dir()]
 
-    directories: list[Path] = [Path(d) for d in directories]
+    if not overwrite and output_path is not None:
+        input_files = [f for d in directories for f in d.iterdir() if f.is_file()]
+        if is_output_up_to_date(input_files, output_path) :
+            logger.debug(f"File {output_path} is up to date -> skipping.")
+            return
     rows: dict[str, dict] = {}
 
-    expected_dir = ["dense_pointclouds", "sparse_pointclouds", "intrinsics", "extrinsics", "dems", "orthoimages"]
-
     for directory in directories:
-        if directory.is_dir():
-            # skip additional folders like "reports"
-            if directory.stem not in expected_dir:
-                logger.debug(f"Skipping folder {directory}")
-                continue
-
-            for file in directory.iterdir():
-                if file.is_file():
-                    code, metadata = parse_filename(file)
-                    row = rows.setdefault(code, {"site": metadata.get("site", ""), "dataset": metadata.get("dataset", "")})
-                    row[directory.name] = True
+        for file in directory.iterdir():
+            if file.is_file():
+                code, metadata = parse_filename(file)
+                row = rows.setdefault(code, {"site": metadata["site"], "dataset": metadata["dataset"]})
+                row[directory.name] = True
 
     df = pd.DataFrame.from_dict(rows, orient="index")
     df.index.name = "code"
@@ -839,9 +850,13 @@ def visualize_files_size_map(df: pd.DataFrame, output_path: str | Path | None = 
     output_path : str or Path or None, optional
         If provided the plot is saved there; otherwise it is displayed interactively.
     """
-    if not overwrite and output_path is not None and Path(output_path).exists():
-        logger.debug(f"File {output_path} already exists -> skipping.")
-        return
+    if not overwrite and output_path is not None:
+        file_cols = [c for c in df.columns if c.endswith("_file")]
+        inputs = pd.concat([df[c].dropna() for c in file_cols]).values if file_cols else None
+        check = is_output_up_to_date(inputs, output_path) if inputs is not None and len(inputs) > 0 else Path(output_path).exists()
+        if check:
+            logger.debug(f"File {output_path} is up to date -> skipping.")
+            return
 
     _SIZE_COLS = {
         "dense_pointcloud_file": "dense PC",
