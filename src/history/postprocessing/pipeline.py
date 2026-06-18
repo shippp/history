@@ -1034,6 +1034,7 @@ def extract_archive(archive_path: Path | str, output_dir: Path | str, flatten_ne
         # Now 'current' is the deepest redundant folder
         # Move everything back one time at the top-level
         for item in current.iterdir():
+            item.touch()  # Update file time
             shutil.move(str(item), output_dir)
 
         # Now delete entire chain of empty redundant folders
@@ -1127,13 +1128,14 @@ def plot_symlinks(config: Config, submissions_df: pd.DataFrame | None = None) ->
         file-size matrix is saved alongside the presence map.
     """
     pointcloud_files = list((config.proc_dir.symlinks_dir / "dense_pointclouds").iterdir())
+    logger.info("Plotting PC count, presence map and file size.")
 
     output_pc_count = config.plot_dir / "pointcloud_point_count.png"
     if not config.overwrite_plots and is_output_up_to_date(pointcloud_files, output_pc_count):
         logger.info(f"Skip {output_pc_count.name}: output is up to date.")
     else:
         df = stats.compute_pcs_statistics_df(pointcloud_files)
-        viz.barplot_var(df, output_pc_count, "point_count", "Point count in dense point-cloud file", overwrite=config.overwrite_plots)
+        viz.barplot_var(df, output_pc_count, "point_count", "Point count in dense point-cloud file", overwrite=True)
 
     viz.visualize_files_presence_map(list(config.proc_dir.symlinks_dir.iterdir()), config.plot_dir / "submissions_presence_map.png", overwrite=config.overwrite_plots)
 
