@@ -69,7 +69,7 @@ def generate_dems_mosaic(
         return any value.
     """
     if not overwrite and is_output_up_to_date(list(dem_files_dict.values()), output_path):
-        logger.debug(f"File {output_path} already exists -> skipping.")
+        logger.debug(f"File {output_path} is up to date -> skipping.")
         return
 
     with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
@@ -129,7 +129,7 @@ def generate_ddems_mosaic(
         return any value.
     """
     if not overwrite and is_output_up_to_date(list(ddem_files_dict.values()), output_path):
-        logger.debug(f"File {output_path} already exists -> skipping.")
+        logger.debug(f"File {output_path} is up to date -> skipping.")
         return
 
     with _generate_mosaic_figure_and_axes(len(ddem_files_dict), output_path) as (fig, axes):
@@ -195,7 +195,7 @@ def generate_slopes_mosaic(
         return any value.
     """
     if not overwrite and is_output_up_to_date(list(dem_files_dict.values()), output_path):
-        logger.debug(f"File {output_path} already exists -> skipping.")
+        logger.debug(f"File {output_path} is up to date -> skipping.")
         return
 
     with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
@@ -267,7 +267,7 @@ def generate_hillshades_mosaic(
         The function saves the generated hillshade mosaic to `output_path`.
     """
     if not overwrite and is_output_up_to_date(list(dem_files_dict.values()), output_path):
-        logger.debug(f"File {output_path} already exists -> skipping.")
+        logger.debug(f"File {output_path} is up to date -> skipping.")
         return
 
     with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
@@ -318,7 +318,7 @@ def generate_std_dem_plots(dem_path: str | Path, output_path: str | Path, overwr
     dem_path = Path(dem_path)
 
     if not overwrite and is_output_up_to_date(dem_path, output_path):
-        logger.debug(f"File {output_path} already exists -> skipping.")
+        logger.debug(f"File {output_path} is up to date -> skipping.")
         return
 
     std_dem = _read_raster_with_max_size(dem_path)
@@ -372,8 +372,9 @@ def barplot_var(global_df: pd.DataFrame, output_path: str | Path, colname: str, 
     - Each unique combination of `site` and `dataset` is treated as a separate color group.
     - The x-axis labels correspond to the DataFrame index, rotated for readability.
     """
-    if not overwrite and Path(output_path).exists():
-        logger.debug(f"File {output_path} already exists -> skipping.")
+    inputs = global_df.file.values
+    if not overwrite and is_output_up_to_date(inputs, output_path):
+        logger.debug(f"File {output_path} is up to date -> skipping.")
         return
 
     df = global_df.dropna(subset=[colname]).copy(True)
@@ -985,7 +986,7 @@ def generate_coregistration_individual_plots(
 
         input_files = [row["ddem_before_file"], row["ddem_after_file"]]
         if not overwrite and is_output_up_to_date(input_files, output_path):
-            logger.debug(f"File {output_path} already exists -> skipping.")
+            logger.debug(f"File {output_path} is up to date -> skipping.")
             continue
 
         # open the raw dDEM and the coregistered dDEM
