@@ -224,12 +224,12 @@ def check_planned_submissions(
     if unsubmitted:
         logger.warning(f"{len(unsubmitted)} planned submissions not yet received:")
         for code in sorted(unsubmitted):
-            logger.warning(f"  {code}")
+            logger.info(f"  {code}")
 
     if unplanned:
         logger.warning(f"{len(unplanned)} unplanned submissions received:")
         for code in unplanned:
-            logger.warning(f"  {code}")
+            logger.info(f"  {code}")
 
     planned_df.to_csv(planned_outfile)
     logger.info(f"Updated planned submissions saved to {planned_outfile}.")
@@ -307,8 +307,8 @@ def process_pointclouds_to_dems(
             output_dem_path = output_directory / f"{code}{suffix}.tif"
 
             # avoid overwriting existing DEM
-            if not overwrite and is_output_up_to_date(file, output_dem_path):
-                logger.info(f"Skip point2dem for {code}: output already exists.")
+            if not overwrite and is_output_up_to_date([file, ref_dem_path], output_dem_path):
+                logger.info(f"Skip point2dem for {code}: output is up to date.")
                 continue
 
             args_dict[code] = [file, ref_dem_path, output_dem_path]
@@ -588,7 +588,7 @@ def generate_ddems(
 
             # avoid overwriting existing files
             if not overwrite and is_output_up_to_date([file, ref_dem_path], output_path):
-                logger.info(f"Skip DDEM {code}, output already exists.")
+                logger.info(f"Skip DDEM {code}, output is up to date.")
                 continue
 
             args_dict[code] = [file, ref_dem_path, output_path]
@@ -642,7 +642,7 @@ def create_std_dem(
         return
 
     if not overwrite and io.is_output_up_to_date(dem_files, output_path):
-        logger.info(f"Skip {output_path.name}: output already exists.")
+        logger.info(f"Skip {output_path.name}: output is up to date.")
         return
 
     # first open the first raster of the list to have a reference profile
@@ -1130,7 +1130,7 @@ def plot_symlinks(config: Config, submissions_df: pd.DataFrame | None = None) ->
 
     output_pc_count = config.plot_dir / "pointcloud_point_count.png"
     if not config.overwrite_plots and is_output_up_to_date(pointcloud_files, output_pc_count):
-        logger.info(f"Skip {output_pc_count.name}: output already exists.")
+        logger.info(f"Skip {output_pc_count.name}: output is up to date.")
     else:
         df = stats.compute_pcs_statistics_df(pointcloud_files)
         viz.barplot_var(df, output_pc_count, "point_count", "Point count in dense point-cloud file", overwrite=config.overwrite_plots)
