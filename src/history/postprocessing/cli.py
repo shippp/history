@@ -82,6 +82,8 @@ def _load_config(args: argparse.Namespace) -> Config:
     overrides = {}
     if args.overwrite:
         overrides["overwrite"] = True
+    if args.overwrite_plots:
+        overrides["overwrite_plots"] = True
     if args.dry_run:
         overrides["dry_run"] = True
     if args.no_plots:
@@ -324,7 +326,9 @@ def build_parser() -> argparse.ArgumentParser:
                             help=f"Step to run: {{{', '.join(RUN_STEPS)}}}")
     run_parser.add_argument("--config", required=True, metavar="PATH", help="Path to config.toml")
     run_parser.add_argument("--overwrite", action="store_true", default=False,
-                            help="Force overwrite of existing outputs (overrides config)")
+                            help="Force recompute of existing data outputs (overrides config)")
+    run_parser.add_argument("--overwrite-plots", action="store_true", default=False, dest="overwrite_plots",
+                            help="Force regeneration of existing plots (overrides config)")
     run_parser.add_argument("--dry-run", action="store_true", default=False, dest="dry_run",
                             help="Print actions without executing them (overrides config)")
     run_parser.add_argument("--no-plots", action="store_true", default=False, dest="no_plots",

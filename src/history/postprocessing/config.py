@@ -78,7 +78,9 @@ class Config:
         Reference DEMs, masks, and landcover rasters for every
         (site, dataset) combination.
     overwrite : bool
-        If True, existing outputs are recomputed. Default False.
+        If True, existing data outputs are recomputed. Default False.
+    overwrite_plots : bool
+        If True, existing plots are regenerated. Default False.
     dry_run : bool
         If True, PDAL commands are prepared but not executed. Default False.
     no_plots : bool
@@ -97,6 +99,7 @@ class Config:
     references_data_mapping: ReferencesData
 
     overwrite: bool = False
+    overwrite_plots: bool = False
     dry_run: bool = False
     no_plots: bool = False
     pdal_exec_path: str = "pdal"
@@ -136,6 +139,7 @@ class Config:
             plot_dir=Path(data["plot_dir"]),
             references_data_mapping=ReferencesData(references_data_mapping),
             overwrite=data.get("overwrite", False),
+            overwrite_plots=data.get("overwrite_plots", False),
             dry_run=data.get("dry_run", False),
             pdal_exec_path=data.get("pdal_exec_path", "pdal"),
             max_workers=data.get("max_workers", 4),

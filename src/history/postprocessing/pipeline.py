@@ -30,8 +30,6 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable
-import os
-
 import geoutils as gu
 from history.postprocessing.config import Config
 import humanize
@@ -50,7 +48,7 @@ from tqdm import tqdm
 import history.postprocessing.io as io
 import history.postprocessing.statistics as stats
 import history.postprocessing.visualization as viz
-from history.postprocessing.io import ReferencesData, parse_filename
+from history.postprocessing.io import ReferencesData, is_output_up_to_date, parse_filename
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +95,8 @@ def uncompress_all_submissions(
             continue
 
         output_path = output_dir / input_path.name.split(".")[0]
-        if output_path.exists() and not overwrite:
-            logger.info(f"Skipping extraction (folder exists): {output_path}")
+        if not overwrite and is_output_up_to_date(input_path, output_path):
+            logger.info(f"Skipping extraction (folder up to date): {output_path}")
             continue
         args_list.append((input_path, output_path))
 
@@ -181,12 +179,6 @@ def report_symlinks(config: Config) -> None:
 
     logger.info(f"Saved {len(files)} reports to {output_dir} ({len(extensions)} format(s): {', '.join(extensions) or 'none'})")
         
-
-
-
-     
-
-
 
 def index_submissions_and_link_files(input_dir: str | Path, output_dir: str | Path, overwrite: bool = False) -> None:
     """Scan, validate, and create symlinks for all submissions in *input_dir*.
@@ -315,7 +307,7 @@ def process_pointclouds_to_dems(
             output_dem_path = output_directory / f"{code}{suffix}.tif"
 
             # avoid overwriting existing DEM
-            if output_dem_path.exists() and not overwrite:
+            if not overwrite and is_output_up_to_date(file, output_dem_path):
                 logger.info(f"Skip point2dem for {code}: output already exists.")
                 continue
 
@@ -417,7 +409,7 @@ def add_provided_dems(
 
             # avoid overwriting existing files
             output_path = output_dir / f"{code}{suffix}.tif"
-            if output_path.exists() and not overwrite:
+            if not overwrite and is_output_up_to_date(file, output_path):
                 logger.info(f"Skip {code} output already exists.")
                 continue
 
@@ -495,14 +487,14 @@ def coregister_dems(
 
             output_dem_path = output_dir / file.name
 
-            # avoid overwriting existing files
-            if output_dem_path.exists() and not overwrite:
-                logger.info(f"Skip coregistration for {code}, output already exists.")
-                continue
-
-            # extract corresponding ref dem and mask with site and dataset
+             # extract corresponding ref dem and mask with site and dataset
             ref_dem_path = references_data.get_ref_dem(metadatas["site"], metadatas["dataset"])
             ref_dem_mask_path = references_data.get_ref_dem_mask(metadatas["site"], metadatas["dataset"])
+
+            # avoid overwriting existing files
+            if not overwrite and is_output_up_to_date([file, ref_dem_path, ref_dem_mask_path], output_dem_path):
+                logger.info(f"Skip coregistration for {code}, output already exists.")
+                continue
 
             args_dict[code] = [file, ref_dem_path, ref_dem_mask_path, output_dem_path]
 
@@ -591,13 +583,13 @@ def generate_ddems(
 
             output_path = output_dir / f"{code}{suffix}.tif"
 
-            # avoid overwriting existing files
-            if output_path.exists() and not overwrite:
-                logger.info(f"Skip DDEM {code}, output already exists.")
-                continue
-
             # get corresponding reference DEM with site and dataset
             ref_dem_path = references_data.get_ref_dem(metadatas["site"], metadatas["dataset"])
+
+            # avoid overwriting existing files
+            if not overwrite and is_output_up_to_date([file, ref_dem_path], output_path):
+                logger.info(f"Skip DDEM {code}, output already exists.")
+                continue
 
             args_dict[code] = [file, ref_dem_path, output_path]
         except Exception as e:
@@ -649,12 +641,9 @@ def create_std_dem(
         logger.warning(f"Need at least 2 DEMs for computing the STD DEM: {output_path.name}.")
         return
 
-    if is_existing_std_dem(dem_files, output_path, metadata_key) and not overwrite:
-        all_input_mtimes = [os.path.getmtime(fname) for fname in list(dem_files)]
-        output_mtime = os.path.getmtime(output_path)
-        if output_mtime > np.max(all_input_mtimes):
-            logger.info(f"Skip {output_path.name}: output already exists.")
-            return
+    if not overwrite and io.is_output_up_to_date(dem_files, output_path):
+        logger.info(f"Skip {output_path.name}: output already exists.")
+        return
 
     # first open the first raster of the list to have a reference profile
     with rasterio.open(dem_files[0]) as src_ref:
@@ -1138,13 +1127,18 @@ def plot_symlinks(config: Config, submissions_df: pd.DataFrame | None = None) ->
         file-size matrix is saved alongside the presence map.
     """
     pointcloud_files = list((config.proc_dir.symlinks_dir / "dense_pointclouds").iterdir())
-    df = stats.compute_pcs_statistics_df(pointcloud_files)
-    viz.barplot_var(df, config.plot_dir / "pointcloud_point_count.png", "point_count", "Point count in dense point-cloud file")
 
-    viz.visualize_files_presence_map(list(config.proc_dir.symlinks_dir.iterdir()), config.plot_dir / "submissions_presence_map.png")
+    output_pc_count = config.plot_dir / "pointcloud_point_count.png"
+    if not config.overwrite_plots and is_output_up_to_date(pointcloud_files, output_pc_count):
+        logger.info(f"Skip {output_pc_count.name}: output already exists.")
+    else:
+        df = stats.compute_pcs_statistics_df(pointcloud_files)
+        viz.barplot_var(df, output_pc_count, "point_count", "Point count in dense point-cloud file", overwrite=config.overwrite_plots)
+
+    viz.visualize_files_presence_map(list(config.proc_dir.symlinks_dir.iterdir()), config.plot_dir / "submissions_presence_map.png", overwrite=config.overwrite_plots)
 
     if submissions_df is not None:
-        viz.visualize_files_size_map(submissions_df, config.plot_dir / "submissions_file_sizes.png")
+        viz.visualize_files_size_map(submissions_df, config.plot_dir / "submissions_file_sizes.png", overwrite=config.overwrite_plots)
 
 def plot_point2dem(config: Config) -> None:
     """
@@ -1155,12 +1149,12 @@ def plot_point2dem(config: Config) -> None:
     """
 
     df = stats.compute_dems_statistics_df(config.proc_dir.raw_dems_dir.glob("*-DEM.tif"), max_workers=config.max_workers)
-    viz.barplot_var(df, config.plot_dir / "raw_dem_voids.png", "percent_nodata", "Raw DEM nodata percent")
+    viz.barplot_var(df, config.plot_dir / "raw_dem_voids.png", "percent_nodata", "Raw DEM nodata percent", overwrite=config.overwrite_plots)
     for (site, dataset), group in df.groupby(["site", "dataset"]):
         logger.debug(f"Plotting **** {site} - {dataset} ****")
         output_path = config.plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_raw_dem.png"
         vmin, vmax = group["min"].median(), group["max"].median()
-        viz.generate_dems_mosaic(group["file"].to_dict(), output_path, vmin, vmax, f"({site} {dataset}) Mosaic Raw DEMs", config.overwrite)
+        viz.generate_dems_mosaic(group["file"].to_dict(), output_path, vmin, vmax, f"({site} {dataset}) Mosaic Raw DEMs", config.overwrite_plots)
 
 
 def plot_coregistration(config: Config) -> None:
@@ -1184,24 +1178,24 @@ def plot_coregistration(config: Config) -> None:
         vmin, vmax = group["min"].median(), group["max"].median()
 
         logger.debug("Plotting coregistered DEMs mosaic")
-        viz.generate_dems_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_coreg_dem.png", vmin, vmax, f"({site} {dataset}) Mosaic Coregistered DEMs", config.overwrite)
+        viz.generate_dems_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_coreg_dem.png", vmin, vmax, f"({site} {dataset}) Mosaic Coregistered DEMs", config.overwrite_plots)
 
         logger.debug("Plotting slope mosaic")
         viz.generate_slopes_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_slopes.png", 
-                                   title=f"({site} {dataset}) Mosaic slopes of DEMs after coregistration", overwrite=config.overwrite)
+                                   title=f"({site} {dataset}) Mosaic slopes of DEMs after coregistration", overwrite=config.overwrite_plots)
 
         logger.debug("Plotting hillshade mosaic")
         viz.generate_hillshades_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_hillshades.png", 
-                                       title=f"({site} {dataset}) Mosaic hillshades of DEMs after coregistration", overwrite=config.overwrite)
+                                       title=f"({site} {dataset}) Mosaic hillshades of DEMs after coregistration", overwrite=config.overwrite_plots)
 
     df_shifts = stats.get_coregistration_statistics_df(coreg_dems_dir.glob("*-DEM.tif"))
     for (site, dataset), group in df_shifts.groupby(["site", "dataset"]):
         output_path = config.plot_dir / f"{site}_{dataset}" / "coregistration_shifts.png"
-        viz.generate_plot_coreg_shifts(group, output_path, f"({site} {dataset}) Coregistration shifts")
+        viz.generate_plot_coreg_shifts(group, output_path, f"({site} {dataset}) Coregistration shifts", overwrite=config.overwrite_plots)
 
     if symlinks_dir is not None and raw_dems_dir is not None:
         directories = list(Path(symlinks_dir).iterdir()) + [Path(raw_dems_dir), coreg_dems_dir]
-        viz.visualize_files_presence_map(directories, config.plot_dir / "files_presence_map.png")
+        viz.visualize_files_presence_map(directories, config.plot_dir / "files_presence_map.png", overwrite=config.overwrite_plots)
 
 
 def plot_ddems(config: Config) -> None:
@@ -1218,17 +1212,17 @@ def plot_ddems(config: Config) -> None:
     ddem_after_df = stats.compute_dems_statistics_df(after_coreg_ddems_dir.glob("*-DDEM.tif"), "ddem_after_", config.max_workers)
     df = pd.concat([ddem_before_df, ddem_after_df]).groupby(level=0).first()
 
-    viz.barplot_var(df, config.plot_dir / "nmad_after_coregistration.png", "ddem_after_nmad", "NMAD of Altitude differences with ref DEM after coregistration by code")
+    viz.barplot_var(df, config.plot_dir / "nmad_after_coregistration.png", "ddem_after_nmad", "NMAD of Altitude differences with ref DEM after coregistration by code", overwrite=config.overwrite_plots)
 
     for (site, dataset), group in df.groupby(["site", "dataset"]):
         logger.debug(f"Plotting **** {site} - {dataset} ****")
         sub_dir = config.plot_dir / f"{site}_{dataset}"
-        viz.generate_plot_nmad_before_vs_after(group, sub_dir / "nmad_before_vs_after_coregistration.png", f"({site} {dataset}) NMAD of DEM differences before vs after coregistration")
-        viz.generate_coregistration_individual_plots(group, sub_dir / "coregistrations", config.overwrite)
+        viz.generate_plot_nmad_before_vs_after(group, sub_dir / "nmad_before_vs_after_coregistration.png", f"({site} {dataset}) NMAD of DEM differences before vs after coregistration", overwrite=config.overwrite_plots)
+        viz.generate_coregistration_individual_plots(group, sub_dir / "coregistrations", config.overwrite_plots)
 
         ddem_files_dict = group["ddem_after_file"].dropna().to_dict()
         viz.generate_ddems_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_ddem.png", 
-                                  title=f"({site} {dataset}) Mosaic of DDEMs after coregistration", overwrite=config.overwrite)
+                                  title=f"({site} {dataset}) Mosaic of DDEMs after coregistration", overwrite=config.overwrite_plots)
 
 
 def plot_std_dems(config: Config) -> None:
@@ -1238,7 +1232,7 @@ def plot_std_dems(config: Config) -> None:
     for file in config.proc_dir.std_dems_dir.glob("*.tif"):
         subdir = file.stem.replace("_std_dem", "")
         output_path = config.plot_dir / subdir / file.with_suffix(".png").name
-        viz.generate_std_dem_plots(file, output_path)
+        viz.generate_std_dem_plots(file, output_path, overwrite=config.overwrite_plots)
 
 
 def plot_landcover(config: Config) -> None:
@@ -1257,10 +1251,10 @@ def plot_landcover(config: Config) -> None:
 
     for (site, dataset), group in landcover_df.groupby(["site", "dataset"]):
         sub_dir = config.plot_dir / f"{site}_{dataset}"
-        viz.generate_landcover_grouped_boxplot(group, sub_dir / "landcover_grouped_boxplot.png", f"({site} {dataset}) Boxplot of Altitude difference with ref DEM by code/landcover")
-        viz.generate_landcover_nmad(group, sub_dir / "landcover_nmad.png", f"({site} {dataset}) NMAD of Altitude difference with ref DEM by code/landcover")
+        viz.generate_landcover_grouped_boxplot(group, sub_dir / "landcover_grouped_boxplot.png", f"({site} {dataset}) Boxplot of Altitude difference with ref DEM by code/landcover", overwrite=config.overwrite_plots)
+        viz.generate_landcover_nmad(group, sub_dir / "landcover_nmad.png", f"({site} {dataset}) NMAD of Altitude difference with ref DEM by code/landcover", overwrite=config.overwrite_plots)
 
-    viz.generate_landcover_grouped_boxplot_from_std_dems(std_lc_df, config.plot_dir / "landcover_boxplot_from_std_dems.png")
+    viz.generate_landcover_grouped_boxplot_from_std_dems(std_lc_df, config.plot_dir / "landcover_boxplot_from_std_dems.png", overwrite=config.overwrite_plots)
 
 
 #######################################################################################################################

@@ -3,7 +3,7 @@ import shutil
 import tarfile
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Union
+from typing import Any, Dict, Iterable, List, Sequence, Union
 import logging
 
 import pandas as pd
@@ -1071,3 +1071,30 @@ def download_planned_submissions(outfile: str | Path) -> None:
     logger.info(f"Saved CSV to file {outfile}.")
 
     return submissions_df
+
+
+def is_output_up_to_date(inputs: str | Path | Sequence[str | Path], outputs: str | Path | Sequence[str | Path]) -> bool:
+    """Return True if all outputs exist and are newer than all inputs."""
+    inputs = [inputs] if isinstance(inputs, (str, Path)) else inputs
+    outputs = [outputs] if isinstance(outputs, (str, Path)) else outputs
+
+    # standardize path
+    inputs = [Path(f) for f in inputs]
+    outputs = [Path(f) for f in outputs]
+
+    if not inputs:
+        raise ValueError("inputs cannot be empty")
+    if not outputs:
+        raise ValueError("outputs cannot be empty")
+
+    if any(not p.exists() for p in outputs):
+        return False
+
+    for p in inputs:
+        if not p.exists():
+            raise FileNotFoundError(f"Input file not found: {p}")
+
+    oldest_output = min(p.stat().st_mtime for p in outputs)
+    newest_input = max(p.stat().st_mtime for p in inputs)
+
+    return newest_input <= oldest_output

@@ -4,6 +4,7 @@ proc_dir = "/path/to/processing"
 plot_dir = "/path/to/plots"
 
 overwrite = false
+overwrite_plots = false
 dry_run = false
 pdal_exec_path = "pdal"
 max_workers = 4

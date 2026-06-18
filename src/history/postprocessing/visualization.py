@@ -7,8 +7,6 @@ from contextlib import contextmanager
 import logging
 from pathlib import Path
 from typing import Generator
-import os
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -20,7 +18,7 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Patch
 from rasterio.enums import Resampling
 
-from history.postprocessing.io import parse_filename
+from history.postprocessing.io import is_output_up_to_date, parse_filename
 
 logger = logging.getLogger(__name__)
 
@@ -70,13 +68,9 @@ def generate_dems_mosaic(
         The function saves the generated figure to ``output_path`` and does not
         return any value.
     """
-    # If output figure exists and is newer than all input files, does not plot
-    if os.path.exists(output_path) and (not overwrite):
-        all_input_mtimes = [os.path.getmtime(fname) for fname in list(dem_files_dict.values())]
-        output_mtime = os.path.getmtime(output_path)
-        if output_mtime > np.max(all_input_mtimes):
-            logger.debug(f"File {output_path} already exists -> skipping.")
-            return
+    if not overwrite and is_output_up_to_date(list(dem_files_dict.values()), output_path):
+        logger.debug(f"File {output_path} already exists -> skipping.")
+        return
 
     with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
         for i, (subtitle, file) in enumerate(sorted(dem_files_dict.items())):
@@ -134,14 +128,10 @@ def generate_ddems_mosaic(
         The function saves the generated mosaic to `output_path` and does not
         return any value.
     """
-    # If output figure exists and is newer than all input files, does not plot
-    if os.path.exists(output_path) and (not overwrite):
-        all_input_mtimes = [os.path.getmtime(fname) for fname in list(ddem_files_dict.values())]
-        output_mtime = os.path.getmtime(output_path)
-        if output_mtime > np.max(all_input_mtimes):
-            logger.debug(f"File {output_path} already exists -> skipping.")
-            return
-        
+    if not overwrite and is_output_up_to_date(list(ddem_files_dict.values()), output_path):
+        logger.debug(f"File {output_path} already exists -> skipping.")
+        return
+
     with _generate_mosaic_figure_and_axes(len(ddem_files_dict), output_path) as (fig, axes):
         for i, (subtitle, file) in enumerate(sorted(ddem_files_dict.items())):
             try:
@@ -204,13 +194,9 @@ def generate_slopes_mosaic(
         The function saves the generated mosaic to `output_path` and does not
         return any value.
     """
-    # If output figure exists and is newer than all input files, does not plot
-    if os.path.exists(output_path) and (not overwrite):
-        all_input_mtimes = [os.path.getmtime(fname) for fname in list(dem_files_dict.values())]
-        output_mtime = os.path.getmtime(output_path)
-        if output_mtime > np.max(all_input_mtimes):
-            logger.debug(f"File {output_path} already exists -> skipping.")
-            return
+    if not overwrite and is_output_up_to_date(list(dem_files_dict.values()), output_path):
+        logger.debug(f"File {output_path} already exists -> skipping.")
+        return
 
     with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
         for i, (subtitle, file) in enumerate(sorted(dem_files_dict.items())):
@@ -280,13 +266,9 @@ def generate_hillshades_mosaic(
     None
         The function saves the generated hillshade mosaic to `output_path`.
     """
-    # If output figure exists and is newer than all input files, does not plot
-    if os.path.exists(output_path) and (not overwrite):
-        all_input_mtimes = [os.path.getmtime(fname) for fname in list(dem_files_dict.values())]
-        output_mtime = os.path.getmtime(output_path)
-        if output_mtime > np.max(all_input_mtimes):
-            logger.debug(f"File {output_path} already exists -> skipping.")
-            return
+    if not overwrite and is_output_up_to_date(list(dem_files_dict.values()), output_path):
+        logger.debug(f"File {output_path} already exists -> skipping.")
+        return
 
     with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
         for i, (subtitle, file) in enumerate(sorted(dem_files_dict.items())):
@@ -313,7 +295,7 @@ def generate_hillshades_mosaic(
         fig.suptitle(title, fontsize=16)
 
 
-def generate_std_dem_plots(dem_path: str | Path, output_path: str | Path) -> None:
+def generate_std_dem_plots(dem_path: str | Path, output_path: str | Path, overwrite: bool = False) -> None:
     """
     Generate and save a heatmap of the elevation standard deviation from a DEM.
 
@@ -333,8 +315,11 @@ def generate_std_dem_plots(dem_path: str | Path, output_path: str | Path) -> Non
     None
         Saves the plot to `output_path` without returning a value.
     """
-    # create the output directory if needed
     dem_path = Path(dem_path)
+
+    if not overwrite and is_output_up_to_date(dem_path, output_path):
+        logger.debug(f"File {output_path} already exists -> skipping.")
+        return
 
     std_dem = _read_raster_with_max_size(dem_path)
 
@@ -358,7 +343,7 @@ def generate_std_dem_plots(dem_path: str | Path, output_path: str | Path) -> Non
 #######################################################################################################################
 
 
-def barplot_var(global_df: pd.DataFrame, output_path: str | Path, colname: str, title: str = "") -> None:
+def barplot_var(global_df: pd.DataFrame, output_path: str | Path, colname: str, title: str = "", overwrite: bool = False) -> None:
     """
     Generate a grouped bar plot for a specified column in a DataFrame and save it to a file.
 
@@ -387,6 +372,10 @@ def barplot_var(global_df: pd.DataFrame, output_path: str | Path, colname: str, 
     - Each unique combination of `site` and `dataset` is treated as a separate color group.
     - The x-axis labels correspond to the DataFrame index, rotated for readability.
     """
+    if not overwrite and Path(output_path).exists():
+        logger.debug(f"File {output_path} already exists -> skipping.")
+        return
+
     df = global_df.dropna(subset=[colname]).copy(True)
 
     # Créer la colonne groupe
@@ -431,7 +420,7 @@ def barplot_var(global_df: pd.DataFrame, output_path: str | Path, colname: str, 
     fig.savefig(output_path)
 
 
-def generate_plot_coreg_shifts(df: pd.DataFrame, output_path: str | Path, title: str = "") -> None:
+def generate_plot_coreg_shifts(df: pd.DataFrame, output_path: str | Path, title: str = "", overwrite: bool = False) -> None:
     """
     Generate a bar plot of coregistration shifts (X, Y, Z) from a DataFrame and save it to a file.
 
@@ -458,6 +447,10 @@ def generate_plot_coreg_shifts(df: pd.DataFrame, output_path: str | Path, title:
     - Rows with NaN values in any of the shift columns are ignored.
     - Shifts are displayed in meters with labels above each bar.
     """
+    if not overwrite and Path(output_path).exists():
+        logger.debug(f"File {output_path} already exists -> skipping.")
+        return
+
     colnames = ["coreg_shift_x", "coreg_shift_y", "coreg_shift_z"]
     dropped_df = (
         df.dropna(subset=colnames)
@@ -483,7 +476,7 @@ def generate_plot_coreg_shifts(df: pd.DataFrame, output_path: str | Path, title:
     fig.savefig(output_path)
 
 
-def generate_plot_nmad_before_vs_after(df: pd.DataFrame, output_path: str | Path, title: str = "") -> None:
+def generate_plot_nmad_before_vs_after(df: pd.DataFrame, output_path: str | Path, title: str = "", overwrite: bool = False) -> None:
     """
     Generate a bar plot comparing NMAD values before and after DEM coregistration.
 
@@ -505,6 +498,10 @@ def generate_plot_nmad_before_vs_after(df: pd.DataFrame, output_path: str | Path
     None
         The plot is saved to the specified path without returning a value.
     """
+    if not overwrite and Path(output_path).exists():
+        logger.debug(f"File {output_path} already exists -> skipping.")
+        return
+
     colnames = ["ddem_before_nmad", "ddem_after_nmad"]
     dropped_df = df.dropna(subset=colnames).sort_values(by="ddem_after_nmad")
     if len(dropped_df) == 0:
@@ -529,7 +526,7 @@ def generate_plot_nmad_before_vs_after(df: pd.DataFrame, output_path: str | Path
 #######################################################################################################################
 
 
-def generate_landcover_grouped_boxplot(landcover_df: pd.DataFrame, output_path: str | Path, title: str = "") -> None:
+def generate_landcover_grouped_boxplot(landcover_df: pd.DataFrame, output_path: str | Path, title: str = "", overwrite: bool = False) -> None:
     """
     Generate a grouped boxplot of NMAD (or other elevation differences) per landcover class.
 
@@ -551,6 +548,10 @@ def generate_landcover_grouped_boxplot(landcover_df: pd.DataFrame, output_path: 
     None
         The plot is saved to the specified path without returning a value.
     """
+    if not overwrite and Path(output_path).exists():
+        logger.debug(f"File {output_path} already exists -> skipping.")
+        return
+
     # order group with the mean of nmad
     code_order = landcover_df.groupby("code")["nmad"].mean().sort_values().index
     ordered_df = landcover_df.set_index("code").loc[code_order].reset_index()
@@ -572,7 +573,7 @@ def generate_landcover_grouped_boxplot(landcover_df: pd.DataFrame, output_path: 
     fig.savefig(output_path)
 
 
-def generate_landcover_boxplot(landcover_df: pd.DataFrame, output_path: str | Path) -> None:
+def generate_landcover_boxplot(landcover_df: pd.DataFrame, output_path: str | Path, overwrite: bool = False) -> None:
     """
     Generate a boxplot of mean elevation statistics grouped by landcover class.
 
@@ -592,6 +593,10 @@ def generate_landcover_boxplot(landcover_df: pd.DataFrame, output_path: str | Pa
     None
         The plot is saved to the specified path without returning a value.
     """
+    if not overwrite and Path(output_path).exists():
+        logger.debug(f"File {output_path} already exists -> skipping.")
+        return
+
     box_data = []
     labels = []
     for lc_label, lc_group in landcover_df.groupby("landcover_label"):
@@ -619,7 +624,7 @@ def generate_landcover_boxplot(landcover_df: pd.DataFrame, output_path: str | Pa
     fig.savefig(output_path)
 
 
-def generate_landcover_nmad(landcover_df: pd.DataFrame, output_path: str | Path, title: str = "") -> None:
+def generate_landcover_nmad(landcover_df: pd.DataFrame, output_path: str | Path, title: str = "", overwrite: bool = False) -> None:
     """
     Generate a grouped barplot of NMAD values for each raster, separated by landcover class.
 
@@ -641,6 +646,10 @@ def generate_landcover_nmad(landcover_df: pd.DataFrame, output_path: str | Path,
     None
         The plot is saved to the specified path.
     """
+    if not overwrite and Path(output_path).exists():
+        logger.debug(f"File {output_path} already exists -> skipping.")
+        return
+
     df_plot = landcover_df.pivot_table(
         index="landcover_label",  # x axe
         columns="code",  # one color per bar
@@ -673,7 +682,7 @@ def generate_landcover_nmad(landcover_df: pd.DataFrame, output_path: str | Path,
     fig.savefig(output_path)
 
 
-def generate_landcover_grouped_boxplot_from_std_dems(std_landcover_df: pd.DataFrame, output_path: str | Path) -> None:
+def generate_landcover_grouped_boxplot_from_std_dems(std_landcover_df: pd.DataFrame, output_path: str | Path, overwrite: bool = False) -> None:
     """
     Generate and save a grouped boxplot of altitude standard deviations (STD)
     by landcover class across dataset–site combinations.
@@ -704,6 +713,10 @@ def generate_landcover_grouped_boxplot_from_std_dems(std_landcover_df: pd.DataFr
         - The y-axis represents altitude standard deviation in meters.
         - The landcover labels include mean percentage values for readability.
     """
+    if not overwrite and Path(output_path).exists():
+        logger.debug(f"File {output_path} already exists -> skipping.")
+        return
+
     df = std_landcover_df.copy()
 
     # first group the dataset + site
@@ -733,7 +746,7 @@ def generate_landcover_grouped_boxplot_from_std_dems(std_landcover_df: pd.DataFr
 #######################################################################################################################
 
 
-def visualize_files_presence_map(directories: list[str | Path], output_path: str | Path | None = None) -> None:
+def visualize_files_presence_map(directories: list[str | Path], output_path: str | Path | None = None, overwrite: bool = False) -> None:
     """
     Create a visual presence/absence map of files across multiple directories.
 
@@ -749,6 +762,10 @@ def visualize_files_presence_map(directories: list[str | Path], output_path: str
     output_path : str or Path or None, optional
         If provided the plot is saved there; otherwise it is displayed interactively.
     """
+    if not overwrite and output_path is not None and Path(output_path).exists():
+        logger.debug(f"File {output_path} already exists -> skipping.")
+        return
+
     directories: list[Path] = [Path(d) for d in directories]
     rows: dict[str, dict] = {}
 
@@ -803,7 +820,7 @@ def visualize_files_presence_map(directories: list[str | Path], output_path: str
         plt.close()
 
 
-def visualize_files_size_map(df: pd.DataFrame, output_path: str | Path | None = None) -> None:
+def visualize_files_size_map(df: pd.DataFrame, output_path: str | Path | None = None, overwrite: bool = False) -> None:
     """
     Create a visual file-size matrix for submission files.
 
@@ -821,6 +838,10 @@ def visualize_files_size_map(df: pd.DataFrame, output_path: str | Path | None = 
     output_path : str or Path or None, optional
         If provided the plot is saved there; otherwise it is displayed interactively.
     """
+    if not overwrite and output_path is not None and Path(output_path).exists():
+        logger.debug(f"File {output_path} already exists -> skipping.")
+        return
+
     _SIZE_COLS = {
         "dense_pointcloud_file": "dense PC",
         "sparse_pointcloud_file": "sparse PC",
@@ -962,42 +983,46 @@ def generate_coregistration_individual_plots(
     for code, row in dropped_df.iterrows():
         output_path = output_directory / f"{code}.png"
 
-        if not output_path.exists() or overwrite:
-            # open the raw dDEM and the coregistered dDEM
-            ddem_before = _read_raster_with_max_size(row["ddem_before_file"])
-            ddem_after = _read_raster_with_max_size(row["ddem_after_file"])
+        input_files = [row["ddem_before_file"], row["ddem_after_file"]]
+        if not overwrite and is_output_up_to_date(input_files, output_path):
+            logger.debug(f"File {output_path} already exists -> skipping.")
+            continue
 
-            ddem_before = np.clip(ddem_before, vmin, vmax)
-            ddem_after = np.clip(ddem_after, vmin, vmax)
+        # open the raw dDEM and the coregistered dDEM
+        ddem_before = _read_raster_with_max_size(row["ddem_before_file"])
+        ddem_after = _read_raster_with_max_size(row["ddem_after_file"])
 
-            # create the figure
-            fig = Figure(figsize=(10, 5), constrained_layout=True)
-            axes = fig.subplots(1, 2)
+        ddem_before = np.clip(ddem_before, vmin, vmax)
+        ddem_after = np.clip(ddem_after, vmin, vmax)
 
-            # add the dDEMs and their titles
-            axes[0].imshow(ddem_before, cmap="coolwarm", vmin=vmin, vmax=vmax)
-            axes[0].axis("off")
-            axes[0].set_title(
-                f"dDEM before coregistration \n(mean: {row['ddem_before_mean']:.3f}, med: {row['ddem_before_median']:.3f}, nmad: {row['ddem_before_nmad']:.3f})"
-            )
+        # create the figure
+        fig = Figure(figsize=(10, 5), constrained_layout=True)
+        axes = fig.subplots(1, 2)
 
-            axes[1].imshow(ddem_after, cmap="coolwarm", vmin=vmin, vmax=vmax)
-            axes[1].axis("off")
-            axes[1].set_title(
-                f"dDEM after coregistration \n(mean: {row['ddem_after_mean']:.3f}, med: {row['ddem_after_median']:.3f}, nmad: {row['ddem_after_nmad']:.3f})"
-            )
+        # add the dDEMs and their titles
+        axes[0].imshow(ddem_before, cmap="coolwarm", vmin=vmin, vmax=vmax)
+        axes[0].axis("off")
+        axes[0].set_title(
+            f"dDEM before coregistration \n(mean: {row['ddem_before_mean']:.3f}, med: {row['ddem_before_median']:.3f}, nmad: {row['ddem_before_nmad']:.3f})"
+        )
 
-            # add a global color bar
-            cbar = fig.colorbar(
-                ScalarMappable(cmap="coolwarm", norm=plt.Normalize(vmin=vmin, vmax=vmax)),
-                ax=axes,
-                orientation="vertical",
-                fraction=0.03,
-                pad=0.02,
-            )
-            cbar.set_label("Altitude difference(m)")
+        axes[1].imshow(ddem_after, cmap="coolwarm", vmin=vmin, vmax=vmax)
+        axes[1].axis("off")
+        axes[1].set_title(
+            f"dDEM after coregistration \n(mean: {row['ddem_after_mean']:.3f}, med: {row['ddem_after_median']:.3f}, nmad: {row['ddem_after_nmad']:.3f})"
+        )
 
-            fig.savefig(output_path)
+        # add a global color bar
+        cbar = fig.colorbar(
+            ScalarMappable(cmap="coolwarm", norm=plt.Normalize(vmin=vmin, vmax=vmax)),
+            ax=axes,
+            orientation="vertical",
+            fraction=0.03,
+            pad=0.02,
+        )
+        cbar.set_label("Altitude difference(m)")
+
+        fig.savefig(output_path)
 
 
 #######################################################################################################################
