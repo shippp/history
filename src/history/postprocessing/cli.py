@@ -118,8 +118,9 @@ def cmd_create(args: argparse.Namespace) -> None:
 
 def _run_uncompress(config: Config) -> None:
     """Extract all compressed submission archives into the extracted directory."""
-    from history.postprocessing.pipeline import uncompress_all_submissions
+    from history.postprocessing.pipeline import uncompress_all_submissions, cleanup_orphaned_extracted
 
+    cleanup_orphaned_extracted(config.raw_dir, config.extracted_dir)
     uncompress_all_submissions(
         config.raw_dir,
         config.extracted_dir,
@@ -154,8 +155,10 @@ def _run_check_planned(config: Config) -> None:
 
 def _run_point2dem(config: Config) -> None:
     """Convert dense point clouds to DEMs via PDAL, and integrate any user-provided DEMs."""
-    from history.postprocessing.pipeline import process_pointclouds_to_dems, add_provided_dems, plot_point2dem
+    from history.postprocessing.pipeline import process_pointclouds_to_dems, add_provided_dems, plot_point2dem, cleanup_orphaned_raw_dems
     from history.utils import log_to_file
+
+    cleanup_orphaned_raw_dems(config.proc_dir.raw_dems_dir, config.proc_dir.symlinks_dir)
 
     dense_pc_dir = config.proc_dir.symlinks_dir / "dense_pointclouds"
     pointcloud_files = list(dense_pc_dir.glob("*.las")) + list(dense_pc_dir.glob("*.laz"))
@@ -192,7 +195,9 @@ def _run_point2dem(config: Config) -> None:
 
 def _run_coregister(config: Config) -> None:
     """Coregister raw DEMs to the reference using Nuth–Kaab + vertical shift."""
-    from history.postprocessing.pipeline import coregister_dems, plot_coregistration
+    from history.postprocessing.pipeline import coregister_dems, plot_coregistration, cleanup_orphaned_coreg_dems
+
+    cleanup_orphaned_coreg_dems(config.proc_dir.coreg_dems_dir, config.proc_dir.raw_dems_dir)
 
     coregister_dems(
         dem_files=list(config.proc_dir.raw_dems_dir.glob("*-DEM.tif")),
@@ -209,7 +214,10 @@ def _run_coregister(config: Config) -> None:
 
 def _run_ddem(config: Config) -> None:
     """Compute differential DEMs against the reference, before and after coregistration."""
-    from history.postprocessing.pipeline import generate_ddems, plot_ddems
+    from history.postprocessing.pipeline import generate_ddems, plot_ddems, cleanup_orphaned_ddems
+
+    cleanup_orphaned_ddems(config.proc_dir.before_coreg_ddems_dir, config.proc_dir.raw_dems_dir)
+    cleanup_orphaned_ddems(config.proc_dir.after_coreg_ddems_dir, config.proc_dir.coreg_dems_dir)
 
     generate_ddems(
         dem_files=list(config.proc_dir.raw_dems_dir.glob("*-DEM.tif")),

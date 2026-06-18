@@ -641,7 +641,7 @@ def create_std_dem(
         logger.warning(f"Need at least 2 DEMs for computing the STD DEM: {output_path.name}.")
         return
 
-    if not overwrite and io.is_output_up_to_date(dem_files, output_path):
+    if not overwrite and io.is_output_up_to_date(dem_files, output_path) and is_existing_std_dem(dem_files, output_path):
         logger.info(f"Skip {output_path.name}: output is up to date.")
         return
 
@@ -728,6 +728,88 @@ def create_std_dems(
     for (site, dataset), files in groups.items():
         output_path = output_dir / f"{site}_{dataset}_std_dem.tif"
         create_std_dem(dem_files=files, output_path=output_path, overwrite=overwrite)
+
+
+#######################################################################################################################
+##                                                  CLEANUP FUNCTIONS
+#######################################################################################################################
+
+
+def cleanup_orphaned_extracted(raw_dir: Path, extracted_dir: Path) -> None:
+    """Remove extracted folders whose source archive no longer exists in raw_dir."""
+    if not extracted_dir.exists():
+        return
+    archive_stems = {p.name.split(".")[0] for p in raw_dir.iterdir() if p.suffix not in [".docx", ".pdf", ".odt"]}
+    for folder in extracted_dir.iterdir():
+        if folder.is_dir() and folder.name not in archive_stems:
+            logger.info(f"Removing orphaned extracted folder (source archive gone): {folder.name}")
+            shutil.rmtree(folder)
+
+
+def cleanup_orphaned_raw_dems(raw_dems_dir: Path, symlinks_dir: Path) -> None:
+    """Remove raw DEMs whose source pointcloud or provided DEM symlink no longer exists."""
+    if not raw_dems_dir.exists():
+        return
+    valid_codes: set[str] = set()
+    for subdir in ["dense_pointclouds", "dems"]:
+        src_dir = symlinks_dir / subdir
+        if src_dir.exists():
+            for f in src_dir.iterdir():
+                try:
+                    code, _ = parse_filename(f)
+                    valid_codes.add(code)
+                except ValueError:
+                    pass
+    for dem_file in raw_dems_dir.glob("*-DEM.tif"):
+        try:
+            code, _ = parse_filename(dem_file)
+            if code not in valid_codes:
+                logger.info(f"Removing orphaned raw DEM (source gone): {dem_file.name}")
+                dem_file.unlink()
+        except ValueError:
+            pass
+
+
+def cleanup_orphaned_coreg_dems(coreg_dems_dir: Path, raw_dems_dir: Path) -> None:
+    """Remove coregistered DEMs whose source raw DEM no longer exists."""
+    if not coreg_dems_dir.exists():
+        return
+    raw_codes: set[str] = set()
+    if raw_dems_dir.exists():
+        for f in raw_dems_dir.glob("*-DEM.tif"):
+            try:
+                raw_codes.add(parse_filename(f)[0])
+            except ValueError:
+                pass
+    for dem_file in coreg_dems_dir.glob("*-DEM.tif"):
+        try:
+            code, _ = parse_filename(dem_file)
+            if code not in raw_codes:
+                logger.info(f"Removing orphaned coregistered DEM (source gone): {dem_file.name}")
+                dem_file.unlink()
+        except ValueError:
+            pass
+
+
+def cleanup_orphaned_ddems(ddems_dir: Path, source_dems_dir: Path) -> None:
+    """Remove dDEMs whose source DEM no longer exists."""
+    if not ddems_dir.exists():
+        return
+    source_codes: set[str] = set()
+    if source_dems_dir.exists():
+        for f in source_dems_dir.glob("*-DEM.tif"):
+            try:
+                source_codes.add(parse_filename(f)[0])
+            except ValueError:
+                pass
+    for ddem_file in ddems_dir.glob("*-DDEM.tif"):
+        try:
+            code, _ = parse_filename(ddem_file)
+            if code not in source_codes:
+                logger.info(f"Removing orphaned dDEM (source gone): {ddem_file.name}")
+                ddem_file.unlink()
+        except ValueError:
+            pass
 
 
 #######################################################################################################################
@@ -914,7 +996,7 @@ def coregister_dem(
 
     # save the coregistered dem
     Path(output_dem_path).parent.mkdir(parents=True, exist_ok=True)
-    dem_coreg.save(output_dem_path, tiled=True)
+    dem_coreg.save(output_dem_path)
 
     # --- Add metadata tags using rasterio ---
     with rasterio.open(output_dem_path, "r+") as dst:
