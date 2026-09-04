@@ -42,7 +42,7 @@ def _add_png_page(
     pdf: PdfPages,
     path: Path,
     orientation: Literal["auto", "portrait", "landscape"] = "auto",
-    dpi: int = 300,
+    dpi: int = 150,
 ) -> None:
     """Insert an existing PNG as a new PDF page; warn and skip if absent.
 
