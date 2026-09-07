@@ -19,6 +19,7 @@ All I/O operations rely on ``geoutils``, ``rasterio``, ``laspy``, and related ge
 libraries, ensuring consistent handling of CRS, raster grids, and metadata.
 """
 
+from collections import defaultdict
 import json
 import logging
 import shutil
@@ -233,6 +234,57 @@ def check_planned_submissions(
 
     planned_df.to_csv(planned_outfile)
     logger.info(f"Updated planned submissions saved to {planned_outfile}.")
+
+
+def compute_pointcloud_diff(
+    pointcloud_path: str | Path, ref_dem: gu.Raster
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute (x, y, dz) between a point cloud and a reference DEM, reprojecting to the DEM's CRS if needed.
+
+    Uses a vectorized (scipy) interpolation of the ref DEM at every point, as point clouds can
+    hold 80k+ points and a per-point loop would be far too slow.
+    """
+    pointcloud_path = Path(pointcloud_path)
+    las = laspy.read(pointcloud_path)
+    x, y, z = np.asarray(las.x), np.asarray(las.y), np.asarray(las.z)
+
+    pc_crs = las.header.parse_crs()
+    if pc_crs is not None and not ProjCRS.from_user_input(pc_crs).equals(ProjCRS.from_user_input(ref_dem.crs)):
+        transformer = Transformer.from_crs(pc_crs, ref_dem.crs, always_xy=True)
+        x, y = transformer.transform(x, y)
+    elif pc_crs is None:
+        logger.warning(f"{pointcloud_path.name}: point cloud has no CRS, assuming it matches the reference DEM's CRS.")
+
+    ref_z = ref_dem.interp_points((x, y), as_array=True)
+    return x, y, z - ref_z
+
+
+def generate_sparse_pointcloud_viz(config: Config) -> None:
+    input_dir = config.proc_dir.symlinks_dir / "sparse_pointclouds"
+
+    files = list(input_dir.glob("*.laz")) + list(input_dir.glob("*.las"))
+    logger.info(f"Found {len(files)} sparse point cloud(s) to plot in {input_dir}")
+
+    # the first step is to group all sparse point cloud files by site, dataset
+    grouped_files: dict[tuple[str, str], dict[str, Path]] = defaultdict(dict)
+    for f in files:
+        code, metadatas = parse_filename(f)
+        grouped_files[(metadatas["site"], metadatas["dataset"])][code] = f
+
+    # then create a mosaic for each group
+    for (site, dataset), pc_files_dict in grouped_files.items():
+        logger.debug(f"Plotting sparse point cloud mosaic **** {site} - {dataset} **** ({len(pc_files_dict)} files)")
+        ref_dem_path = config.references_data_mapping.get_ref_dem(site, dataset)
+        output_path = config.plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_sparse_pointcloud_diff.png"
+
+        viz.generate_sparse_pointclouds_mosaic(
+            pc_files_dict,
+            ref_dem_path,
+            output_path,
+            title=f"({site} {dataset}) Mosaic of sparse point cloud \n altitude difference vs reference DEM",
+            overwrite=config.overwrite_plots,
+        )
+
 
 def process_pointclouds_to_dems(
     pointcloud_files: list[str | Path],
