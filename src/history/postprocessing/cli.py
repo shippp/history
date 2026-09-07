@@ -24,6 +24,10 @@ Two subcommands are available:
                 STD DEMs.
     all         Run all steps in the order listed above.
 
+``history-postprocess status --config <path/to/config.toml>``
+    Print a quick file-count overview of every processing directory, to see at
+    a glance how far the pipeline has progressed.
+
 Verbosity is controlled with ``-v`` (INFO) or ``-vv`` (DEBUG).
 """
 
@@ -128,6 +132,44 @@ def cmd_create(output_dir: Path) -> None:
     print(f"Created '{output_dir}'")
     print(f"Config template copied to '{dest}'")
     print("Edit config.toml to point to your data before running the pipeline.")
+
+
+def _count(directory: Path, pattern: str = "*", kind: str = "file") -> int:
+    """Count entries of *kind* ('file' or 'dir') matching *pattern* in *directory*, or 0 if it doesn't exist."""
+    if not directory.exists():
+        return 0
+    is_match = Path.is_file if kind == "file" else Path.is_dir
+    return sum(1 for p in directory.glob(pattern) if is_match(p))
+
+
+@cli.command("status")
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Path to config.toml")
+def cmd_status(config_path: Path) -> None:
+    """Print a quick file-count overview of the processing directory tree."""
+    config = Config.from_toml_file(config_path)
+    proc_dir = config.proc_dir
+
+    rows = [
+        ("raw archives", config.raw_dir, "*", "file"),
+        ("extracted submissions", config.extracted_dir, "*", "dir"),
+        ("symlinks/dense_pointclouds", proc_dir.symlinks_dir / "dense_pointclouds", "*", "file"),
+        ("symlinks/sparse_pointclouds", proc_dir.symlinks_dir / "sparse_pointclouds", "*", "file"),
+        ("symlinks/extrinsics", proc_dir.symlinks_dir / "extrinsics", "*", "file"),
+        ("symlinks/intrinsics", proc_dir.symlinks_dir / "intrinsics", "*", "file"),
+        ("symlinks/dems", proc_dir.symlinks_dir / "dems", "*", "file"),
+        ("raw_dems", proc_dir.raw_dems_dir, "*-DEM.tif", "file"),
+        ("coregistered_dems", proc_dir.coreg_dems_dir, "*-DEM.tif", "file"),
+        ("ddems/before_coregistration", proc_dir.before_coreg_ddems_dir, "*-DDEM.tif", "file"),
+        ("ddems/after_coregistration", proc_dir.after_coreg_ddems_dir, "*-DDEM.tif", "file"),
+        ("std_dems", proc_dir.std_dems_dir, "*.tif", "file"),
+        ("plots", config.plot_dir, "**/*.png", "file"),
+    ]
+
+    label_width = max(len(label) for label, _, _, _ in rows)
+    print(f"Status for '{config_path}'")
+    for label, directory, pattern, kind in rows:
+        count = _count(directory, pattern, kind)
+        print(f"  {label.ljust(label_width)} : {count}")
 
 
 def _run_uncompress(config: Config) -> None:
