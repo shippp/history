@@ -17,6 +17,7 @@ The repository does **not** implement any stereo pipeline itself.
 conda env create -f environment.yml
 conda activate history
 pip install -e .
+plotly_get_chrome  # one-time download; needed by kaleido to export Sankey diagrams (postprocessing/sankey.py) to PNG
 ```
 
 Then launch JupyterLab and select the `history` kernel:

@@ -46,6 +46,7 @@ from shapely import box, transform
 from tqdm import tqdm
 
 import history.postprocessing.io as io
+import history.postprocessing.sankey as sankey
 import history.postprocessing.statistics as stats
 import history.postprocessing.visualization as viz
 from history.postprocessing.io import ReferencesData, is_output_up_to_date, parse_filename
@@ -232,6 +233,24 @@ def check_planned_submissions(
             logger.info(f"  {code}")
 
     planned_df.to_csv(planned_outfile)
+
+
+def plot_planned_submissions(config: Config, planned_outfile: str | Path) -> None:
+    """Generate a Sankey diagram of planned submissions by dataset, georef strategy, MTP adjustments, and software."""
+    planned_outfile = Path(planned_outfile)
+    output_path = config.plot_dir / "planned_submissions_sankey.png"
+    if not config.overwrite_plots and is_output_up_to_date(planned_outfile, output_path):
+        logger.info(f"Skip {output_path.name}: output is up to date.")
+        return
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    sankey.save_sankey(
+        planned_outfile,
+        output_path,
+        columns=["dataset", "georef", "mtp_adjustments", "software"],
+        columns_label=["Dataset", "Georef strategy", "MTP adjustments", "Software"],
+        title="Planned Submissions",
+    )
     logger.info(f"Updated planned submissions saved to {planned_outfile}.")
 
 def process_pointclouds_to_dems(

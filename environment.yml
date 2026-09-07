@@ -21,4 +21,4 @@ dependencies:
   - pip :
     - usgsxplore
     - hipp==0.2.0
-    - kaleido  # for sankey export
+    - kaleido  # for sankey export; requires a separate Chrome install, see README/CLAUDE.md setup steps
