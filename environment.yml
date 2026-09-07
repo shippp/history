@@ -14,7 +14,10 @@ dependencies:
   - humanize
   - ruff
   - pdal
+  - plotly  # For Sankey diagram
+  - gdown
   - pip
   - pip :
     - usgsxplore
     - hipp==0.2.0
+    - kaleido  # for sankey export

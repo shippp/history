@@ -3,36 +3,65 @@ import shutil
 import tarfile
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Union
+from typing import Any, Dict, Iterable, List, Sequence, Union
+import logging
 
 import pandas as pd
 import py7zr
+import gdown
+
+logger = logging.getLogger(__name__)
+
 
 FILE_CODE_MAPPING: dict[str, dict[str, str]] = {
     "site": {"CG": "casa_grande", "IL": "iceland"},
     "dataset": {"AI": "aerial", "MC": "kh9mc", "PC": "kh9pc"},
     "images": {"RA": "raw", "PP": "preprocessed"},
-    "camera_used": {"CY": "Yes", "CN": "No"},
-    "gcp_used": {"GM": "Manual (provided)", "GA": "Automated approach", "GN": "No", "GY": "Yes"},
+    "calib_used": {"CY": "Yes", "CN": "No"},
+    "georef": {"GM": "Manual (provided)", "GA": "Automated approach", "GC": "Coregistration", "GN": "No/other"},
     "pointcloud_coregistration": {"PY": "Yes", "PN": "No"},
-    "mtp_adjustment": {"MY": "Yes", "MN": "No"},
+    "mtp_adjustments": {"MY": "Yes", "MN": "No"},
 }
 
-FILENAME_PATTERN = re.compile(
-    r"""
-    ^(?P<author>[^_]+)_
-    (?P<site>[A-Z]{2})_
-    (?P<dataset>[A-Z]{2})_
-    (?P<images>[A-Z]{2})_
-    (?P<camera_used>[A-Z]{2})_
-    (?P<gcp_used>[A-Z]{2})_
-    (?P<pointcloud_coregistration>[A-Z]{2})_
-    (?P<mtp_adjustment>[A-Z]{2})
-    (?:_(?P<version>V\d+))?
-    .*$
-    """,
-    re.VERBOSE | re.IGNORECASE,
-)
+# Per-segment patterns — used for both parsing and error diagnosis.
+_SEGMENT_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("author", re.compile(r"^[A-Za-z0-9]{3,6}$")),
+    ("site", re.compile(r"^(CG|IL)$", re.IGNORECASE)),
+    ("dataset", re.compile(r"^(AI|MC|PC)$", re.IGNORECASE)),
+    ("images", re.compile(r"^(PP|RA)$", re.IGNORECASE)),
+    ("calib_used", re.compile(r"^C[YN]$", re.IGNORECASE)),
+    ("georef", re.compile(r"^G[MACN]$", re.IGNORECASE)),
+    ("pointcloud_coregistration", re.compile(r"^P[YN]$", re.IGNORECASE)),
+    ("mtp_adjustments", re.compile(r"^M[YN]$", re.IGNORECASE)),
+]
+
+_VERSION_PATTERN = re.compile(r"^V\d+$", re.IGNORECASE)
+
+
+class FilenameParseError(ValueError):
+    """Raised when a filename does not conform to the submission naming convention.
+
+    Attributes
+    ----------
+    stem : str
+        The filename stem that failed to parse.
+    segment : str or None
+        Name of the first segment that caused the failure, if identifiable.
+    got : str or None
+        The actual value found in the failing segment.
+    """
+
+    def __init__(self, stem: str, reason: str, segment: str | None = None, got: str | None = None):
+        self.stem = stem
+        self.segment = segment
+        self.got = got
+        msg = f"'{stem}': {reason}"
+        if segment and got is not None:
+            expected = list(FILE_CODE_MAPPING[segment]) if segment in FILE_CODE_MAPPING else None
+            msg += f" — segment '{segment}': got '{got}'"
+            if expected:
+                msg += f", expected one of {expected}"
+        super().__init__(msg)
 
 
 def check_disk_space_and_estimate(archive_files: List[Path], output_dir: Path) -> Dict[str, float]:
@@ -759,13 +788,13 @@ def mirror_as_symlinks(src_dir: str | Path, dst_dir: str | Path, overwrite: bool
 
 def parse_filename(file: str | Path) -> tuple[str, dict[str, Any]]:
     """
-    Parse a filename following the predefined code convention described in FILE_CODE_MAPPING_V1.
+    Parse a filename following the predefined code convention described in FILE_CODE_MAPPING.
 
     This function extracts structured information from a filename built using a specific
     naming convention such as:
         AUTHOR_SITE_DATASET_IMAGES_CAMERAUSED_GCPUSED_POINTCLOUDCOREG_MTPADJ[_V1-DEM].tif
 
-    Each short code (e.g., 'CG', 'AI', 'RA', 'CY') is validated against FILE_CODE_MAPPING_V1
+    Each short code (e.g., 'CG', 'AI', 'RA', 'CY') is validated against FILE_CODE_MAPPING
     to ensure consistency and then mapped to its corresponding descriptive value.
 
     Args:
@@ -778,24 +807,155 @@ def parse_filename(file: str | Path) -> tuple[str, dict[str, Any]]:
 
     Raises:
         ValueError: If the filename does not respect the expected naming convention
-                    or contains unknown codes not defined in FILE_CODE_MAPPING_V1.
+                    or contains unknown codes not defined in FILE_CODE_MAPPING.
     """
-    match = FILENAME_PATTERN.match(Path(file).stem)
+    stem = Path(file).stem.split("-")[0]  # strip file-type suffix (e.g. -DEM, -orthoimage)
+    parts = stem.split("_")
 
-    if not match:
-        raise ValueError(f"The filename {Path(file).stem} don't respect the code convention")
+    raw: dict[str, str | None] = {}
+    for i, (seg_name, seg_pattern) in enumerate(_SEGMENT_PATTERNS):
+        if i >= len(parts):
+            raise FilenameParseError(stem, f"filename too short, missing segment '{seg_name}'", seg_name, None)
+        if not seg_pattern.match(parts[i]):
+            raise FilenameParseError(stem, "invalid segment value", seg_name, parts[i])
+        raw[seg_name] = parts[i]
 
-    match_dict = match.groupdict()
-    metadatas = {"author": match_dict["author"]}
+    version_idx = len(_SEGMENT_PATTERNS)
+    raw["version"] = parts[version_idx] if version_idx < len(parts) and _VERSION_PATTERN.match(parts[version_idx]) else None
 
-    for key, value in match_dict.items():
-        if key in FILE_CODE_MAPPING:
+    metadatas: dict[str, Any] = {"author": raw["author"]}
+    for key, value in raw.items():
+        if key in FILE_CODE_MAPPING and value is not None:
             metadatas[key] = FILE_CODE_MAPPING[key].get(value)
+    metadatas["version"] = raw["version"]
 
-    metadatas["version"] = match_dict.get("version")
-
-    code = "_".join([v for v in match_dict.values() if v is not None])
+    code = "_".join(v for v in raw.values() if v is not None)
     return code, metadatas
+
+
+# Regex patterns for recognising submission file types, keyed by DataFrame column name.
+_MANDATORY_FILE_PATTERNS: dict[str, str] = {
+    "dense_pointcloud_file": r"_dense_pointcloud\.(las|laz)$",
+    "sparse_pointcloud_file": r"_sparse_pointcloud\.(las|laz)$",
+    "extrinsics_file": r"_extrinsics\.csv$",
+    "intrinsics_file": r"_intrinsics\.csv$",
+}
+_OPTIONAL_FILE_PATTERNS: dict[str, str] = {
+    "dem_file": r".*dem.*\.tif$",
+    "orthoimage_file": r".*orthoimage.*\.tif$",
+}
+_ALL_FILE_PATTERNS: dict[str, str] = {**_MANDATORY_FILE_PATTERNS, **_OPTIONAL_FILE_PATTERNS}
+
+# Maps DataFrame column names to their symlink subdirectory names.
+_FILE_COL_TO_SUBDIR: dict[str, str] = {
+    "dense_pointcloud_file": "dense_pointclouds",
+    "sparse_pointcloud_file": "sparse_pointclouds",
+    "extrinsics_file": "extrinsics",
+    "intrinsics_file": "intrinsics",
+    "dem_file": "dems",
+    "orthoimage_file": "orthoimages",
+}
+
+
+def _apply_filename_rename(filename: str, filename_renames: dict[str, str] | None) -> str:
+    """Return *filename* renamed according to *filename_renames*.
+
+    Keys are Python ``re.sub`` patterns; values are replacement strings. Patterns are
+    tried in insertion order and the first match wins.
+    Example: ``{r'(.+_extrinsics)\\.txt$': r'\\1.csv'}``
+    """
+    if not filename_renames:
+        return filename
+    for pattern, replacement in filename_renames.items():
+        new_filename, n = re.subn(pattern, replacement, filename)
+        if n > 0:
+            logger.debug(f"Applying filename rename: '{filename}' → '{new_filename}' (pattern: {pattern!r})")
+            return new_filename
+    return filename
+
+
+def scan_submissions(input_dir: str | Path, filename_renames: dict[str, str] | None = None) -> pd.DataFrame:
+    """Scan submission subdirectories and return a DataFrame indexed by submission code.
+
+    Each row represents one submission with columns for parsed metadata fields and file
+    paths (one per recognised file type). Parse errors on relevant extensions (.las,
+    .laz, .tif, .csv) are logged as warnings; all other extensions are logged at DEBUG.
+    If the same code appears in multiple submission folders, the first folder wins and a
+    warning is emitted.
+
+    Parameters
+    ----------
+    input_dir:
+        Directory containing one subdirectory per submission.
+    filename_renames:
+        Optional mapping of Python ``re.sub`` patterns to replacement strings. Applied
+        before parsing; actual files on disk are never modified. Patterns are tried in
+        insertion order; the first match wins.
+        Example: ``{r'(.+_extrinsics)\\.txt$': r'\\1.csv',
+                     r'(.+)_tie\\.laz$': r'\\1_sparse_pointcloud.laz'}``
+    """
+    input_dir = Path(input_dir)
+    _relevant_extensions = {".las", ".laz", ".tif", ".csv"}
+    rows: dict[str, dict] = {}
+
+    for subdir in sorted(input_dir.iterdir()):
+        if not subdir.is_dir():
+            continue
+        logger.debug(f"Scanning {subdir.name}...")
+        for file in subdir.rglob("*"):
+            virtual_name = _apply_filename_rename(file.name, filename_renames)
+            try:
+                code, metadata = parse_filename(virtual_name)
+            except FilenameParseError as e:
+                if file.suffix.lower() in _relevant_extensions:
+                    logger.warning(f"Cannot parse filename: {e}")
+                else:
+                    logger.debug(f"Skipping non-submission file: {e}")
+                continue
+
+            if code in rows and rows[code]["submission"] != subdir.name:
+                logger.warning(
+                    f"{code}: found in multiple submission folders, keeping '{rows[code]['submission']}'"
+                )
+                continue
+
+            row = rows.setdefault(code, {"submission": subdir.name, **metadata})
+            for col, pattern in _ALL_FILE_PATTERNS.items():
+                if re.search(pattern, virtual_name, re.IGNORECASE):
+                    if col in row:
+                        logger.warning(
+                            f"{code}: duplicate {col} — keeping '{row[col]}', ignoring '{file}'"
+                        )
+                    else:
+                        row[col] = str(file)
+                        row[col.removesuffix("_file") + "_name"] = virtual_name
+                    break
+    
+    logger.info(f"scan_submissions: found {len(rows)} submissions in {input_dir}")
+    df = pd.DataFrame.from_dict(rows, orient="index")
+    df.index.name = "code"
+    return df
+
+
+def validate_submissions(df: pd.DataFrame) -> None:
+    """Log a validation summary of mandatory file completeness across all submissions.
+
+    Logs an INFO message when all submissions are complete, or a WARNING summary
+    listing each submission with missing mandatory files.
+    """
+    issues: dict[str, list[str]] = {}
+    for code, row in df.iterrows():
+        missing = [col for col in _MANDATORY_FILE_PATTERNS if pd.isna(row.get(col))]
+        if missing:
+            issues[code] = missing
+
+    if not issues:
+        logger.info(f"All {len(df)} submissions are complete.")
+        return
+
+    logger.warning(f"{len(issues)}/{len(df)} submissions have missing mandatory files:")
+    for code, missing in sorted(issues.items()):
+        logger.warning(f"  {code}: missing {missing}")
 
 
 class ReferencesData:
@@ -886,3 +1046,55 @@ def get_filepaths_df(**kwargs: Iterable[str | Path]) -> pd.DataFrame:
             except ValueError:
                 continue
     return df.sort_index()
+
+
+def download_planned_submissions(outfile: str | Path) -> None:
+    """
+    Download the table of planned submissions from the shared Google sheet document.
+    File is downloaded to `outfile` in CSV format and unused rows/columns are deleted.
+    """
+    # Convert POSIX path to str
+    outfile= str(outfile)
+
+    sheet_url="https://docs.google.com/spreadsheets/d/1jGuoQYSfSd-DqbKp_7ZpkTYFIgC47camspTsgqkT_gQ/edit?usp=sharing"
+    verbose=(logger.getEffectiveLevel()<=20)
+    gdown.download(url=sheet_url, output=outfile, format="csv", quiet=(not verbose))
+
+    # Load as DataFrame and filter empty rows and Total row
+    submissions_df = pd.read_csv(outfile, skiprows=2, delimiter=",", usecols=[0, 1, 2, 3, 4])
+    submissions_df = submissions_df[~(submissions_df["Group name"] == "Total") & ~submissions_df["Group name"].isna()]
+
+    # Save to file
+    submissions_df.to_csv(outfile)
+
+    logger.info(f"Found {len(submissions_df)} planned submissions.")
+    logger.info(f"Saved CSV to file {outfile}.")
+
+    return submissions_df
+
+
+def is_output_up_to_date(inputs: str | Path | Sequence[str | Path], outputs: str | Path | Sequence[str | Path]) -> bool:
+    """Return True if all outputs exist and are newer than all inputs."""
+    inputs = [inputs] if isinstance(inputs, (str, Path)) else inputs
+    outputs = [outputs] if isinstance(outputs, (str, Path)) else outputs
+
+    # standardize path
+    inputs = [Path(f) for f in inputs]
+    outputs = [Path(f) for f in outputs]
+
+    if not inputs:
+        raise ValueError("inputs cannot be empty")
+    if not outputs:
+        raise ValueError("outputs cannot be empty")
+
+    if any(not p.exists() for p in outputs):
+        return False
+
+    for p in inputs:
+        if not p.exists():
+            raise FileNotFoundError(f"Input file not found: {p}")
+
+    oldest_output = min(p.stat().st_mtime for p in outputs)
+    newest_input = max(p.stat().st_mtime for p in inputs)
+
+    return newest_input <= oldest_output

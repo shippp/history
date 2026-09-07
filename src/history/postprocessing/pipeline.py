@@ -21,7 +21,6 @@ libraries, ensuring consistent handling of CRS, raster grids, and metadata.
 
 import json
 import logging
-import re
 import shutil
 import subprocess
 import sys
@@ -31,8 +30,8 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable
-
 import geoutils as gu
+from history.postprocessing.config import Config
 import humanize
 import laspy
 import numpy as np
@@ -40,14 +39,16 @@ import pandas as pd
 import py7zr
 import rasterio
 import xdem
+from pyproj import CRS as ProjCRS
 from pyproj import Transformer
 from rasterio.windows import Window
 from shapely import box, transform
 from tqdm import tqdm
 
+import history.postprocessing.io as io
 import history.postprocessing.statistics as stats
 import history.postprocessing.visualization as viz
-from history.postprocessing.io import ReferencesData, parse_filename
+from history.postprocessing.io import ReferencesData, is_output_up_to_date, parse_filename
 
 logger = logging.getLogger(__name__)
 
@@ -87,16 +88,15 @@ def uncompress_all_submissions(
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
 
-    supported_extensions = [".zip", ".7z", ".tgz", ".tar.gz", ".tar.bz2", ".tar.xz"]
-
-    archives = [
-        (fp, output_dir / fp.name[: -len(ext)]) for ext in supported_extensions for fp in input_dir.glob(f"*{ext}")
-    ]
-
     args_list = []
-    for input_path, output_path in archives:
-        if output_path.exists() and not overwrite:
-            logger.info(f"Skipping extraction (folder exists): {output_path}")
+    for input_path in input_dir.iterdir():
+        if input_path.suffix in [".docx", ".pdf", ".odt"]:
+            logger.debug(f"Ignoring file {input_path} which is not an archive")
+            continue
+
+        output_path = output_dir / input_path.name.split(".")[0]
+        if not overwrite and is_output_up_to_date(input_path, output_path):
+            logger.info(f"Skipping extraction (folder up to date): {output_path}")
             continue
         args_list.append((input_path, output_path))
 
@@ -118,104 +118,121 @@ def uncompress_all_submissions(
                 continue
 
 
-def index_submissions_and_link_files(input_dir: str | Path, output_dir: str, overwrite: bool = False) -> None:
-    """
-    Index all submissions contained in the input directory, extract metadata from
-    filenames, and create a standardized directory of symbolic links pointing to
-    the detected files.
+def create_symlinks(df: pd.DataFrame, output_dir: str | Path, overwrite: bool = False) -> None:
+    """Create typed symlink directories from a scanned submissions DataFrame.
 
-    This function scans each subdirectory of `input_dir`, identifies relevant data
-    files based on predefined regex patterns (mandatory and optional), extracts
-    metadata using `parse_filename()`, and stores the results in an internal
-    DataFrame indexed by submission code. For each detected file, a corresponding
-    symbolic link is created in a structured output directory. Missing mandatory
-    files are reported but do not stop the processing.
-
-    If `overwrite` is True, all existing symlink directories inside the output
-    directory are removed before any new links are created.
+    Each file column in *df* is mapped to a subdirectory under *output_dir*
+    (e.g. ``dense_pointcloud_file`` → ``dense_pointclouds/``). Existing symlinks at
+    the target path are replaced without following them (avoids permission errors on
+    inaccessible mounts). Non-symlink files at the target path are left untouched.
 
     Parameters
     ----------
-    input_dir : str or Path
-        Directory containing submission subfolders to index. Each subfolder is
-        expected to contain files with names that match the configured patterns.
-    output_dir : str or Path
-        Target directory in which symbolic links will be created, organized by
-        file type.
-    overwrite : bool, optional
-        If True, existing symlink directories within `output_dir` are removed
-        before new links are generated. Default is False.
-
-    Notes
-    -----
-    - Mandatory files are defined by regex patterns such as point cloud, intrinsic,
-      and extrinsic calibration files. Their absence is logged as a warning.
-    - File metadata (extracted by `parse_filename`) is added to the indexing
-      DataFrame prior to link creation.
-    - Symlinks are always recreated: existing links or files at the target
-      location are removed before new ones are written.
+    df:
+        DataFrame returned by :func:`io.scan_submissions`, indexed by submission code.
+    output_dir:
+        Root directory where symlink subdirectories will be created.
+    overwrite:
+        If True, *output_dir* is deleted entirely before creating new links.
     """
-    input_dir = Path(input_dir)
     output_dir = Path(output_dir)
 
-    # if overwrite remove each symlinks directory
-    if overwrite:
-        for sub_dir in output_dir.sub_dirs.values():
-            if sub_dir.symlinks_dir.base_dir.exists():
-                shutil.rmtree(sub_dir.symlinks_dir.base_dir)
+    if overwrite and output_dir.exists():
+        shutil.rmtree(output_dir)
 
-    # Define regex patterns mapping to dataframe column names
-    mandatory_patterns = {
-        "dense_pointcloud_file": r"_dense_pointcloud\.(las|laz)$",
-        "sparse_pointcloud_file": r"_sparse_pointcloud\.(las|laz)$",
-        "extrinsics_file": r"_extrinsics\.csv$",
-        "intrinsics_file": r"_intrinsics\.csv$",
-    }
-    optional_patterns = {"dem_file": r".*dem.*\.tif$", "orthoimage_file": r".*orthoimage.*\.tif$"}
-
-    patterns = {**mandatory_patterns, **optional_patterns}
-
-    df = pd.DataFrame()
-    df.index.name = "code"
-    for subdir in input_dir.iterdir():
-        if not subdir.is_dir():
-            continue
-
-        all_files = list(subdir.rglob("*"))
-
-        for file in all_files:
-            try:
-                code, metadatas = parse_filename(file)
-            except ValueError:
+    for _code, row in df.iterrows():
+        for col, subdir_name in io._FILE_COL_TO_SUBDIR.items():
+            if col not in row or pd.isna(row[col]):
                 continue
+            name_col = col.removesuffix("_file") + "_name"
+            link_name = row[name_col] if (name_col in row and pd.notna(row.get(name_col))) else Path(row[col]).name
+            link = output_dir / subdir_name / link_name
+            link.parent.mkdir(exist_ok=True, parents=True)
+            if link.is_symlink():
+                link.unlink()
+            link.symlink_to(row[col])
 
-            for column, pattern in patterns.items():
-                if re.search(pattern, file.name, re.IGNORECASE):
-                    df.at[code, "submission"] = subdir.name
-                    for k, v in metadatas.items():
-                        df.at[code, k] = v
-                    df.at[code, column] = str(file)
 
-                    break  # Stop at first match
+def report_symlinks(config: Config) -> None:
+    """Scan extracted_dir and raw_dir to create symlinks for all report founds"""
+    output_dir = config.proc_dir.symlinks_dir / "reports"
 
-    for code, row in df.iterrows():
-        missing_files = [c for c in mandatory_patterns if pd.isna(row[c])]
-        if missing_files:
-            logger.warning(f"{code} - Missing the following mandatory file(s): {missing_files}")
-        for colname in patterns:
-            if not pd.isna(row[colname]):
-                sub_dirname = colname.replace("_file", "")
-                if not sub_dirname.endswith("s"):
-                    sub_dirname += "s"
+    # remove old symlinks dir and recreate it
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(exist_ok=True, parents=True)
 
-                link = output_dir / sub_dirname / Path(row[colname]).name
-                link.parent.mkdir(exist_ok=True, parents=True)
+    # find all report 
+    files = list(config.extracted_dir.rglob("*report*")) + list(config.raw_dir.rglob("*report*"))
 
-                # Remove existing link if it already exists
-                if link.exists() or link.is_symlink():
-                    link.unlink()
-                link.symlink_to(row[colname])
+    # link all files
+    for f in files:
+        link = output_dir / f.name
+        n = 1
+        while link.exists():
+            link = output_dir / f"{f.stem} ({n}){f.suffix}"
+            n += 1
+        link.symlink_to(f)
 
+    # extensions
+    extensions = list(set(f.suffix for f in files))
+
+    logger.info(f"Saved {len(files)} reports to {output_dir} ({len(extensions)} format(s): {', '.join(extensions) or 'none'})")
+        
+
+def index_submissions_and_link_files(input_dir: str | Path, output_dir: str | Path, overwrite: bool = False) -> None:
+    """Scan, validate, and create symlinks for all submissions in *input_dir*.
+
+    Convenience wrapper combining :func:`io.scan_submissions`,
+    :func:`io.validate_submissions`, and :func:`create_symlinks`.
+    Kept for backwards compatibility with existing notebooks.
+    """
+    df = io.scan_submissions(input_dir)
+    io.validate_submissions(df)
+    create_symlinks(df, output_dir, overwrite=overwrite)
+
+
+def check_planned_submissions(
+    submission_codes: list[str],
+    planned_outfile: str | Path,
+) -> None:
+    """Compare received submission codes against the planned list from the shared Google Sheet.
+
+    Downloads and updates the planned-submissions CSV at *planned_outfile*, then logs
+    which planned submissions are missing and which received submissions were unplanned.
+
+    Parameters
+    ----------
+    submission_codes:
+        Experiment codes to compare (e.g. ``df.index.tolist()`` from :func:`io.scan_submissions`).
+    planned_outfile:
+        Path where the downloaded/updated planned-submissions CSV is saved.
+    """
+    planned_outfile = Path(planned_outfile)
+    planned_df = io.download_planned_submissions(planned_outfile)
+
+    set_received = set(submission_codes)
+    set_planned = set(planned_df["Submission code"])
+
+    planned_df["received"] = planned_df["Submission code"].map(lambda x: x in set_received)
+
+    unsubmitted = planned_df.loc[~planned_df["received"], "Submission code"].tolist()
+    unplanned = sorted(set_received - set_planned)
+
+    logger.info(f"{len(planned_df) - len(unsubmitted)}/{len(planned_df)} planned submissions received")
+
+    if unsubmitted:
+        logger.warning(f"{len(unsubmitted)} planned submissions not yet received:")
+        for code in sorted(unsubmitted):
+            logger.info(f"  {code}")
+
+    if unplanned:
+        logger.warning(f"{len(unplanned)} unplanned submissions received:")
+        for code in unplanned:
+            logger.info(f"  {code}")
+
+    planned_df.to_csv(planned_outfile)
+    logger.info(f"Updated planned submissions saved to {planned_outfile}.")
 
 def process_pointclouds_to_dems(
     pointcloud_files: list[str | Path],
@@ -290,8 +307,8 @@ def process_pointclouds_to_dems(
             output_dem_path = output_directory / f"{code}{suffix}.tif"
 
             # avoid overwriting existing DEM
-            if output_dem_path.exists() and not overwrite:
-                logger.info(f"Skip point2dem for {code}: output already exists.")
+            if not overwrite and is_output_up_to_date([file, ref_dem_path], output_dem_path):
+                logger.info(f"Skip point2dem for {code}: output is up to date.")
                 continue
 
             args_dict[code] = [file, ref_dem_path, output_dem_path]
@@ -300,23 +317,39 @@ def process_pointclouds_to_dems(
             logger.error(f"Error processing {file.name}: {e}")
             continue
 
-    if not args_dict:
-        return
+    if len(args_dict) > 0:
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(convert_pointcloud_to_dem, *args, pdal_exec_path=pdal_exec_path, dry_run=dry_run): code
-            for code, args in args_dict.items()
-        }
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(convert_pointcloud_to_dem, *args, pdal_exec_path=pdal_exec_path, dry_run=dry_run): code
+                for code, args in args_dict.items()
+            }
 
-        # Wait for all point2dem tasks to finish
-        for fut in tqdm(as_completed(futures), total=len(futures), desc="point2dem"):
-            code = futures[fut]
-            try:
-                fut.result()
-            except Exception as e:
-                logger.error(f"Point2dem error for {code}: {e}")
-                continue
+            # Wait for all point2dem tasks to finish
+            for fut in tqdm(as_completed(futures), total=len(futures), desc="point2dem"):
+                code = futures[fut]
+                try:
+                    fut.result()
+                except Exception as e:
+                    logger.error(f"Point2dem error for {code}: {e}")
+                    continue
+
+    # Check that no results from deleted submissions exist
+    raw_dem_files = list(output_directory.glob("*-DEM.tif"))
+    dem_prefixes = [f.stem[:-4] for f in raw_dem_files]
+    pc_prefixes = [f.stem[:-17] for f in pointcloud_files]
+    if len(dem_prefixes) != len(pc_prefixes):
+        unexpected_exp = list(set(dem_prefixes) - set(pc_prefixes))
+        unexpected_str = ", ".join(list(unexpected_exp))
+
+        logger.warning(f"Found the following experiments in the raw DEM folder: {unexpected_str}")
+        logger.warning("Consider deleting the following files:")
+
+        for code in unexpected_exp:
+            found_files = list(output_directory.parent.glob(f"**/*{code}*"))
+            print("command: rm " + str(output_directory.parent) + f"/**/*{code}*")
+            for f in found_files:
+                print(f)
 
 
 def add_provided_dems(
@@ -376,7 +409,7 @@ def add_provided_dems(
 
             # avoid overwriting existing files
             output_path = output_dir / f"{code}{suffix}.tif"
-            if output_path.exists() and not overwrite:
+            if not overwrite and is_output_up_to_date(file, output_path):
                 logger.info(f"Skip {code} output already exists.")
                 continue
 
@@ -454,14 +487,14 @@ def coregister_dems(
 
             output_dem_path = output_dir / file.name
 
-            # avoid overwriting existing files
-            if output_dem_path.exists() and not overwrite:
-                logger.info(f"Skip coregistration for {code}, output already exists.")
-                continue
-
-            # extract corresponding ref dem and mask with site and dataset
+             # extract corresponding ref dem and mask with site and dataset
             ref_dem_path = references_data.get_ref_dem(metadatas["site"], metadatas["dataset"])
             ref_dem_mask_path = references_data.get_ref_dem_mask(metadatas["site"], metadatas["dataset"])
+
+            # avoid overwriting existing files
+            if not overwrite and is_output_up_to_date([file, ref_dem_path, ref_dem_mask_path], output_dem_path):
+                logger.info(f"Skip coregistration for {code}, output already exists.")
+                continue
 
             args_dict[code] = [file, ref_dem_path, ref_dem_mask_path, output_dem_path]
 
@@ -550,13 +583,13 @@ def generate_ddems(
 
             output_path = output_dir / f"{code}{suffix}.tif"
 
-            # avoid overwriting existing files
-            if output_path.exists() and not overwrite:
-                logger.info(f"Skip DDEM {code}, output already exists.")
-                continue
-
             # get corresponding reference DEM with site and dataset
             ref_dem_path = references_data.get_ref_dem(metadatas["site"], metadatas["dataset"])
+
+            # avoid overwriting existing files
+            if not overwrite and is_output_up_to_date([file, ref_dem_path], output_path):
+                logger.info(f"Skip DDEM {code}, output is up to date.")
+                continue
 
             args_dict[code] = [file, ref_dem_path, output_path]
         except Exception as e:
@@ -608,8 +641,8 @@ def create_std_dem(
         logger.warning(f"Need at least 2 DEMs for computing the STD DEM: {output_path.name}.")
         return
 
-    if is_existing_std_dem(dem_files, output_path, metadata_key) and not overwrite:
-        logger.info(f"Skip {output_path.name}: output already exists.")
+    if not overwrite and io.is_output_up_to_date(dem_files, output_path) and is_existing_std_dem(dem_files, output_path):
+        logger.info(f"Skip {output_path.name}: output is up to date.")
         return
 
     # first open the first raster of the list to have a reference profile
@@ -698,6 +731,88 @@ def create_std_dems(
 
 
 #######################################################################################################################
+##                                                  CLEANUP FUNCTIONS
+#######################################################################################################################
+
+
+def cleanup_orphaned_extracted(raw_dir: Path, extracted_dir: Path) -> None:
+    """Remove extracted folders whose source archive no longer exists in raw_dir."""
+    if not extracted_dir.exists():
+        return
+    archive_stems = {p.name.split(".")[0] for p in raw_dir.iterdir() if p.suffix not in [".docx", ".pdf", ".odt"]}
+    for folder in extracted_dir.iterdir():
+        if folder.is_dir() and folder.name not in archive_stems:
+            logger.info(f"Removing orphaned extracted folder (source archive gone): {folder.name}")
+            shutil.rmtree(folder)
+
+
+def cleanup_orphaned_raw_dems(raw_dems_dir: Path, symlinks_dir: Path) -> None:
+    """Remove raw DEMs whose source pointcloud or provided DEM symlink no longer exists."""
+    if not raw_dems_dir.exists():
+        return
+    valid_codes: set[str] = set()
+    for subdir in ["dense_pointclouds", "dems"]:
+        src_dir = symlinks_dir / subdir
+        if src_dir.exists():
+            for f in src_dir.iterdir():
+                try:
+                    code, _ = parse_filename(f)
+                    valid_codes.add(code)
+                except ValueError:
+                    pass
+    for dem_file in raw_dems_dir.glob("*-DEM.tif"):
+        try:
+            code, _ = parse_filename(dem_file)
+            if code not in valid_codes:
+                logger.info(f"Removing orphaned raw DEM (source gone): {dem_file.name}")
+                dem_file.unlink()
+        except ValueError:
+            pass
+
+
+def cleanup_orphaned_coreg_dems(coreg_dems_dir: Path, raw_dems_dir: Path) -> None:
+    """Remove coregistered DEMs whose source raw DEM no longer exists."""
+    if not coreg_dems_dir.exists():
+        return
+    raw_codes: set[str] = set()
+    if raw_dems_dir.exists():
+        for f in raw_dems_dir.glob("*-DEM.tif"):
+            try:
+                raw_codes.add(parse_filename(f)[0])
+            except ValueError:
+                pass
+    for dem_file in coreg_dems_dir.glob("*-DEM.tif"):
+        try:
+            code, _ = parse_filename(dem_file)
+            if code not in raw_codes:
+                logger.info(f"Removing orphaned coregistered DEM (source gone): {dem_file.name}")
+                dem_file.unlink()
+        except ValueError:
+            pass
+
+
+def cleanup_orphaned_ddems(ddems_dir: Path, source_dems_dir: Path) -> None:
+    """Remove dDEMs whose source DEM no longer exists."""
+    if not ddems_dir.exists():
+        return
+    source_codes: set[str] = set()
+    if source_dems_dir.exists():
+        for f in source_dems_dir.glob("*-DEM.tif"):
+            try:
+                source_codes.add(parse_filename(f)[0])
+            except ValueError:
+                pass
+    for ddem_file in ddems_dir.glob("*-DDEM.tif"):
+        try:
+            code, _ = parse_filename(ddem_file)
+            if code not in source_codes:
+                logger.info(f"Removing orphaned dDEM (source gone): {ddem_file.name}")
+                ddem_file.unlink()
+        except ValueError:
+            pass
+
+
+#######################################################################################################################
 ##                                                  OTHERS FUNCTIONS
 #######################################################################################################################
 
@@ -746,10 +861,10 @@ def convert_pointcloud_to_dem(
     ref_dem = gu.Raster(reference_dem_path)
     ref_crs = ref_dem.crs
     if ref_crs is None:
-        raise ValueError(f"The reference dem {reference_dem_path} as no CRS.")
+        raise ValueError(f"The reference dem {reference_dem_path} has no CRS.")
     ref_box = box(*ref_dem.bounds)
 
-    # if not crs found in pc_crs test with a list of CRS
+    # if no crs found in pc_crs, tests with a list of CRS
     if pc_crs is None:
         test_crs_list = [str(ref_crs), "EPSG:4326"]
 
@@ -770,6 +885,12 @@ def convert_pointcloud_to_dem(
 
     if pc_crs is None:
         raise ValueError(f"{pointcloud_path.name} : Can't find a valid CRS")
+
+    if not ProjCRS.from_user_input(pc_crs).equals(ProjCRS.from_user_input(ref_crs)):
+        logger.warning(
+            f"{pointcloud_path.name}: CRS mismatch — point cloud CRS is {ProjCRS.from_user_input(pc_crs).to_epsg() or pc_crs},"
+            f" reference CRS is {ref_crs}."
+        )
 
     # --- PDAL pipeline definition ---
     pipeline_dict = {
@@ -875,7 +996,7 @@ def coregister_dem(
 
     # save the coregistered dem
     Path(output_dem_path).parent.mkdir(parents=True, exist_ok=True)
-    dem_coreg.save(output_dem_path, tiled=True)
+    dem_coreg.save(output_dem_path)
 
     # --- Add metadata tags using rasterio ---
     with rasterio.open(output_dem_path, "r+") as dst:
@@ -947,6 +1068,10 @@ def extract_archive(archive_path: Path | str, output_dir: Path | str, flatten_ne
     archive_path = Path(archive_path)
     output_dir = Path(output_dir)
 
+    # Check format before touching the filesystem so failed extractions leave no empty folder
+    if archive_path.suffix not in [".zip", ".7z", ".tar", ".tgz", ".gz", ".bz2", ".xz"]:
+        raise ValueError(f"Extraction for this type not implemented: {archive_path.suffix}")
+
     # overwrite if existing
     if output_dir.exists():
         shutil.rmtree(output_dir)
@@ -963,8 +1088,6 @@ def extract_archive(archive_path: Path | str, output_dir: Path | str, flatten_ne
     elif archive_path.suffix in [".tar", ".tgz", ".gz", ".bz2", ".xz"]:
         with tarfile.open(archive_path, "r:*") as tf:
             tf.extractall(output_dir)
-    else:
-        raise ValueError(f"Extraction for this type not implemented: {archive_path.suffix}")
 
     # remove macOS metadata if exists
     macosx_dir = output_dir / "__MACOSX"
@@ -993,6 +1116,7 @@ def extract_archive(archive_path: Path | str, output_dir: Path | str, flatten_ne
         # Now 'current' is the deepest redundant folder
         # Move everything back one time at the top-level
         for item in current.iterdir():
+            item.touch()  # Update file time
             shutil.move(str(item), output_dir)
 
         # Now delete entire chain of empty redundant folders
@@ -1071,7 +1195,7 @@ def is_existing_std_dem(dem_files: list[str | Path], output_path: str | Path, me
 #######################################################################################################################
 
 
-def plot_symlinks(symlinks_dir: str | Path, plot_dir: str | Path) -> None:
+def plot_symlinks(config: Config, submissions_df: pd.DataFrame | None = None) -> None:
     """
     Generate plots summarizing the indexed symlinks directory.
 
@@ -1080,186 +1204,161 @@ def plot_symlinks(symlinks_dir: str | Path, plot_dir: str | Path) -> None:
 
     Parameters
     ----------
-    symlinks_dir : str or Path
-        Directory containing the symlinked submission files. Must include a
-        ``dense_pointclouds/`` subdirectory.
-    plot_dir : str or Path
-        Directory where the output plot will be saved.
+    config : Config
+    submissions_df : pd.DataFrame, optional
+        DataFrame returned by :func:`io.scan_submissions`.  When provided, a
+        file-size matrix is saved alongside the presence map.
     """
-    symlinks_dir = Path(symlinks_dir)
-    plot_dir = Path(plot_dir)
+    pointcloud_files = list((config.proc_dir.symlinks_dir / "dense_pointclouds").iterdir())
+    logger.info("Plotting PC count, presence map and file size.")
 
-    pointcloud_files = list((symlinks_dir / "dense_pointclouds").iterdir())
-    df = stats.compute_pcs_statistics_df(pointcloud_files)
-    viz.barplot_var(df, plot_dir / "pointcloud_point_count.png", "point_count", "Point count in dense point-cloud file")
+    output_pc_count = config.plot_dir / "pointcloud_point_count.png"
+    if not config.overwrite_plots and is_output_up_to_date(pointcloud_files, output_pc_count):
+        logger.info(f"Skip {output_pc_count.name}: output is up to date.")
+    else:
+        df = stats.compute_pcs_statistics_df(pointcloud_files)
+        viz.barplot_var(df, output_pc_count, "point_count", "Point count in dense point-cloud file", overwrite=True)
 
+    directories = [d for d in config.proc_dir.symlinks_dir.iterdir() if d.name != "reports"]
+    viz.visualize_files_presence_map(directories, config.plot_dir / "submissions_presence_map.png", overwrite=config.overwrite_plots)
 
-def plot_point2dem(raw_dems_dir: str | Path, plot_dir: str | Path, max_workers: int | None = None) -> None:
+    if submissions_df is not None:
+        viz.visualize_files_size_map(submissions_df, config.plot_dir / "submissions_file_sizes.png", overwrite=config.overwrite_plots)
+
+def plot_point2dem(config: Config) -> None:
     """
     Generate plots for the raw DEMs produced by the point-cloud-to-DEM step.
 
     Saves a bar chart of nodata percentages and per-(site, dataset) DEM mosaics
     for all raw DEMs found in ``raw_dems_dir``.
-
-    Parameters
-    ----------
-    raw_dems_dir : str or Path
-        Directory containing raw DEM files (``*-DEM.tif``).
-    plot_dir : str or Path
-        Directory where output plots will be saved.
-    max_workers : int or None, optional
-        Number of parallel workers for computing DEM statistics. Defaults to None.
     """
-    raw_dems_dir = Path(raw_dems_dir)
-    plot_dir = Path(plot_dir)
 
-    df = stats.compute_dems_statistics_df(raw_dems_dir.glob("*-DEM.tif"), max_workers=max_workers)
-    viz.barplot_var(df, plot_dir / "raw_dem_voids.png", "percent_nodata", "Raw DEM nodata percent")
+    df = stats.compute_dems_statistics_df(config.proc_dir.raw_dems_dir.glob("*-DEM.tif"), max_workers=config.max_workers)
+    viz.barplot_var(df, config.plot_dir / "raw_dem_voids.png", "percent_nodata", "Raw DEM nodata percent", overwrite=config.overwrite_plots)
     for (site, dataset), group in df.groupby(["site", "dataset"]):
-        output_path = plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_raw_dem.png"
+        logger.debug(f"Plotting **** {site} - {dataset} ****")
+        output_path = config.plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_raw_dem.png"
         vmin, vmax = group["min"].median(), group["max"].median()
-        viz.generate_dems_mosaic(group["file"].to_dict(), output_path, vmin, vmax, f"({site} {dataset}) Mosaic Raw DEMs")
+        viz.generate_dems_mosaic(group["file"].to_dict(), output_path, vmin, vmax, f"({site} {dataset}) Mosaic Raw DEMs", config.overwrite_plots)
 
 
-def plot_coregistration(coreg_dems_dir: str | Path, plot_dir: str | Path, max_workers: int | None = None) -> None:
+def plot_coregistration(config: Config) -> None:
     """
     Generate plots summarizing the coregistration step.
 
     Saves per-(site, dataset) DEM mosaics and coregistration-shift scatter plots
-    for all coregistered DEMs in ``coreg_dems_dir``.
-
-    Parameters
-    ----------
-    coreg_dems_dir : str or Path
-        Directory containing coregistered DEM files (``*-DEM.tif``).
-    plot_dir : str or Path
-        Directory where output plots will be saved.
-    max_workers : int or None, optional
-        Number of parallel workers for computing DEM statistics. Defaults to None.
+    for all coregistered DEMs in ``coreg_dems_dir``. When ``symlinks_dir`` and
+    ``raw_dems_dir`` are provided, also saves an updated submissions presence map
+    that includes the raw and coregistered DEM directories.
     """
-    coreg_dems_dir = Path(coreg_dems_dir)
-    plot_dir = Path(plot_dir)
+    coreg_dems_dir = config.proc_dir.coreg_dems_dir
+    raw_dems_dir = config.proc_dir.raw_dems_dir
+    symlinks_dir = config.proc_dir.symlinks_dir
 
-    df = stats.compute_dems_statistics_df(coreg_dems_dir.glob("*-DEM.tif"), max_workers=max_workers)
+    df = stats.compute_dems_statistics_df(coreg_dems_dir.glob("*-DEM.tif"), max_workers=config.max_workers)
     for (site, dataset), group in df.groupby(["site", "dataset"]):
-        output_path = plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_coreg_dem.png"
+        logger.debug(f"Plotting **** {site} - {dataset} ****")
+        sub_dir = config.plot_dir / f"{site}_{dataset}"
+        dem_files_dict = group["file"].to_dict()
         vmin, vmax = group["min"].median(), group["max"].median()
-        viz.generate_dems_mosaic(group["file"].to_dict(), output_path, vmin, vmax, f"({site} {dataset}) Mosaic Coregistered DEMs")
+
+        logger.debug("Plotting coregistered DEMs mosaic")
+        viz.generate_dems_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_coreg_dem.png", vmin, vmax, f"({site} {dataset}) Mosaic Coregistered DEMs", config.overwrite_plots)
+
+        logger.debug("Plotting slope mosaic")
+        viz.generate_slopes_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_slopes.png", 
+                                   title=f"({site} {dataset}) Mosaic slopes of DEMs after coregistration", overwrite=config.overwrite_plots)
+
+        logger.debug("Plotting hillshade mosaic")
+        viz.generate_hillshades_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_hillshades.png", 
+                                       title=f"({site} {dataset}) Mosaic hillshades of DEMs after coregistration", overwrite=config.overwrite_plots)
+
+    # Build per-(site, dataset) file mapping from df (which has the "file" column)
+    coreg_files_by_group = {key: list(g["file"]) for key, g in df.groupby(["site", "dataset"])}
 
     df_shifts = stats.get_coregistration_statistics_df(coreg_dems_dir.glob("*-DEM.tif"))
     for (site, dataset), group in df_shifts.groupby(["site", "dataset"]):
-        output_path = plot_dir / f"{site}_{dataset}" / "coregistration_shifts.png"
-        viz.generate_plot_coreg_shifts(group, output_path, f"({site} {dataset}) Coregistration shifts")
+        output_path = config.plot_dir / f"{site}_{dataset}" / "coregistration_shifts.png"
+        viz.generate_plot_coreg_shifts(group, output_path, f"({site} {dataset}) Coregistration shifts",
+                                       overwrite=config.overwrite_plots, inputs=coreg_files_by_group.get((site, dataset)))
+
+    if symlinks_dir is not None and raw_dems_dir is not None:
+        directories = [d for d in Path(symlinks_dir).iterdir() if d.name != "reports"] + [Path(raw_dems_dir), coreg_dems_dir]
+        viz.visualize_files_presence_map(directories, config.plot_dir / "files_presence_map.png", overwrite=config.overwrite_plots)
 
 
-def plot_ddems(
-    before_coreg_ddems_dir: str | Path,
-    after_coreg_ddems_dir: str | Path,
-    plot_dir: str | Path,
-    overwrite: bool = False,
-    max_workers: int | None = None,
-) -> None:
+def plot_ddems(config: Config) -> None:
     """
     Generate plots comparing dDEMs before and after coregistration.
 
     Saves a global NMAD bar chart, per-(site, dataset) NMAD before-vs-after plots,
     per-submission coregistration plots, and mosaics of dDEMs, slopes, and hillshades.
-
-    Parameters
-    ----------
-    before_coreg_ddems_dir : str or Path
-        Directory containing dDEM files computed before coregistration (``*-DDEM.tif``).
-    after_coreg_ddems_dir : str or Path
-        Directory containing dDEM files computed after coregistration (``*-DDEM.tif``).
-    plot_dir : str or Path
-        Directory where output plots will be saved.
-    overwrite : bool, optional
-        If True, existing individual coregistration plots are overwritten. Default is False.
-    max_workers : int or None, optional
-        Number of parallel workers for computing DEM statistics. Defaults to None.
     """
-    before_coreg_ddems_dir = Path(before_coreg_ddems_dir)
-    after_coreg_ddems_dir = Path(after_coreg_ddems_dir)
-    plot_dir = Path(plot_dir)
+    before_coreg_ddems_dir = config.proc_dir.before_coreg_ddems_dir
+    after_coreg_ddems_dir = config.proc_dir.after_coreg_ddems_dir
 
-    ddem_before_df = stats.compute_dems_statistics_df(before_coreg_ddems_dir.glob("*-DDEM.tif"), "ddem_before_", max_workers)
-    ddem_after_df = stats.compute_dems_statistics_df(after_coreg_ddems_dir.glob("*-DDEM.tif"), "ddem_after_", max_workers)
+    ddem_before_df = stats.compute_dems_statistics_df(before_coreg_ddems_dir.glob("*-DDEM.tif"), "ddem_before_", config.max_workers)
+    ddem_after_df = stats.compute_dems_statistics_df(after_coreg_ddems_dir.glob("*-DDEM.tif"), "ddem_after_", config.max_workers)
     df = pd.concat([ddem_before_df, ddem_after_df]).groupby(level=0).first()
 
-    viz.barplot_var(df, plot_dir / "nmad_after_coregistration.png", "ddem_after_nmad", "NMAD of Altitude differences with ref DEM after coregistration by code")
+    viz.barplot_var(df, config.plot_dir / "nmad_after_coregistration.png", "ddem_after_nmad", "NMAD of Altitude differences with ref DEM after coregistration by code", overwrite=config.overwrite_plots)
 
     for (site, dataset), group in df.groupby(["site", "dataset"]):
-        sub_dir = plot_dir / f"{site}_{dataset}"
-        viz.generate_plot_nmad_before_vs_after(group, sub_dir / "nmad_before_vs_after_coregistration.png", f"({site} {dataset}) NMAD of DEM differences before vs after coregistration")
-        viz.generate_coregistration_individual_plots(group, sub_dir / "coregistrations", overwrite)
+        logger.debug(f"Plotting **** {site} - {dataset} ****")
+        sub_dir = config.plot_dir / f"{site}_{dataset}"
+        viz.generate_plot_nmad_before_vs_after(group, sub_dir / "nmad_before_vs_after_coregistration.png", f"({site} {dataset}) NMAD of DEM differences before vs after coregistration", overwrite=config.overwrite_plots)
+        viz.generate_coregistration_individual_plots(group, sub_dir / "coregistrations", config.overwrite_plots)
 
         ddem_files_dict = group["ddem_after_file"].dropna().to_dict()
-        viz.generate_ddems_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_ddem.png", f"({site} {dataset}) Mosaic of DDEMs after coregistration")
-        viz.generate_slopes_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_slopes_ddem.png", f"({site} {dataset}) Mosaic slopes of DDEMs after coregistration")
-        viz.generate_hillshades_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_hillshades_ddem.png", f"({site} {dataset}) Mosaic hillshades of DDEMs after coregistration")
+        viz.generate_ddems_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_ddem.png", 
+                                  title=f"({site} {dataset}) Mosaic of DDEMs after coregistration", overwrite=config.overwrite_plots)
 
 
-def plot_std_dems(std_dems_dir: str | Path, plot_dir: str | Path) -> None:
+def plot_std_dems(config: Config) -> None:
     """
     Generate plots for each STD DEM found in ``std_dems_dir``.
-
-    Parameters
-    ----------
-    std_dems_dir : str or Path
-        Directory containing STD DEM files (``*.tif``).
-    plot_dir : str or Path
-        Directory where output plots will be saved. Each STD DEM produces a
-        ``.png`` in a subdirectory named after the DEM stem (without ``_std_dem``).
     """
-    std_dems_dir = Path(std_dems_dir)
-    plot_dir = Path(plot_dir)
-
-    for file in std_dems_dir.glob("*.tif"):
+    for file in config.proc_dir.std_dems_dir.glob("*.tif"):
         subdir = file.stem.replace("_std_dem", "")
-        output_path = plot_dir / subdir / file.with_suffix(".png").name
-        viz.generate_std_dem_plots(file, output_path)
+        output_path = config.plot_dir / subdir / file.with_suffix(".png").name
+        viz.generate_std_dem_plots(file, output_path, overwrite=config.overwrite_plots)
 
 
-def plot_landcover(
-    after_coreg_ddems_dir: str | Path,
-    std_dems_dir: str | Path,
-    references_data: ReferencesData,
-    plot_dir: str | Path,
-    max_workers: int | None = None,
-) -> None:
+def plot_landcover(config: Config) -> None:
     """
     Generate landcover-stratified plots for dDEMs and STD DEMs.
 
     Computes landcover-stratified statistics on coregistered dDEMs and STD DEMs,
     then saves per-(site, dataset) grouped boxplots and NMAD plots, as well as
     a global boxplot aggregated from all STD DEMs.
-
-    Parameters
-    ----------
-    after_coreg_ddems_dir : str or Path
-        Directory containing coregistered dDEM files (``*-DDEM.tif``).
-    std_dems_dir : str or Path
-        Directory containing STD DEM files (``*.tif``).
-    references_data : ReferencesData
-        Object providing landcover raster paths for each (site, dataset) pair.
-    plot_dir : str or Path
-        Directory where output plots will be saved.
-    max_workers : int or None, optional
-        Number of parallel workers for computing statistics. Defaults to None.
     """
-    after_coreg_ddems_dir = Path(after_coreg_ddems_dir)
-    std_dems_dir = Path(std_dems_dir)
-    plot_dir = Path(plot_dir)
+    after_coreg_ddems_dir = config.proc_dir.after_coreg_ddems_dir
+    std_dems_dir = config.proc_dir.std_dems_dir
 
-    landcover_df = stats.compute_landcover_statistics(after_coreg_ddems_dir.glob("*-DDEM.tif"), references_data, max_workers)
-    std_lc_df = stats.compute_landcover_statistics_on_std_dems(std_dems_dir.glob("*.tif"), references_data, max_workers)
+    all_ddem_files = list(after_coreg_ddems_dir.glob("*-DDEM.tif"))
+    ddem_files_by_group: dict[tuple, list[Path]] = {}
+    for f in all_ddem_files:
+        try:
+            _, meta = parse_filename(f)
+            key = (meta["site"], meta["dataset"])
+            ddem_files_by_group.setdefault(key, []).append(f)
+        except Exception:
+            pass
+
+    landcover_df = stats.compute_landcover_statistics(all_ddem_files, config.references_data_mapping, config.max_workers)
+    std_lc_df = stats.compute_landcover_statistics_on_std_dems(std_dems_dir.glob("*.tif"), config.references_data_mapping, config.max_workers)
 
     for (site, dataset), group in landcover_df.groupby(["site", "dataset"]):
-        sub_dir = plot_dir / f"{site}_{dataset}"
-        viz.generate_landcover_grouped_boxplot(group, sub_dir / "landcover_grouped_boxplot.png", f"({site} {dataset}) Boxplot of Altitude difference with ref DEM by code/landcover")
-        viz.generate_landcover_nmad(group, sub_dir / "landcover_nmad.png", f"({site} {dataset}) NMAD of Altitude difference with ref DEM by code/landcover")
+        sub_dir = config.plot_dir / f"{site}_{dataset}"
+        group_inputs = ddem_files_by_group.get((site, dataset))
+        viz.generate_landcover_grouped_boxplot(group, sub_dir / "landcover_grouped_boxplot.png", f"({site} {dataset}) Boxplot of Altitude difference with ref DEM by code/landcover",
+                                               overwrite=config.overwrite_plots, inputs=group_inputs)
+        viz.generate_landcover_nmad(group, sub_dir / "landcover_nmad.png", f"({site} {dataset}) NMAD of Altitude difference with ref DEM by code/landcover",
+                                    overwrite=config.overwrite_plots, inputs=group_inputs)
 
-    viz.generate_landcover_grouped_boxplot_from_std_dems(std_lc_df, plot_dir / "landcover_boxplot_from_std_dems.png")
+    std_dem_files = list(std_dems_dir.glob("*.tif"))
+    viz.generate_landcover_grouped_boxplot_from_std_dems(std_lc_df, config.plot_dir / "landcover_boxplot_from_std_dems.png",
+                                                         overwrite=config.overwrite_plots, inputs=std_dem_files)
 
 
 #######################################################################################################################
