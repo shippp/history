@@ -16,6 +16,7 @@ dependencies:
   - pdal
   - plotly  # For Sankey diagram
   - gdown
+  - click
   - pip
   - pip :
     - usgsxplore

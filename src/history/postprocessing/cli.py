@@ -24,15 +24,21 @@ Two subcommands are available:
                 STD DEMs.
     all         Run all steps in the order listed above.
 
+``history-postprocess status --config <path/to/config.toml>``
+    Print a quick file-count overview of every processing directory, to see at
+    a glance how far the pipeline has progressed.
+
 Verbosity is controlled with ``-v`` (INFO) or ``-vv`` (DEBUG).
 """
 
-import argparse
 import dataclasses
 import logging
 import shutil
 import sys
 from pathlib import Path
+
+import click
+
 from history.postprocessing.config import Config
 from history.postprocessing.pipeline import report_symlinks
 
@@ -75,21 +81,28 @@ def _configure_logging(verbosity: int) -> None:
     logging.getLogger("history.postprocessing.cli").setLevel(logging.INFO)
 
 
-def _load_config(args: argparse.Namespace) -> Config:
+def _load_config(
+    config_path: Path,
+    overwrite: bool,
+    overwrite_plots: bool,
+    dry_run: bool,
+    no_plots: bool,
+    max_workers: int | None,
+) -> Config:
     """Load ``Config`` from the TOML file and apply any CLI flag overrides."""
-    config = Config.from_toml_file(Path(args.config))
+    config = Config.from_toml_file(config_path)
 
     overrides = {}
-    if args.overwrite:
+    if overwrite:
         overrides["overwrite"] = True
-    if args.overwrite_plots:
+    if overwrite_plots:
         overrides["overwrite_plots"] = True
-    if args.dry_run:
+    if dry_run:
         overrides["dry_run"] = True
-    if args.no_plots:
+    if no_plots:
         overrides["no_plots"] = True
-    if args.max_workers is not None:
-        overrides["max_workers"] = args.max_workers
+    if max_workers is not None:
+        overrides["max_workers"] = max_workers
 
     if overrides:
         config = dataclasses.replace(config, **overrides)
@@ -97,15 +110,20 @@ def _load_config(args: argparse.Namespace) -> Config:
     return config
 
 
-def cmd_create(args: argparse.Namespace) -> None:
-    """
-    Scaffold a new post-processing working directory.
+@click.group()
+def cli() -> None:
+    """Postprocessing."""
 
-    Creates ``output_dir`` and copies the config template into it as
+
+@cli.command("create")
+@click.argument("output_dir", type=click.Path(path_type=Path))
+def cmd_create(output_dir: Path) -> None:
+    """Initialize a new postprocessing directory.
+
+    Creates OUTPUT_DIR and copies the config template into it as
     ``config.toml``. The user must then edit that file to set the correct
     paths before running any pipeline step.
     """
-    output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     dest = output_dir / "config.toml"
@@ -114,6 +132,44 @@ def cmd_create(args: argparse.Namespace) -> None:
     print(f"Created '{output_dir}'")
     print(f"Config template copied to '{dest}'")
     print("Edit config.toml to point to your data before running the pipeline.")
+
+
+def _count(directory: Path, pattern: str = "*", kind: str = "file") -> int:
+    """Count entries of *kind* ('file' or 'dir') matching *pattern* in *directory*, or 0 if it doesn't exist."""
+    if not directory.exists():
+        return 0
+    is_match = Path.is_file if kind == "file" else Path.is_dir
+    return sum(1 for p in directory.glob(pattern) if is_match(p))
+
+
+@cli.command("status")
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Path to config.toml")
+def cmd_status(config_path: Path) -> None:
+    """Print a quick file-count overview of the processing directory tree."""
+    config = Config.from_toml_file(config_path)
+    proc_dir = config.proc_dir
+
+    rows = [
+        ("raw archives", config.raw_dir, "*", "file"),
+        ("extracted submissions", config.extracted_dir, "*", "dir"),
+        ("symlinks/dense_pointclouds", proc_dir.symlinks_dir / "dense_pointclouds", "*", "file"),
+        ("symlinks/sparse_pointclouds", proc_dir.symlinks_dir / "sparse_pointclouds", "*", "file"),
+        ("symlinks/extrinsics", proc_dir.symlinks_dir / "extrinsics", "*", "file"),
+        ("symlinks/intrinsics", proc_dir.symlinks_dir / "intrinsics", "*", "file"),
+        ("symlinks/dems", proc_dir.symlinks_dir / "dems", "*", "file"),
+        ("raw_dems", proc_dir.raw_dems_dir, "*-DEM.tif", "file"),
+        ("coregistered_dems", proc_dir.coreg_dems_dir, "*-DEM.tif", "file"),
+        ("ddems/before_coregistration", proc_dir.before_coreg_ddems_dir, "*-DDEM.tif", "file"),
+        ("ddems/after_coregistration", proc_dir.after_coreg_ddems_dir, "*-DDEM.tif", "file"),
+        ("std_dems", proc_dir.std_dems_dir, "*.tif", "file"),
+        ("plots", config.plot_dir, "**/*.png", "file"),
+    ]
+
+    label_width = max(len(label) for label, _, _, _ in rows)
+    print(f"Status for '{config_path}'")
+    for label, directory, pattern, kind in rows:
+        count = _count(directory, pattern, kind)
+        print(f"  {label.ljust(label_width)} : {count}")
 
 
 def _run_uncompress(config: Config) -> None:
@@ -263,6 +319,7 @@ def _run_landcover(config: Config) -> None:
 
     logger.info("Step `landcover` finished")
 
+
 def _run_generate_pdf(config: Config) -> None:
     """Assemble all pipeline output PNGs into a single PDF report."""
     from history.postprocessing.pdf_report import generate_pdf_report
@@ -289,17 +346,32 @@ _STEP_RUNNERS = {
 }
 
 
-def cmd_run(args: argparse.Namespace) -> None:
-    """
-    Execute one or all post-processing pipeline steps.
+@cli.command("run")
+@click.argument("step", type=click.Choice(RUN_STEPS))
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Path to config.toml")
+@click.option("--overwrite", is_flag=True, default=False, help="Force recompute of existing data outputs (overrides config)")
+@click.option("--overwrite-plots", "overwrite_plots", is_flag=True, default=False, help="Force regeneration of existing plots (overrides config)")
+@click.option("--dry-run", "dry_run", is_flag=True, default=False, help="Print actions without executing them (overrides config)")
+@click.option("--no-plots", "no_plots", is_flag=True, default=False, help="Skip plot generation for this step")
+@click.option("--max-workers", "max_workers", type=int, default=None, help="Number of parallel workers (overrides config)")
+@click.option("-v", "--verbose", "verbose", count=True, help="Increase verbosity (-v INFO, -vv DEBUG)")
+def cmd_run(
+    step: str,
+    config_path: Path,
+    overwrite: bool,
+    overwrite_plots: bool,
+    dry_run: bool,
+    no_plots: bool,
+    max_workers: int | None,
+    verbose: int,
+) -> None:
+    """Run one or more postprocessing steps.
 
-    Loads the config from the TOML file specified by ``--config``, applies any
-    CLI flag overrides, then dispatches to the appropriate step runner(s).
-    When ``step`` is ``"all"``, every step in ``_STEP_RUNNERS`` is executed in
-    insertion order.
+    STEP is one of: uncompress, symlinks, check_planned, point2dem, coregister,
+    ddem, std_dem, landcover, generate_pdf, all.
     """
-    config = _load_config(args)
-    step = args.step
+    _configure_logging(verbose)
+    config = _load_config(config_path, overwrite, overwrite_plots, dry_run, no_plots, max_workers)
 
     if step == "all":
         for name, runner in _STEP_RUNNERS.items():
@@ -311,52 +383,9 @@ def cmd_run(args: argparse.Namespace) -> None:
         _STEP_RUNNERS[step](config)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """
-    Build and return the argument parser for the ``history-postprocess`` CLI.
-
-    Returns
-    -------
-    argparse.ArgumentParser
-        Parser with two subcommands: ``create`` and ``run``.
-    """
-    parser = argparse.ArgumentParser(prog="history-postprocess", description="Postprocessing")
-
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    # --- create ---
-    create_parser = subparsers.add_parser("create", help="Initialize a new postprocessing directory")
-    create_parser.add_argument("output_dir", help="Directory to create")
-    create_parser.set_defaults(func=cmd_create)
-
-    # --- run ---
-    run_parser = subparsers.add_parser("run", help="Run one or more postprocessing steps")
-    run_parser.add_argument("step", choices=RUN_STEPS, metavar="STEP",
-                            help=f"Step to run: {{{', '.join(RUN_STEPS)}}}")
-    run_parser.add_argument("--config", required=True, metavar="PATH", help="Path to config.toml")
-    run_parser.add_argument("--overwrite", action="store_true", default=False,
-                            help="Force recompute of existing data outputs (overrides config)")
-    run_parser.add_argument("--overwrite-plots", action="store_true", default=False, dest="overwrite_plots",
-                            help="Force regeneration of existing plots (overrides config)")
-    run_parser.add_argument("--dry-run", action="store_true", default=False, dest="dry_run",
-                            help="Print actions without executing them (overrides config)")
-    run_parser.add_argument("--no-plots", action="store_true", default=False, dest="no_plots",
-                            help="Skip plot generation for this step")
-    run_parser.add_argument("--max-workers", type=int, default=None, metavar="N", dest="max_workers",
-                            help="Number of parallel workers (overrides config)")
-    run_parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (-v INFO, -vv DEBUG)")
-
-    run_parser.set_defaults(func=cmd_run)
-
-    return parser
-
-
 def main() -> None:
     """Entry point for the ``history-postprocess`` command."""
-    parser = build_parser()
-    args = parser.parse_args()
-    _configure_logging(args.verbose)
-    args.func(args)
+    cli()
 
 
 if __name__ == "__main__":

@@ -37,7 +37,7 @@ Line length is 120 (`[tool.ruff]` in `pyproject.toml`). There are no automated t
 
 ## CLI Entry Point
 
-After `pip install -e .`, the `history-postprocess` command is available in the active environment. It exposes two subcommands.
+After `pip install -e .`, the `history-postprocess` command is available in the active environment. It exposes three subcommands.
 
 ### `history-postprocess create <output_dir>`
 
@@ -81,6 +81,10 @@ Available steps (executed in this order when using `all`):
 | `--no-plots` | Skip plot generation for this step |
 | `--max-workers N` | Number of parallel worker threads |
 | `-v` / `-vv` | Increase verbosity (INFO / DEBUG) |
+
+### `history-postprocess status --config <path/to/config.toml>`
+
+Prints a quick file-count overview of the processing directory tree (extracted submissions, each symlink type, raw/coregistered DEMs, dDEMs before/after coregistration, STD DEMs, plots), so progress can be checked at a glance without running any step.
 
 ## Scripts
 

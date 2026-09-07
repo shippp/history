@@ -42,7 +42,7 @@ For more details on how the Historical Image Dataset was prepared, see this [REA
 The goal of the Post-Processing workflow is to compare, evaluate, and analyse the outcomes of the stereo reconstruction submissions.  
 It takes all user submissions as input, validates and organizes them, and then processes the data to generate a comprehensive set of analytical figures, statistical summaries, and cross-comparisons between methods and configurations.
 
-The `history-postprocess` CLI (available after `pip install -e .`) drives the full pipeline through two subcommands.
+The `history-postprocess` CLI (available after `pip install -e .`) drives the full pipeline through three subcommands.
 
 **1. Scaffold a working directory**
 
@@ -72,6 +72,14 @@ The pipeline runs the following steps in order:
 | `landcover` | Compute and plot landcover-stratified statistics |
 
 Each step can also be run individually (e.g. `history-postprocess run point2dem --config …`). Use `--overwrite` to recompute existing outputs, `--no-plots` to skip figures, and `-v`/`-vv` to increase log verbosity.
+
+**3. Check progress**
+
+```bash
+history-postprocess status --config my_run/config.toml
+```
+
+Prints a quick file-count overview of every processing directory (extracted submissions, symlinks, raw/coregistered DEMs, dDEMs, STD DEMs, plots), to see at a glance how far the pipeline has progressed.
 
 For more details on the Post-Processing workflow, see this [README](notebooks/postprocessing/README.md).
 
