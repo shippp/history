@@ -236,7 +236,7 @@ def check_planned_submissions(
 
 
 def plot_planned_submissions(config: Config, planned_outfile: str | Path) -> None:
-    """Generate a Sankey diagram of planned submissions by dataset, georef strategy, MTP adjustments, and software."""
+    """Generate a Sankey diagram of planned submissions by software, dataset, and georef strategy."""
     planned_outfile = Path(planned_outfile)
     output_path = config.plot_dir / "planned_submissions_sankey.png"
     if not config.overwrite_plots and is_output_up_to_date(planned_outfile, output_path):
@@ -247,8 +247,9 @@ def plot_planned_submissions(config: Config, planned_outfile: str | Path) -> Non
     sankey.save_sankey(
         planned_outfile,
         output_path,
-        columns=["dataset", "georef", "mtp_adjustments", "software"],
-        columns_label=["Dataset", "Georef strategy", "MTP adjustments", "Software"],
+        columns=["software", "dataset", "georef"],
+        columns_label=["Software", "Dataset", "Georef strategy"],
+        force_color={"georef": sankey.light_grey},
         title="Planned Submissions",
     )
     logger.info(f"Updated planned submissions saved to {planned_outfile}.")
