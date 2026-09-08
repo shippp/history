@@ -19,6 +19,7 @@ All I/O operations rely on ``geoutils``, ``rasterio``, ``laspy``, and related ge
 libraries, ensuring consistent handling of CRS, raster grids, and metadata.
 """
 
+from collections import defaultdict
 import json
 import logging
 import shutil
@@ -351,6 +352,33 @@ def process_pointclouds_to_dems(
             for f in found_files:
                 print(f)
 
+
+def generate_provided_dem_viz(config: Config) -> None:
+    """Plot a mosaic of user-provided DEMs against the reference DEM, grouped by (site, dataset)."""
+    input_dir = config.proc_dir.symlinks_dir / "dems"
+
+    files = list(input_dir.glob("*.tif"))
+    logger.info(f"Found {len(files)} provided DEM(s) to plot in {input_dir}")
+
+    # group all DEMs per site, dataset
+    grouped_files: dict[tuple[str, str], dict[str, Path]] = defaultdict(dict)
+    for f in files:
+        code, metadatas = parse_filename(f)
+        grouped_files[(metadatas["site"], metadatas["dataset"])][code] = f
+
+    # create a mosaic for each group
+    for (site, dataset), dem_files_dict in grouped_files.items():
+        logger.debug(f"Plotting provided DEMs mosaic **** {site} - {dataset} **** ({len(dem_files_dict)} files)")
+        ref_dem_path = config.references_data_mapping.get_ref_dem(site, dataset)
+        output_path = config.plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_provided_ddem.png"
+
+        viz.generate_provided_dems_mosaic(
+            dem_files_dict,
+            ref_dem_path,
+            output_path,
+            title=f"({site} {dataset}) Mosaic of provided DEM(s) \n altitude difference vs reference DEM",
+            overwrite=config.overwrite_plots
+        )
 
 def add_provided_dems(
     dem_files: list[str | Path],

@@ -65,11 +65,14 @@ Available steps (executed in this order when using `all`):
 |---|---|
 | `uncompress` | Extract compressed submission archives into `extracted_dir` |
 | `symlinks` | Parse filenames and create typed symlink directories |
+| `check_planned` | Check extracted submissions against the planned submissions sheet |
+| `provid_dem` | Plot a mosaic of user-provided DEMs (from `symlinks/dems`) vs. the reference DEM, grouped by (site, dataset) |
 | `point2dem` | Convert dense point clouds to DEMs via PDAL; integrate user-provided DEMs |
 | `coregister` | Coregister raw DEMs to the reference (Nuth–Kaab + vertical shift) |
 | `ddem` | Compute differential DEMs before and after coregistration |
 | `std_dem` | Build one STD DEM per (site, dataset) group from all coregistered DEMs |
 | `landcover` | Compute and plot landcover-stratified statistics on dDEMs and STD DEMs |
+| `generate_pdf` | Assemble all pipeline output PNGs into a single PDF report |
 | `all` | Run all steps above in order |
 
 **Common flags** (override the config file values):
@@ -104,7 +107,7 @@ python scripts/check_submissions.py test
 
 - **`postprocessing/cli.py`** – `history-postprocess` entry point. Two subcommands: `create` (scaffold a directory with `config.toml`) and `run` (dispatch one or all pipeline steps). CLI flags override config-file values.
 - **`postprocessing/config.py`** – `Config` and `ProcConfig` dataclasses. `Config.from_toml_file` loads the TOML config; `ProcConfig.from_base_dir` derives the full processing directory layout from a single root path.
-- **`postprocessing/pipeline.py`** – core batch-processing logic: archive extraction, symlink creation, point-cloud→DEM conversion (via PDAL subprocess), DEM coregistration (Nuth–Kaab + vertical shift using `xdem`), dDEM generation, STD DEM computation. Each main step has a matching `plot_*` function. Supports parallel execution via `ThreadPoolExecutor`; errors are logged without stopping batch runs.
+- **`postprocessing/pipeline.py`** – core batch-processing logic: archive extraction, symlink creation, point-cloud→DEM conversion (via PDAL subprocess), DEM coregistration (Nuth–Kaab + vertical shift using `xdem`), dDEM generation, STD DEM computation, user-provided DEM visualization (`generate_provided_dem_viz`). Each main step has a matching `plot_*` function. Supports parallel execution via `ThreadPoolExecutor`; errors are logged without stopping batch runs.
 - **`postprocessing/io.py`** – filename parsing (`parse_filename`), `ReferencesData` loader, and several helper functions used in notebooks: `analyze_submissions`, `combine_intrinsics_files`, `combine_extrinsics_files`, `filter_experiment_data`, `mirror_as_symlinks`, `get_filepaths_df`. Defines `FILE_CODE_MAPPING` and `FILENAME_PATTERN` for the submission naming convention.
 - **`postprocessing/statistics.py`** – statistics on DEMs and point clouds: basic raster stats, coregistration shifts, landcover-stratified dDEM statistics.
 - **`postprocessing/visualization.py`** – figure generation for all pipeline steps (mosaics, barplots, shift scatter plots, landcover boxplots, STD DEM maps).

@@ -338,6 +338,46 @@ def generate_std_dem_plots(dem_path: str | Path, output_path: str | Path, overwr
     fig.savefig(output_path)
 
 
+def generate_provided_dems_mosaic(
+    dem_files_dict: dict[str, Path],
+    ref_dem_path: Path,
+    output_path: Path,
+    title: str = "",
+    overwrite: bool = False,
+    vmin: float = -10,
+    vmax: float = 10
+) -> None:
+    """Plot a mosaic of elevation differences between each provided DEM and the reference DEM."""
+    if not overwrite and is_output_up_to_date([*dem_files_dict.values()], output_path):
+        logger.debug(f"File {output_path} is up to date -> skipping.")
+        return
+
+    import geoutils as gu
+
+    ref_dem = gu.Raster(ref_dem_path)
+
+    with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
+        for i, (code, file) in enumerate(dem_files_dict.items()):
+            try:
+                dem = gu.Raster(file).reproject(ref_dem)
+
+                ddem = ref_dem - dem
+
+                axes[i].imshow(ddem.data, cmap="coolwarm", vmin=vmin, vmax=vmax, interpolation="bilinear")
+
+                axes[i].set_aspect("equal")
+                axes[i].set_title(code)
+            except Exception as e:
+                logger.error(f"Issure plotting provided DEM {file} : {e}")
+                continue
+        cbar = fig.colorbar(
+            ScalarMappable(cmap="coolwarm", norm=plt.Normalize(vmin=vmin, vmax=vmax)),
+            ax=axes,
+            orientation="vertical",
+        ) 
+        cbar.set_label("Elevation difference (m)")
+        fig.suptitle(title, fontsize=16)
+
 #######################################################################################################################
 ##                                                  STATISTICS VISUALIZATION
 #######################################################################################################################

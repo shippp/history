@@ -65,11 +65,13 @@ The pipeline runs the following steps in order:
 | `uncompress` | Extract compressed submission archives |
 | `symlinks` | Parse filenames and create typed symlink directories |
 | `check_planned` | Check extracted experiments against planned experiment |
+| `provid_dem` | Plot a mosaic of user-provided DEMs against the reference DEM |
 | `point2dem` | Convert dense point clouds to DEMs via PDAL |
 | `coregister` | Coregister DEMs to the reference (Nuth–Kaab + vertical shift) |
 | `ddem` | Compute differential DEMs before and after coregistration |
 | `std_dem` | Build one standard-deviation DEM per (site, dataset) group |
 | `landcover` | Compute and plot landcover-stratified statistics |
+| `generate_pdf` | Assemble all output plots into a single PDF report |
 
 Each step can also be run individually (e.g. `history-postprocess run point2dem --config …`). Use `--overwrite` to recompute existing outputs, `--no-plots` to skip figures, and `-v`/`-vv` to increase log verbosity.
 
