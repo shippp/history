@@ -104,7 +104,6 @@ def build_nodes(
     n_cols = len(columns)
     node_colors: List[str] = []
     for i, label in enumerate(labels):
-        print(label)
         col_idx = label_to_col[label]
 
         if edge_color is not None:
