@@ -1,7 +1,14 @@
+import logging
+from pathlib import Path
+from typing import List, Tuple, Dict, Optional
+
 import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
-from typing import List, Tuple, Dict, Optional
+
+from history.postprocessing import io
+
+logger = logging.getLogger(__name__)
 
 
 # ---------- Utilities ----------
@@ -46,9 +53,13 @@ palette_custom = [
     "#4C78A8", "#F58518", "#E45756", "#72B7B2",
     "#54A24B", "#EECA3B", "#B279A2", "#FF9DA6"
 ]
+software_dataset_palette = [
+    "#d62728","#ff9896","#9467bd","#c5b0d5","#17becf","#9edae5","#bcbd22","#dbdb8d",
+    "#ff7f0e", "#1f77b4","#2ca02c"
+]
 
 light_grey = "#B0B0B0"
-        
+
 # ---------- Core builders ----------
 
 def build_nodes(
@@ -93,7 +104,6 @@ def build_nodes(
     n_cols = len(columns)
     node_colors: List[str] = []
     for i, label in enumerate(labels):
-        print(label)
         col_idx = label_to_col[label]
 
         if edge_color is not None:
@@ -173,13 +183,13 @@ def compute_nodes_totals(
     """
     totals_in = [0] * n_nodes
     totals_out = [0] * n_nodes
-    
+
     for s, t, v in zip(source, target, value):
         totals_out[s] += v
         totals_in[t] += v
 
     totals = np.maximum(totals_in, totals_out)
-    
+
     return totals
 
 
@@ -283,7 +293,7 @@ def build_sankey_figure(
 
 def show_palette(palette, width=0.5):
     """
-    A small utility function to display a HEX palette with plotly 
+    A small utility function to display a HEX palette with plotly
     """
     fig = go.Figure()
 
@@ -354,11 +364,11 @@ def dataframe_to_sankey(
     """
     if palette is None:
         # Defaults to Seaborn colorblind palette, with gray removed, for edges only
-        palette = colorblind_nogrey
+        palette = software_dataset_palette
 
     df_clean = df[columns].dropna()
     labels, label_dict, node_colors = build_nodes(
-        df_clean, 
+        df_clean,
         columns,
         palette,
         edge_color=edge_color,
@@ -390,14 +400,44 @@ def dataframe_to_sankey(
 
     return fig
 
-if __name__ == "__main__":
-    
-    df = pd.read_csv("test_file.csv")
 
-    fig = dataframe_to_sankey(
-        df,
+# ---------- Pipeline integration ----------
+
+def load_submissions_df(raw_csv: str | Path) -> pd.DataFrame:
+    """Load a raw submissions CSV and expand its submission codes into metadata columns."""
+    df = pd.read_csv(raw_csv)
+
+    metadata_rows = []
+    for code in df["Submission code"]:
+        try:
+            _, metadata = io.parse_filename(code)
+        except io.FilenameParseError as e:
+            logger.warning(f"Skipping unparsable submission code '{code}': {e}")
+            metadata = {}
+        metadata_rows.append(metadata)
+
+    df = df.join(pd.DataFrame(metadata_rows, index=df.index))
+    df["software"] = df["Stereo software"]
+    return df
+
+
+def save_sankey(raw_csv: str | Path, output_png: str | Path, columns: List[str], **kwargs) -> go.Figure:
+    """
+    Build a Sankey diagram from a raw submissions CSV and save it to a PNG file.
+
+    Loads `raw_csv`, expands submission codes into metadata columns, then delegates
+    to `dataframe_to_sankey`. Extra keyword arguments are forwarded to it.
+    """
+    df = load_submissions_df(raw_csv)
+    return dataframe_to_sankey(df, columns=columns, output_file=output_png, **kwargs)
+
+
+if __name__ == "__main__":
+
+    fig = save_sankey(
+        "test_file.csv",
+        "sankey_diagram3.png",
         columns=["dataset", "georef", "mtp_adjustment", "software"],
-        output_file="sankey_diagram3.png",
         title="Sankey diagram"
     )
 

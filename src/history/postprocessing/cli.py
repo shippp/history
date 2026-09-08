@@ -202,11 +202,14 @@ def _run_symlinks(config: Config) -> None:
 def _run_check_planned(config: Config) -> None:
     """Check extracted results against planned submissions sheet."""
     from history.postprocessing import io
-    from history.postprocessing.pipeline import check_planned_submissions
+    from history.postprocessing.pipeline import check_planned_submissions, plot_planned_submissions
 
     df = io.scan_submissions(config.extracted_dir, filename_renames=config.filename_renames)
     planned_outfile = config.proc_dir.base_dir / "planned_submissions.csv"
     check_planned_submissions(df.index.tolist(), planned_outfile)
+
+    if not config.no_plots:
+        plot_planned_submissions(config, planned_outfile)
 
 
 def _run_point2dem(config: Config) -> None:

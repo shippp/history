@@ -205,15 +205,18 @@ def generate_pdf_report(
         # 1. Summary page (generated programmatically from scan_submissions) ──
         _build_summary_page(pdf, df)
 
-        # 2. Submissions presence map + file sizes
+        # 2. Sankey diagram of planned submissions
+        _add_png_page(pdf, plot_dir / "planned_submissions_sankey.png", orientation)
+
+        # 3. Submissions presence map + file sizes
         _add_png_page(pdf, plot_dir / "files_presence_map.png", orientation)
         _add_png_page(pdf, plot_dir / "submissions_file_sizes.png", orientation)
 
-        # 3. Global plots
+        # 4. Global plots
         _add_png_page(pdf, plot_dir / "pointcloud_point_count.png", orientation)
         _add_png_page(pdf, plot_dir / "nmad_after_coregistration.png", orientation)
 
-        # 4. Per-(site, dataset) sections
+        # 5. Per-(site, dataset) sections
         for site, dataset in _SITE_DATASET_PAIRS:
             sub_dir = plot_dir / f"{site}_{dataset}"
             _add_section_title_page(pdf, f"{_SITE_DISPLAY[site]}  —  {_DATASET_DISPLAY[dataset]}")
