@@ -746,6 +746,7 @@ def create_std_dems(
             logger.warning(f"Cannot parse filename for std_dem grouping: {file.name}")
 
     for (site, dataset), files in groups.items():
+        logger.info(f"Creating std DEM for {site} / {dataset}")
         output_path = output_dir / f"{site}_{dataset}_std_dem.tif"
         create_std_dem(dem_files=files, output_path=output_path, overwrite=overwrite)
 
