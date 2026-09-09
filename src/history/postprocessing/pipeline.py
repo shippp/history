@@ -246,30 +246,37 @@ def save_pointcloud_diff(pointcloud_path: Path, ref_dem: gu.Raster, output_path:
     pc_diff.to_las(str(output_path))
 
 def generate_pointcloud_diff(
-    pointcloud_files: list[Path],
+    pointcloud_files: dict[str, Path],
     ref_dem: gu.Raster,
     output_dir: Path,
     overwrite: bool = False,
-) -> None:
+) -> dict[str, Path]:
     """Cache, for each point cloud, a copy whose Z values hold the elevation difference with ``ref_dem``.
 
     Outputs are cached LAS files under ``output_dir``, one per input file, skipped when already up to date.
+
+    Returns:
+        Mapping from code to output path, for the files successfully cached.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    for f in tqdm(pointcloud_files, desc="Point cloud diff"):
+    diff_files: dict[str, Path] = {}
+    for code, f in tqdm(pointcloud_files.items(), desc="Point cloud diff"):
         output_path = output_dir / f.name
 
         if not overwrite and is_output_up_to_date(f, output_path):
             logger.debug(f"File {output_path} is up to date -> skipping.")
+            diff_files[code] = output_path
             continue
 
         try:
-            logger.info(f"Processing {f.name}")
             save_pointcloud_diff(f, ref_dem, output_path)
+            diff_files[code] = output_path
         except Exception as e:
             logger.error(f"Error computing point cloud diff for {f.name}: {e}")
             continue
+
+    return diff_files
 
 
 def generate_sparse_pointcloud_viz(config: Config) -> None:
@@ -294,14 +301,9 @@ def generate_sparse_pointcloud_viz(config: Config) -> None:
         ref_dem_path = config.references_data_mapping.get_ref_dem(site, dataset)
         ref_dem = gu.Raster(ref_dem_path)
 
-        generate_pointcloud_diff(list(pc_files_dict.values()), ref_dem, config.proc_dir.cache.pc_diff_dir, config.overwrite)
-
-        # skip codes whose diff failed to generate (e.g. missing/broken source symlink)
-        diff_files_dict = {}
-        for code, f in pc_files_dict.items():
-            diff_path = config.proc_dir.cache.pc_diff_dir / f.name
-            if diff_path.exists():
-                diff_files_dict[code] = diff_path
+        diff_files_dict = generate_pointcloud_diff(
+            pc_files_dict, ref_dem, config.proc_dir.cache.pc_diff_dir, config.overwrite
+        )
         output_path = config.plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_sparse_pointcloud_diff.png"
 
         viz.generate_sparse_pointclouds_mosaic(

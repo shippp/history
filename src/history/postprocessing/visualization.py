@@ -17,7 +17,6 @@ from matplotlib.colors import LightSource
 from matplotlib.figure import Figure
 from matplotlib.patches import Patch
 from rasterio.enums import Resampling
-from tqdm import tqdm
 
 from history.postprocessing.io import is_output_up_to_date, parse_filename
 
@@ -364,8 +363,10 @@ def generate_sparse_pointclouds_mosaic(
     # local import: keeps laspy out of this module's top-level imports.
     import laspy
 
+    logger.info(f"Generating mosaic of sparse point clouds with {len(diff_files_dict)} input files...")
+
     with _generate_mosaic_figure_and_axes(len(diff_files_dict), output_path) as (fig, axes):
-        for i, (code, file) in enumerate(tqdm(sorted(diff_files_dict.items()), desc="Sparse point cloud mosaic")):
+        for i, (code, file) in enumerate(sorted(diff_files_dict.items())):
             try:
                 las = laspy.read(file)
                 x, y, dz = np.asarray(las.x), np.asarray(las.y), np.asarray(las.z)
