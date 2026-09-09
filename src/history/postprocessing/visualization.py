@@ -17,6 +17,7 @@ from matplotlib.colors import LightSource
 from matplotlib.figure import Figure
 from matplotlib.patches import Patch
 from rasterio.enums import Resampling
+from tqdm import tqdm
 
 from history.postprocessing.io import is_output_up_to_date, parse_filename
 
@@ -339,8 +340,7 @@ def generate_std_dem_plots(dem_path: str | Path, output_path: str | Path, overwr
 
 
 def generate_sparse_pointclouds_mosaic(
-    pc_files_dict: dict[str, str | Path],
-    ref_dem_path: str | Path,
+    diff_files_dict: dict[str, str | Path],
     output_path: str | Path,
     title: str = "",
     overwrite: bool = False,
@@ -351,25 +351,24 @@ def generate_sparse_pointclouds_mosaic(
     Generate a mosaic of sparse point clouds, each colored by its elevation difference with a
     reference DEM.
 
-    One subplot is created per point cloud, computed and drawn one at a time (rather than
-    precomputing all point clouds' data upfront) to keep memory usage low regardless of how
-    many point clouds are in the mosaic.
+    ``diff_files_dict`` maps each code to a point cloud diff file (as produced by
+    ``pipeline.generate_pointcloud_diff``), whose Z values already hold the elevation
+    difference with the reference DEM. One subplot is created per point cloud, computed and
+    drawn one at a time (rather than precomputing all point clouds' data upfront) to keep
+    memory usage low regardless of how many point clouds are in the mosaic.
     """
-    if not overwrite and is_output_up_to_date([*pc_files_dict.values(), ref_dem_path], output_path):
+    if not overwrite and is_output_up_to_date(list(diff_files_dict.values()), output_path):
         logger.debug(f"File {output_path} is up to date -> skipping.")
         return
 
-    # local imports: avoids a circular import (pipeline.py imports this module) and keeps
-    # the geospatial dependencies out of this module's top-level imports.
-    import geoutils as gu
-    from history.postprocessing.pipeline import compute_pointcloud_diff
+    # local import: keeps laspy out of this module's top-level imports.
+    import laspy
 
-    ref_dem = gu.Raster(ref_dem_path)
-
-    with _generate_mosaic_figure_and_axes(len(pc_files_dict), output_path) as (fig, axes):
-        for i, (code, file) in enumerate(sorted(pc_files_dict.items())):
+    with _generate_mosaic_figure_and_axes(len(diff_files_dict), output_path) as (fig, axes):
+        for i, (code, file) in enumerate(tqdm(sorted(diff_files_dict.items()), desc="Sparse point cloud mosaic")):
             try:
-                x, y, dz = compute_pointcloud_diff(file, ref_dem)
+                las = laspy.read(file)
+                x, y, dz = np.asarray(las.x), np.asarray(las.y), np.asarray(las.z)
                 axes[i].scatter(x, y, c=dz, s=1, cmap="coolwarm", vmin=vmin, vmax=vmax)
                 axes[i].set_aspect("equal")
                 axes[i].set_title(code)
