@@ -37,15 +37,14 @@ Two subcommands are available:
 Verbosity is controlled with ``-v`` (INFO) or ``-vv`` (DEBUG).
 """
 
-import dataclasses
 import logging
 import shutil
-import sys
 from pathlib import Path
 
 import click
 
-from history.postprocessing.config import Config
+from history.cli_common import configure_logging, load_config
+from history.config import Config
 from history.postprocessing.pipeline import generate_sparse_pointcloud_viz, report_symlinks
 
 logger = logging.getLogger(__name__)
@@ -53,66 +52,6 @@ logger = logging.getLogger(__name__)
 _TEMPLATE_CONFIG = Path(__file__).parent / "config.exemple.toml"
 
 RUN_STEPS = ["uncompress", "symlinks", "check_planned", "sparse_viz", "provided_dem", "point2dem", "coregister", "ddem", "std_dem", "landcover", "generate_pdf", "all"]
-
-def _configure_logging(verbosity: int) -> None:
-    """Set the ``history`` logger level based on the ``-v`` / ``-vv`` count."""
-    import os
-
-    level = {0: logging.WARNING, 1: logging.INFO, 2: logging.DEBUG}.get(verbosity, logging.DEBUG)
-    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
-
-    stdout_handler = logging.StreamHandler(sys.stdout)
-    stdout_handler.setFormatter(fmt)
-
-    root = logging.getLogger()
-    root.addHandler(stdout_handler)
-
-    # Only add a separate stderr handler when stdout and stderr go to different places (e.g. Slurm).
-    # In an interactive terminal both point to the same fd, which would cause duplicates.
-    try:
-        stdout_stderr_differ = os.fstat(sys.stdout.fileno()) != os.fstat(sys.stderr.fileno())
-    except Exception:
-        stdout_stderr_differ = False
-
-    if stdout_stderr_differ:
-        stderr_handler = logging.StreamHandler(sys.stderr)
-        stderr_handler.setFormatter(fmt)
-        stderr_handler.setLevel(logging.WARNING)
-        root.addHandler(stderr_handler)
-
-    logging.getLogger("history").setLevel(level)
-
-    # Always print high level info for CLI steps (start, finish), regardless of verbose option.
-    logging.getLogger("history.postprocessing.cli").setLevel(logging.INFO)
-
-
-def _load_config(
-    config_path: Path,
-    overwrite: bool,
-    overwrite_plots: bool,
-    dry_run: bool,
-    no_plots: bool,
-    max_workers: int | None,
-) -> Config:
-    """Load ``Config`` from the TOML file and apply any CLI flag overrides."""
-    config = Config.from_toml_file(config_path)
-
-    overrides = {}
-    if overwrite:
-        overrides["overwrite"] = True
-    if overwrite_plots:
-        overrides["overwrite_plots"] = True
-    if dry_run:
-        overrides["dry_run"] = True
-    if no_plots:
-        overrides["no_plots"] = True
-    if max_workers is not None:
-        overrides["max_workers"] = max_workers
-
-    if overrides:
-        config = dataclasses.replace(config, **overrides)
-
-    return config
 
 
 @click.group()
@@ -179,7 +118,7 @@ def cmd_status(config_path: Path) -> None:
 
 def _run_uncompress(config: Config) -> None:
     """Extract all compressed submission archives into the extracted directory."""
-    from history.postprocessing.pipeline import uncompress_all_submissions, cleanup_orphaned_extracted
+    from history.postprocessing.pipeline import cleanup_orphaned_extracted, uncompress_all_submissions
 
     cleanup_orphaned_extracted(config.raw_dir, config.extracted_dir)
     uncompress_all_submissions(
@@ -229,7 +168,12 @@ def _run_provided_dem(config: Config) -> None:
 
 def _run_point2dem(config: Config) -> None:
     """Convert dense point clouds to DEMs via PDAL, and integrate any user-provided DEMs."""
-    from history.postprocessing.pipeline import process_pointclouds_to_dems, add_provided_dems, plot_point2dem, cleanup_orphaned_raw_dems
+    from history.postprocessing.pipeline import (
+        add_provided_dems,
+        cleanup_orphaned_raw_dems,
+        plot_point2dem,
+        process_pointclouds_to_dems,
+    )
     from history.utils import log_to_file
 
     cleanup_orphaned_raw_dems(config.proc_dir.raw_dems_dir, config.proc_dir.symlinks_dir)
@@ -269,7 +213,7 @@ def _run_point2dem(config: Config) -> None:
 
 def _run_coregister(config: Config) -> None:
     """Coregister raw DEMs to the reference using Nuth–Kaab + vertical shift."""
-    from history.postprocessing.pipeline import coregister_dems, plot_coregistration, cleanup_orphaned_coreg_dems
+    from history.postprocessing.pipeline import cleanup_orphaned_coreg_dems, coregister_dems, plot_coregistration
 
     cleanup_orphaned_coreg_dems(config.proc_dir.coreg_dems_dir, config.proc_dir.raw_dems_dir)
 
@@ -288,7 +232,7 @@ def _run_coregister(config: Config) -> None:
 
 def _run_ddem(config: Config) -> None:
     """Compute differential DEMs against the reference, before and after coregistration."""
-    from history.postprocessing.pipeline import generate_ddems, plot_ddems, cleanup_orphaned_ddems
+    from history.postprocessing.pipeline import cleanup_orphaned_ddems, generate_ddems, plot_ddems
 
     cleanup_orphaned_ddems(config.proc_dir.before_coreg_ddems_dir, config.proc_dir.raw_dems_dir)
     cleanup_orphaned_ddems(config.proc_dir.after_coreg_ddems_dir, config.proc_dir.coreg_dems_dir)
@@ -390,8 +334,8 @@ def cmd_run(
     STEP is one of: uncompress, symlinks, check_planned, sparse_viz, provided_dem, point2dem,
     coregister, ddem, std_dem, landcover, generate_pdf, all.
     """
-    _configure_logging(verbose)
-    config = _load_config(config_path, overwrite, overwrite_plots, dry_run, no_plots, max_workers)
+    configure_logging(verbose, cli_logger_name=__name__)
+    config = load_config(config_path, overwrite, overwrite_plots, dry_run, no_plots, max_workers)
 
     if step == "all":
         for name, runner in _STEP_RUNNERS.items():

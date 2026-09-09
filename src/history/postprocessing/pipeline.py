@@ -32,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable
 import geoutils as gu
-from history.postprocessing.config import Config
+from history.config import Config
 import humanize
 import laspy
 import numpy as np
