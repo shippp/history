@@ -221,6 +221,7 @@ def generate_pdf_report(
             sub_dir = plot_dir / f"{site}_{dataset}"
             _add_section_title_page(pdf, f"{_SITE_DISPLAY[site]}  —  {_DATASET_DISPLAY[dataset]}")
 
+            _add_png_page(pdf, sub_dir / "mosaic" / "mosaic_sparse_pointcloud_diff.png", orientation)
             _add_png_page(pdf, sub_dir / "mosaic" / "mosaic_raw_dem.png", orientation)
             _add_png_page(pdf, sub_dir / "mosaic" / "mosaic_ddem.png", orientation)
             _add_png_page(pdf, sub_dir / "mosaic" / "mosaic_hillshades.png", orientation)

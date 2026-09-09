@@ -6,6 +6,19 @@ from history.postprocessing.io import ReferencesData
 
 
 @dataclass(frozen=True)
+class CacheConfig:
+    """Directory layout for disposable, recomputable cache data."""
+
+    base_dir: Path
+    pc_diff_dir: Path
+
+    @classmethod
+    def from_base_dir(cls, base_dir: Path) -> "CacheConfig":
+        """Build a ``CacheConfig`` with all sub-paths rooted at ``base_dir``."""
+        return cls(base_dir=base_dir, pc_diff_dir=base_dir / "pointcloud_diff")
+
+
+@dataclass(frozen=True)
 class ProcConfig:
     """
     Directory layout for all intermediate processing outputs.
@@ -31,6 +44,9 @@ class ProcConfig:
     std_dems_dir : Path
         Standard-deviation DEMs, one per (site, dataset) group
         (``<site>_<dataset>_std_dem.tif``).
+    cache : CacheConfig
+        Disposable cache data (e.g. point cloud vs. reference DEM diffs) that can
+        be safely deleted and recomputed.
     """
 
     base_dir: Path
@@ -40,6 +56,7 @@ class ProcConfig:
     before_coreg_ddems_dir: Path
     after_coreg_ddems_dir: Path
     std_dems_dir: Path
+    cache: CacheConfig
 
     @classmethod
     def from_base_dir(cls, base_dir: Path) -> "ProcConfig":
@@ -52,6 +69,7 @@ class ProcConfig:
             before_coreg_ddems_dir=base_dir / "ddems" / "before_coregistration",
             after_coreg_ddems_dir=base_dir / "ddems" / "after_coregistration",
             std_dems_dir=base_dir / "std_dems",
+            cache=CacheConfig.from_base_dir(base_dir / ".cache"),
         )
 
 
@@ -145,9 +163,5 @@ class Config:
             max_workers=data.get("max_workers", 4),
             filename_renames=data.get("filename_renames") or None,
         )
-
-
-
-
 
     

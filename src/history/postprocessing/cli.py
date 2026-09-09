@@ -11,18 +11,22 @@ Two subcommands are available:
 ``history-postprocess run <STEP> --config <path/to/config.toml>``
     Execute one or all pipeline steps in order. Available steps:
 
-    uncompress  Extract compressed submission archives into the extracted dir.
-    symlinks    Index submissions, parse filenames, and create typed symlinks.
-    point2dem   Convert dense point clouds to DEMs via PDAL; integrate any
-                user-provided DEMs by reprojecting them on the reference grid.
-    coregister  Coregister raw DEMs to the reference using Nuth–Kaab + vertical
-                shift.
-    ddem        Compute differential DEMs before and after coregistration.
-    std_dem     Build one standard-deviation DEM per (site, dataset) group from
-                all coregistered DEMs.
-    landcover   Compute and plot landcover-stratified statistics on dDEMs and
-                STD DEMs.
-    all         Run all steps in the order listed above.
+    uncompress     Extract compressed submission archives into the extracted dir.
+    symlinks       Index submissions, parse filenames, and create typed symlinks.
+    check_planned  Check extracted submissions against the planned submissions sheet.
+    sparse_viz     Generate sparse point cloud mosaics colored by elevation
+                   difference with the reference DEM.
+    point2dem      Convert dense point clouds to DEMs via PDAL; integrate any
+                   user-provided DEMs by reprojecting them on the reference grid.
+    coregister     Coregister raw DEMs to the reference using Nuth–Kaab + vertical
+                   shift.
+    ddem           Compute differential DEMs before and after coregistration.
+    std_dem        Build one standard-deviation DEM per (site, dataset) group from
+                   all coregistered DEMs.
+    landcover      Compute and plot landcover-stratified statistics on dDEMs and
+                   STD DEMs.
+    generate_pdf   Assemble all pipeline output plots into a single PDF report.
+    all            Run all steps in the order listed above.
 
 ``history-postprocess status --config <path/to/config.toml>``
     Print a quick file-count overview of every processing directory, to see at
@@ -40,13 +44,13 @@ from pathlib import Path
 import click
 
 from history.postprocessing.config import Config
-from history.postprocessing.pipeline import report_symlinks
+from history.postprocessing.pipeline import generate_sparse_pointcloud_viz, report_symlinks
 
 logger = logging.getLogger(__name__)
 
 _TEMPLATE_CONFIG = Path(__file__).parent / "config.exemple.toml"
 
-RUN_STEPS = ["uncompress", "symlinks", "check_planned", "point2dem", "coregister", "ddem", "std_dem", "landcover", "generate_pdf", "all"]
+RUN_STEPS = ["uncompress", "symlinks", "check_planned", "sparse_viz", "point2dem", "coregister", "ddem", "std_dem", "landcover", "generate_pdf", "all"]
 
 
 def _configure_logging(verbosity: int) -> None:
@@ -211,6 +215,11 @@ def _run_check_planned(config: Config) -> None:
     if not config.no_plots:
         plot_planned_submissions(config, planned_outfile)
 
+        
+def _run_sparse_viz(config: Config) -> None:
+    """Generate viz for sparse point cloud"""
+    generate_sparse_pointcloud_viz(config)
+
 
 def _run_point2dem(config: Config) -> None:
     """Convert dense point clouds to DEMs via PDAL, and integrate any user-provided DEMs."""
@@ -340,6 +349,7 @@ _STEP_RUNNERS = {
     "uncompress": _run_uncompress,
     "symlinks": _run_symlinks,
     "check_planned": _run_check_planned,
+    "sparse_viz": _run_sparse_viz,
     "point2dem": _run_point2dem,
     "coregister": _run_coregister,
     "ddem": _run_ddem,
@@ -370,8 +380,8 @@ def cmd_run(
 ) -> None:
     """Run one or more postprocessing steps.
 
-    STEP is one of: uncompress, symlinks, check_planned, point2dem, coregister,
-    ddem, std_dem, landcover, generate_pdf, all.
+    STEP is one of: uncompress, symlinks, check_planned, sparse_viz, point2dem,
+    coregister, ddem, std_dem, landcover, generate_pdf, all.
     """
     _configure_logging(verbose)
     config = _load_config(config_path, overwrite, overwrite_plots, dry_run, no_plots, max_workers)

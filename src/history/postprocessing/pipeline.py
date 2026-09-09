@@ -19,6 +19,7 @@ All I/O operations rely on ``geoutils``, ``rasterio``, ``laspy``, and related ge
 libraries, ensuring consistent handling of CRS, raster grids, and metadata.
 """
 
+from collections import defaultdict
 import json
 import logging
 import shutil
@@ -253,6 +254,85 @@ def plot_planned_submissions(config: Config, planned_outfile: str | Path) -> Non
         title="Planned Submissions",
     )
     logger.info(f"Updated planned submissions saved to {planned_outfile}.")
+
+
+def save_pointcloud_diff(pointcloud_path: Path, ref_dem: gu.Raster, output_path: Path) -> None:
+    """Compute the elevation difference between a point cloud and a reference DEM, and save it as a LAS file."""
+    sparse_pc = gu.PointCloud(str(pointcloud_path))
+    sparse_pc.reproject(ref_dem, inplace=True)
+
+    ref_z = ref_dem.interp_points(sparse_pc, as_array=True)
+    pc_diff: gu.PointCloud = sparse_pc - ref_z
+    pc_diff.to_las(str(output_path))
+
+def generate_pointcloud_diff(
+    pointcloud_files: dict[str, Path],
+    ref_dem: gu.Raster,
+    output_dir: Path,
+    overwrite: bool = False,
+) -> dict[str, Path]:
+    """Cache, for each point cloud, a copy whose Z values hold the elevation difference with ``ref_dem``.
+
+    Outputs are cached LAS files under ``output_dir``, one per input file, skipped when already up to date.
+
+    Returns:
+        Mapping from code to output path, for the files successfully cached.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    diff_files: dict[str, Path] = {}
+    for code, f in tqdm(pointcloud_files.items(), desc="Point cloud diff"):
+        output_path = output_dir / f.name
+
+        if not overwrite and is_output_up_to_date(f, output_path):
+            logger.debug(f"File {output_path} is up to date -> skipping.")
+            diff_files[code] = output_path
+            continue
+
+        try:
+            save_pointcloud_diff(f, ref_dem, output_path)
+            diff_files[code] = output_path
+        except Exception as e:
+            logger.error(f"Error computing point cloud diff for {f.name}: {e}")
+            continue
+
+    return diff_files
+
+
+def generate_sparse_pointcloud_viz(config: Config) -> None:
+    """Cache sparse point cloud vs. reference DEM diffs and plot one mosaic per (site, dataset) group."""
+    input_dir = config.proc_dir.symlinks_dir / "sparse_pointclouds"
+
+    files = list(input_dir.glob("*.laz")) + list(input_dir.glob("*.las"))
+    logger.info(f"Found {len(files)} sparse point cloud(s) to plot in {input_dir}")
+
+    # the first step is to group all sparse point cloud files by site, dataset
+    grouped_files: dict[tuple[str, str], dict[str, Path]] = defaultdict(dict)
+    for f in files:
+        try:
+            code, metadatas = parse_filename(f)
+            grouped_files[(metadatas["site"], metadatas["dataset"])][code] = f
+        except ValueError as e:
+            logger.warning(f"Skipping unparseable sparse point cloud filename {f.name}: {e}")
+
+    # then create a mosaic for each group
+    for (site, dataset), pc_files_dict in grouped_files.items():
+        logger.debug(f"Plotting sparse point cloud mosaic **** {site} - {dataset} **** ({len(pc_files_dict)} files)")
+        ref_dem_path = config.references_data_mapping.get_ref_dem(site, dataset)
+        ref_dem = gu.Raster(ref_dem_path)
+
+        diff_files_dict = generate_pointcloud_diff(
+            pc_files_dict, ref_dem, config.proc_dir.cache.pc_diff_dir, config.overwrite
+        )
+        output_path = config.plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_sparse_pointcloud_diff.png"
+
+        viz.generate_sparse_pointclouds_mosaic(
+            diff_files_dict,
+            output_path,
+            title=f"({site} {dataset}) Mosaic of sparse point cloud \n altitude difference vs reference DEM",
+            overwrite=config.overwrite_plots,
+        )
+
 
 def process_pointclouds_to_dems(
     pointcloud_files: list[str | Path],

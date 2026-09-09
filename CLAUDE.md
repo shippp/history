@@ -66,11 +66,14 @@ Available steps (executed in this order when using `all`):
 |---|---|
 | `uncompress` | Extract compressed submission archives into `extracted_dir` |
 | `symlinks` | Parse filenames and create typed symlink directories |
+| `check_planned` | Check extracted submissions against the planned submissions sheet |
+| `sparse_viz` | Generate sparse point cloud mosaics colored by elevation difference with the reference DEM |
 | `point2dem` | Convert dense point clouds to DEMs via PDAL; integrate user-provided DEMs |
 | `coregister` | Coregister raw DEMs to the reference (Nuth–Kaab + vertical shift) |
 | `ddem` | Compute differential DEMs before and after coregistration |
 | `std_dem` | Build one STD DEM per (site, dataset) group from all coregistered DEMs |
 | `landcover` | Compute and plot landcover-stratified statistics on dDEMs and STD DEMs |
+| `generate_pdf` | Assemble all pipeline output plots into a single PDF report |
 | `all` | Run all steps above in order |
 
 **Common flags** (override the config file values):
