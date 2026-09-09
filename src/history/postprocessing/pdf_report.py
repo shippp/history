@@ -214,6 +214,8 @@ def generate_pdf_report(
 
         # 4. Global plots
         _add_png_page(pdf, plot_dir / "pointcloud_point_count.png", orientation)
+        _add_png_page(pdf, plot_dir / "sparse_pointcloud_point_count.png", orientation)
+        _add_png_page(pdf, plot_dir / "provided_dem_nmad.png", orientation)
         _add_png_page(pdf, plot_dir / "nmad_after_coregistration.png", orientation)
 
         # 5. Per-(site, dataset) sections

@@ -497,7 +497,7 @@ def generate_dem_diff(
 
 
 def generate_provided_dem_viz(config: Config) -> None:
-    """Cache provided DEM vs. reference DEM diffs and plot one mosaic per (site, dataset) group."""
+    """Cache provided DEM vs. reference DEM diffs, plot one mosaic per (site, dataset) group, and a global NMAD bar chart."""
     input_dir = config.proc_dir.symlinks_dir / "dems"
 
     files = list(input_dir.glob("*.tif"))
@@ -513,6 +513,7 @@ def generate_provided_dem_viz(config: Config) -> None:
             logger.warning(f"Skipping unparseable provided DEM filename {f.name}: {e}")
 
     # create a mosaic for each group
+    all_diff_files: dict[str, Path] = {}
     for (site, dataset), dem_files_dict in grouped_files.items():
         logger.debug(f"Plotting provided DEMs mosaic **** {site} - {dataset} **** ({len(dem_files_dict)} files)")
         ref_dem_path = config.references_data_mapping.get_ref_dem(site, dataset)
@@ -521,6 +522,7 @@ def generate_provided_dem_viz(config: Config) -> None:
         diff_files_dict = generate_dem_diff(
             dem_files_dict, ref_dem, config.proc_dir.provided_dem_diff_dir, config.overwrite
         )
+        all_diff_files.update(diff_files_dict)
         output_path = config.plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_provided_ddem.png"
 
         viz.generate_provided_dems_mosaic(
@@ -529,6 +531,13 @@ def generate_provided_dem_viz(config: Config) -> None:
             title=f"({site} {dataset}) Mosaic of provided DEM(s) \n altitude difference vs reference DEM",
             overwrite=config.overwrite_plots
         )
+
+    df = stats.compute_dems_statistics_df(all_diff_files.values(), max_workers=config.max_workers)
+    viz.barplot_var(
+        df, config.plot_dir / "provided_dem_nmad.png", "nmad",
+        "NMAD of provided DEM altitude difference with reference DEM by code", overwrite=config.overwrite_plots
+    )
+
 
 def add_provided_dems(
     dem_files: list[str | Path],
@@ -1378,8 +1387,8 @@ def plot_symlinks(config: Config, submissions_df: pd.DataFrame | None = None) ->
     """
     Generate plots summarizing the indexed symlinks directory.
 
-    Computes point-cloud statistics from dense point cloud files and saves
-    a bar chart of point counts per submission.
+    Computes point-cloud statistics from dense and sparse point cloud files and
+    saves a bar chart of point counts per submission for each.
 
     Parameters
     ----------
@@ -1397,6 +1406,16 @@ def plot_symlinks(config: Config, submissions_df: pd.DataFrame | None = None) ->
     else:
         df = stats.compute_pcs_statistics_df(pointcloud_files)
         viz.barplot_var(df, output_pc_count, "point_count", "Point count in dense point-cloud file", overwrite=True)
+
+    sparse_pointcloud_files = list((config.proc_dir.symlinks_dir / "sparse_pointclouds").iterdir())
+    output_sparse_pc_count = config.plot_dir / "sparse_pointcloud_point_count.png"
+    if not config.overwrite_plots and is_output_up_to_date(sparse_pointcloud_files, output_sparse_pc_count):
+        logger.info(f"Skip {output_sparse_pc_count.name}: output is up to date.")
+    else:
+        sparse_df = stats.compute_pcs_statistics_df(sparse_pointcloud_files)
+        viz.barplot_var(
+            sparse_df, output_sparse_pc_count, "point_count", "Point count in sparse point-cloud file", overwrite=True
+        )
 
     directories = [d for d in config.proc_dir.symlinks_dir.iterdir() if d.name != "reports"]
     viz.visualize_files_presence_map(directories, config.plot_dir / "submissions_presence_map.png", overwrite=config.overwrite_plots)
