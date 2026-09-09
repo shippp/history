@@ -148,7 +148,7 @@ def _count(directory: Path, pattern: str = "*", kind: str = "file") -> int:
 
 
 @cli.command("status")
-@click.option("--config", "config_path", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Path to config.toml")
+@click.option("--config", "config_path", default=Path("config.toml"), type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Path to config.toml (default: ./config.toml)")
 def cmd_status(config_path: Path) -> None:
     """Print a quick file-count overview of the processing directory tree."""
     config = Config.from_toml_file(config_path)
@@ -368,7 +368,7 @@ _STEP_RUNNERS = {
 
 @cli.command("run")
 @click.argument("step", type=click.Choice(RUN_STEPS))
-@click.option("--config", "config_path", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Path to config.toml")
+@click.option("--config", "config_path", default=Path("config.toml"), type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Path to config.toml (default: ./config.toml)")
 @click.option("--overwrite", is_flag=True, default=False, help="Force recompute of existing data outputs (overrides config)")
 @click.option("--overwrite-plots", "overwrite_plots", is_flag=True, default=False, help="Force regeneration of existing plots (overrides config)")
 @click.option("--dry-run", "dry_run", is_flag=True, default=False, help="Print actions without executing them (overrides config)")
