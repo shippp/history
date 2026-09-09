@@ -1328,43 +1328,6 @@ def plot_ddems(config: Config) -> None:
                                   title=f"({site} {dataset}) Mosaic of DDEMs after coregistration", overwrite=config.overwrite_plots)
 
 
-def plot_landcover(config: Config) -> None:
-    """
-    Generate landcover-stratified plots for dDEMs and STD DEMs.
-
-    Computes landcover-stratified statistics on coregistered dDEMs and STD DEMs,
-    then saves per-(site, dataset) grouped boxplots and NMAD plots, as well as
-    a global boxplot aggregated from all STD DEMs.
-    """
-    after_coreg_ddems_dir = config.proc_dir.after_coreg_ddems_dir
-    std_dems_dir = config.proc_dir.std_dems_dir
-
-    all_ddem_files = list(after_coreg_ddems_dir.glob("*-DDEM.tif"))
-    ddem_files_by_group: dict[tuple, list[Path]] = {}
-    for f in all_ddem_files:
-        try:
-            _, meta = parse_filename(f)
-            key = (meta["site"], meta["dataset"])
-            ddem_files_by_group.setdefault(key, []).append(f)
-        except Exception:
-            pass
-
-    landcover_df = stats.compute_landcover_statistics(all_ddem_files, config.references_data_mapping, config.max_workers)
-    std_lc_df = stats.compute_landcover_statistics_on_std_dems(std_dems_dir.glob("*.tif"), config.references_data_mapping, config.max_workers)
-
-    for (site, dataset), group in landcover_df.groupby(["site", "dataset"]):
-        sub_dir = config.plot_dir / f"{site}_{dataset}"
-        group_inputs = ddem_files_by_group.get((site, dataset))
-        viz.generate_landcover_grouped_boxplot(group, sub_dir / "landcover_grouped_boxplot.png", f"({site} {dataset}) Boxplot of Altitude difference with ref DEM by code/landcover",
-                                               overwrite=config.overwrite_plots, inputs=group_inputs)
-        viz.generate_landcover_nmad(group, sub_dir / "landcover_nmad.png", f"({site} {dataset}) NMAD of Altitude difference with ref DEM by code/landcover",
-                                    overwrite=config.overwrite_plots, inputs=group_inputs)
-
-    std_dem_files = list(std_dems_dir.glob("*.tif"))
-    viz.generate_landcover_grouped_boxplot_from_std_dems(std_lc_df, config.plot_dir / "landcover_boxplot_from_std_dems.png",
-                                                         overwrite=config.overwrite_plots, inputs=std_dem_files)
-
-
 #######################################################################################################################
 ##                                                  PRIVATE FUNCTIONS
 #######################################################################################################################

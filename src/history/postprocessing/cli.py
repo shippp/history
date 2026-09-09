@@ -23,8 +23,6 @@ Two subcommands are available:
     coregister     Coregister raw DEMs to the reference using Nuth–Kaab + vertical
                    shift.
     ddem           Compute differential DEMs before and after coregistration.
-    landcover      Compute and plot landcover-stratified statistics on dDEMs and
-                   STD DEMs.
     generate_pdf   Assemble all pipeline output plots into a single PDF report.
     all            Run all steps in the order listed above.
 
@@ -49,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 _TEMPLATE_CONFIG = Path(__file__).parent / "config.exemple.toml"
 
-RUN_STEPS = ["uncompress", "symlinks", "check_planned", "sparse_viz", "provided_dem", "point2dem", "coregister", "ddem", "landcover", "generate_pdf", "all"]
+RUN_STEPS = ["uncompress", "symlinks", "check_planned", "sparse_viz", "provided_dem", "point2dem", "coregister", "ddem", "generate_pdf", "all"]
 
 
 @click.group()
@@ -256,16 +254,6 @@ def _run_ddem(config: Config) -> None:
         plot_ddems(config)
 
 
-def _run_landcover(config: Config) -> None:
-    """Compute and plot landcover-stratified statistics on dDEMs and STD DEMs."""
-    from history.postprocessing.pipeline import plot_landcover
-
-    if not config.no_plots:
-        plot_landcover(config)
-
-    logger.info("Step `landcover` finished")
-
-
 def _run_generate_pdf(config: Config) -> None:
     """Assemble all pipeline output PNGs into a single PDF report."""
     from history.postprocessing.pdf_report import generate_pdf_report
@@ -288,7 +276,6 @@ _STEP_RUNNERS = {
     "point2dem": _run_point2dem,
     "coregister": _run_coregister,
     "ddem": _run_ddem,
-    "landcover": _run_landcover,
     "generate_pdf": _run_generate_pdf,
 }
 
@@ -315,7 +302,7 @@ def cmd_run(
     """Run one or more postprocessing steps.
 
     STEP is one of: uncompress, symlinks, check_planned, sparse_viz, provided_dem, point2dem,
-    coregister, ddem, landcover, generate_pdf, all.
+    coregister, ddem, generate_pdf, all.
     """
     configure_logging(verbose, cli_logger_name=__name__)
     config = load_config(config_path, overwrite, overwrite_plots, dry_run, no_plots, max_workers)
