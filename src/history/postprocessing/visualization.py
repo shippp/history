@@ -339,29 +339,31 @@ def generate_std_dem_plots(dem_path: str | Path, output_path: str | Path, overwr
 
 
 def generate_provided_dems_mosaic(
-    dem_files_dict: dict[str, Path],
-    ref_dem_path: Path,
+    diff_files_dict: dict[str, Path],
     output_path: Path,
     title: str = "",
     overwrite: bool = False,
     vmin: float = -10,
     vmax: float = 10
 ) -> None:
-    """Plot a mosaic of elevation differences between each provided DEM and the reference DEM."""
-    if not overwrite and is_output_up_to_date([*dem_files_dict.values()], output_path):
+    """
+    Plot a mosaic of elevation differences between each provided DEM and the reference DEM.
+
+    ``diff_files_dict`` maps each code to a precomputed diff raster (as produced by
+    ``pipeline.generate_dem_diff``), so this function only reads and plots them.
+    """
+    if not overwrite and is_output_up_to_date([*diff_files_dict.values()], output_path):
         logger.debug(f"File {output_path} is up to date -> skipping.")
         return
 
     import geoutils as gu
 
-    ref_dem = gu.Raster(ref_dem_path)
+    logger.info(f"Generating mosaic of provided DEMs with {len(diff_files_dict)} input files...")
 
-    with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
-        for i, (code, file) in enumerate(dem_files_dict.items()):
+    with _generate_mosaic_figure_and_axes(len(diff_files_dict), output_path) as (fig, axes):
+        for i, (code, file) in enumerate(diff_files_dict.items()):
             try:
-                dem = gu.Raster(file).reproject(ref_dem)
-
-                ddem = ref_dem - dem
+                ddem = gu.Raster(file)
 
                 axes[i].imshow(ddem.data, cmap="coolwarm", vmin=vmin, vmax=vmax, interpolation="bilinear")
 
@@ -374,7 +376,7 @@ def generate_provided_dems_mosaic(
             ScalarMappable(cmap="coolwarm", norm=plt.Normalize(vmin=vmin, vmax=vmax)),
             ax=axes,
             orientation="vertical",
-        ) 
+        )
         cbar.set_label("Elevation difference (m)")
         fig.suptitle(title, fontsize=16)
 

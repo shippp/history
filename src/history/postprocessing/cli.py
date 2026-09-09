@@ -14,7 +14,7 @@ Two subcommands are available:
     uncompress     Extract compressed submission archives into the extracted dir.
     symlinks       Index submissions, parse filenames, and create typed symlinks.
     check_planned  Check extracted submissions against the planned submissions sheet.
-    provid_dem     Plot a mosaic of user-provided DEMs against the reference DEM,
+    provided_dem     Plot a mosaic of user-provided DEMs against the reference DEM,
                    grouped by (site, dataset).
     point2dem      Convert dense point clouds to DEMs via PDAL; integrate any
                    user-provided DEMs by reprojecting them on the reference grid.
@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 _TEMPLATE_CONFIG = Path(__file__).parent / "config.exemple.toml"
 
-RUN_STEPS = ["uncompress", "symlinks", "check_planned", "provid_dem", "point2dem", "coregister", "ddem", "std_dem", "landcover", "generate_pdf", "all"]
+RUN_STEPS = ["uncompress", "symlinks", "check_planned", "provided_dem", "point2dem", "coregister", "ddem", "std_dem", "landcover", "generate_pdf", "all"]
 
 
 def _configure_logging(verbosity: int) -> None:
@@ -213,7 +213,7 @@ def _run_check_planned(config: Config) -> None:
     check_planned_submissions(df.index.tolist(), planned_outfile)
 
 
-def _run_provid_dem(config: Config) -> None:
+def _run_provided_dem(config: Config) -> None:
     """Create visualisation for provided DEMs"""
     from history.postprocessing.pipeline import generate_provided_dem_viz
     generate_provided_dem_viz(config)
@@ -346,7 +346,7 @@ _STEP_RUNNERS = {
     "uncompress": _run_uncompress,
     "symlinks": _run_symlinks,
     "check_planned": _run_check_planned,
-    "provid_dem": _run_provid_dem,
+    "provided_dem": _run_provided_dem,
     "point2dem": _run_point2dem,
     "coregister": _run_coregister,
     "ddem": _run_ddem,
@@ -377,7 +377,7 @@ def cmd_run(
 ) -> None:
     """Run one or more postprocessing steps.
 
-    STEP is one of: uncompress, symlinks, check_planned, provid_dem, point2dem,
+    STEP is one of: uncompress, symlinks, check_planned, provided_dem, point2dem,
     coregister, ddem, std_dem, landcover, generate_pdf, all.
     """
     _configure_logging(verbose)

@@ -66,7 +66,7 @@ Available steps (executed in this order when using `all`):
 | `uncompress` | Extract compressed submission archives into `extracted_dir` |
 | `symlinks` | Parse filenames and create typed symlink directories |
 | `check_planned` | Check extracted submissions against the planned submissions sheet |
-| `provid_dem` | Plot a mosaic of user-provided DEMs (from `symlinks/dems`) vs. the reference DEM, grouped by (site, dataset) |
+| `provided_dem` | Plot a mosaic of user-provided DEMs (from `symlinks/dems`) vs. the reference DEM, grouped by (site, dataset) |
 | `point2dem` | Convert dense point clouds to DEMs via PDAL; integrate user-provided DEMs |
 | `coregister` | Coregister raw DEMs to the reference (Nuth–Kaab + vertical shift) |
 | `ddem` | Compute differential DEMs before and after coregistration |
