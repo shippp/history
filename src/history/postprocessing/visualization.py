@@ -295,49 +295,6 @@ def generate_hillshades_mosaic(
         fig.suptitle(title, fontsize=16)
 
 
-def generate_std_dem_plots(dem_path: str | Path, output_path: str | Path, overwrite: bool = False) -> None:
-    """
-    Generate and save a heatmap of the elevation standard deviation from a DEM.
-
-    The function reads the DEM raster, computes the standard deviation values, and
-    creates a plot using a 'viridis' colormap. The color scale is capped at the 90th
-    percentile to reduce the effect of extreme values. The figure is saved to `output_path`.
-
-    Parameters
-    ----------
-    dem_path : str | Path
-        Path to the DEM raster file.
-    output_path : str | Path
-        File path where the generated plot will be saved. Parent directories are created if needed.
-
-    Returns
-    -------
-    None
-        Saves the plot to `output_path` without returning a value.
-    """
-    dem_path = Path(dem_path)
-
-    if not overwrite and is_output_up_to_date(dem_path, output_path):
-        logger.debug(f"File {output_path} is up to date -> skipping.")
-        return
-
-    std_dem = _read_raster_with_max_size(dem_path)
-
-    # create the plot and save them at output_plot_file
-    vmax = np.nanquantile(std_dem, 0.9)
-    fig = Figure()
-    ax = fig.subplots(1, 1)
-    im = ax.imshow(std_dem, cmap="viridis", vmax=vmax)
-    ax.set_title(f"{dem_path.stem}")
-    ax.axis("off")
-
-    cbar = fig.colorbar(im, ax=ax)
-    cbar.set_label("Elevation standard deviation (m)")
-
-    Path(output_path).parent.mkdir(exist_ok=True, parents=True)
-    fig.savefig(output_path)
-
-
 def generate_sparse_pointclouds_mosaic(
     diff_files_dict: dict[str, str | Path],
     output_path: str | Path,

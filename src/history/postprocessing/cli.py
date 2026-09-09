@@ -23,8 +23,6 @@ Two subcommands are available:
     coregister     Coregister raw DEMs to the reference using Nuth–Kaab + vertical
                    shift.
     ddem           Compute differential DEMs before and after coregistration.
-    std_dem        Build one standard-deviation DEM per (site, dataset) group from
-                   all coregistered DEMs.
     landcover      Compute and plot landcover-stratified statistics on dDEMs and
                    STD DEMs.
     generate_pdf   Assemble all pipeline output plots into a single PDF report.
@@ -51,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 _TEMPLATE_CONFIG = Path(__file__).parent / "config.exemple.toml"
 
-RUN_STEPS = ["uncompress", "symlinks", "check_planned", "sparse_viz", "provided_dem", "point2dem", "coregister", "ddem", "std_dem", "landcover", "generate_pdf", "all"]
+RUN_STEPS = ["uncompress", "symlinks", "check_planned", "sparse_viz", "provided_dem", "point2dem", "coregister", "ddem", "landcover", "generate_pdf", "all"]
 
 
 @click.group()
@@ -258,20 +256,6 @@ def _run_ddem(config: Config) -> None:
         plot_ddems(config)
 
 
-def _run_std_dem(config: Config) -> None:
-    """Build one standard-deviation DEM per (site, dataset) group from all coregistered DEMs."""
-    from history.postprocessing.pipeline import create_std_dems, plot_std_dems
-
-    create_std_dems(
-        dem_files=list(config.proc_dir.coreg_dems_dir.glob("*-DEM.tif")),
-        output_dir=config.proc_dir.std_dems_dir,
-        overwrite=config.overwrite,
-    )
-
-    if not config.no_plots:
-        plot_std_dems(config)
-
-
 def _run_landcover(config: Config) -> None:
     """Compute and plot landcover-stratified statistics on dDEMs and STD DEMs."""
     from history.postprocessing.pipeline import plot_landcover
@@ -304,7 +288,6 @@ _STEP_RUNNERS = {
     "point2dem": _run_point2dem,
     "coregister": _run_coregister,
     "ddem": _run_ddem,
-    "std_dem": _run_std_dem,
     "landcover": _run_landcover,
     "generate_pdf": _run_generate_pdf,
 }
@@ -332,7 +315,7 @@ def cmd_run(
     """Run one or more postprocessing steps.
 
     STEP is one of: uncompress, symlinks, check_planned, sparse_viz, provided_dem, point2dem,
-    coregister, ddem, std_dem, landcover, generate_pdf, all.
+    coregister, ddem, landcover, generate_pdf, all.
     """
     configure_logging(verbose, cli_logger_name=__name__)
     config = load_config(config_path, overwrite, overwrite_plots, dry_run, no_plots, max_workers)

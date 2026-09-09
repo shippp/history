@@ -10,8 +10,7 @@ This module provides high-level utilities to:
   reference DEMs.
 - Integrate externally provided DEMs by reprojecting them onto reference grids.
 - Coregister DEMs using Nuth–Kaab horizontal shifts and vertical shift correction.
-- Generate differential DEMs (dDEMs) and standard-deviation DEMs from multiple DEM inputs.
-- Inspect existing STD DEMs via embedded metadata and infer their associated source files.
+- Generate differential DEMs (dDEMs) from multiple DEM inputs.
 
 Most functions support parallel execution through ``ThreadPoolExecutor`` and are
 designed to fail gracefully: errors are logged without interrupting batch processing.
@@ -42,7 +41,6 @@ import rasterio
 import xdem
 from pyproj import CRS as ProjCRS
 from pyproj import Transformer
-from rasterio.windows import Window
 from shapely import box, transform
 from tqdm import tqdm
 
@@ -798,126 +796,6 @@ def generate_ddems(
                 continue
 
 
-def create_std_dem(
-    dem_files: list[str | Path],
-    output_path: str | Path,
-    overwrite: bool = False,
-    block_size: int = 256,
-    metadata_key: str = "dem_files",
-) -> None:
-    """
-    Generates a standard deviation Digital Elevation Model (DEM) from a list of input DEM files.
-
-    This function computes the pixel-wise standard deviation across multiple DEMs, processing
-    the rasters block by block to efficiently handle large datasets.
-
-    Args:
-        dem_files (list[str | Path]): List of paths to input DEM raster files.
-        output_path (str | Path): Path to the output standard deviation DEM file.
-        block_size (int, optional): Size of the processing block in pixels. Defaults to 256.
-        metadata_key (str, optional): Metadata tag name used to store the list of input DEM files
-            in the output raster. Defaults to "dem_files".
-
-    Returns:
-        None: The function writes the resulting standard deviation DEM to the specified output path.
-    """
-    dem_files: list[Path] = [Path(f) for f in dem_files]
-    output_path = Path(output_path)
-
-    if len(dem_files) <= 1:
-        logger.warning(f"Need at least 2 DEMs for computing the STD DEM: {output_path.name}.")
-        return
-
-    if not overwrite and io.is_output_up_to_date(dem_files, output_path) and is_existing_std_dem(dem_files, output_path):
-        logger.info(f"Skip {output_path.name}: output is up to date.")
-        return
-
-    # first open the first raster of the list to have a reference profile
-    with rasterio.open(dem_files[0]) as src_ref:
-        profile = src_ref.profile.copy()
-        width, height = src_ref.width, src_ref.height
-
-    profile.update(dtype="float32", count=1)
-
-    output_path.parent.mkdir(exist_ok=True, parents=True)
-    with rasterio.open(output_path, "w", **profile) as dst:
-        # Loop through the raster by windows
-        for y in range(0, height, block_size):
-            for x in range(0, width, block_size):
-                win = Window(
-                    col_off=x,
-                    row_off=y,
-                    width=min(block_size, width - x),
-                    height=min(block_size, height - y),
-                )
-
-                # Read the corresponding window from each DEM
-                block_stack = []
-                for dem_path in dem_files:
-                    with rasterio.open(dem_path) as src:
-                        data = src.read(1, window=win, masked=True).filled(np.nan)
-                        block_stack.append(data)
-
-                # Compute std for this block
-                block_stack = np.stack(block_stack, axis=0)
-
-                # Avoid computing std on empty slices
-                if np.all(np.isnan(block_stack)):
-                    block_std = np.full(block_stack.shape[1:], np.nan, dtype="float32")
-                else:
-                    block_std = np.nanstd(block_stack, axis=0).astype("float32")
-
-                # Write the result
-                dst.write(block_std, 1, window=win)
-
-        # Add metadata tags
-        dem_files_str = [str(p) for p in dem_files]
-        dst.update_tags(1, **{metadata_key: json.dumps(dem_files_str)})
-
-    logger.info(f"STD DEM generated at {output_path}")
-
-
-def create_std_dems(
-    dem_files: Iterable[str | Path],
-    output_dir: str | Path,
-    overwrite: bool = False,
-) -> None:
-    """
-    Group coregistered DEMs by (site, dataset) and compute one STD DEM per group.
-
-    Parses each filename to extract site and dataset metadata, groups files
-    accordingly, and calls ``create_std_dem`` for each group. Output filenames
-    follow the pattern ``<site>_<dataset>_std_dem.tif`` inside ``output_dir``.
-    Files whose names cannot be parsed are skipped with a warning.
-
-    Parameters
-    ----------
-    dem_files : Iterable of str or Path
-        Iterable of coregistered DEM file paths to process.
-    output_dir : str or Path
-        Directory where the STD DEM files will be written. Created if missing.
-    overwrite : bool, optional
-        If True, existing STD DEMs are recomputed. Default is False.
-    """
-    dem_files = [Path(f) for f in dem_files]
-    output_dir = Path(output_dir)
-    output_dir.mkdir(exist_ok=True, parents=True)
-
-    groups: dict[tuple[str, str], list[Path]] = {}
-    for file in dem_files:
-        try:
-            _, metadatas = parse_filename(file)
-            key = (metadatas["site"], metadatas["dataset"])
-            groups.setdefault(key, []).append(file)
-        except ValueError:
-            logger.warning(f"Cannot parse filename for std_dem grouping: {file.name}")
-
-    for (site, dataset), files in groups.items():
-        logger.info(f"Creating std DEM for {site} / {dataset}")
-        output_path = output_dir / f"{site}_{dataset}_std_dem.tif"
-        create_std_dem(dem_files=files, output_path=output_path, overwrite=overwrite)
-
-
 #######################################################################################################################
 ##                                                  CLEANUP FUNCTIONS
 #######################################################################################################################
@@ -1316,68 +1194,6 @@ def extract_archive(archive_path: Path | str, output_dir: Path | str, flatten_ne
             tmp = parent
 
 
-def get_dem_files_from_std_dem(std_dem_file: str | Path, metadata_key: str = "dem_files") -> list[str]:
-    """
-    Retrieves the list of input DEM file paths stored in the metadata of a standard deviation DEM.
-
-    Args:
-        std_dem_file (str | Path): Path to the standard deviation DEM file.
-        metadata_key (str, optional): Metadata tag name containing the input DEM file list.
-            Defaults to "dem_files".
-
-    Returns:
-        list[str] | None: A list of DEM file paths if found in the metadata.
-        Returns an empty list if the file does not exist, or None if the metadata key is missing.
-    """
-    std_dem_file = Path(std_dem_file)
-    if not std_dem_file.exists():
-        return []
-
-    with rasterio.open(std_dem_file) as src:
-        tags = src.tags(1)
-
-        if metadata_key in tags:
-            # Already present → return parsed JSON
-            return json.loads(tags[metadata_key])
-        else:
-            return None
-
-
-def is_existing_std_dem(dem_files: list[str | Path], output_path: str | Path, metadata_key: str = "dem_files") -> bool:
-    """
-    Check if an existing std DEM already matches the given input DEM list.
-
-    Args:
-        dem_files: List of input DEM paths used to compute the std DEM.
-        output_path: Path to the supposed std DEM file.
-        metadata_key: Metadata key used to store the original DEM file list.
-
-    Returns:
-        True if the file exists and its metadata matches the given DEM list, False otherwise.
-    """
-    output_path = Path(output_path)
-    if not output_path.exists():
-        return False
-
-    try:
-        with rasterio.open(output_path) as src:
-            tags = src.tags(1)  # or src.tags() if not band-specific
-
-        if metadata_key not in tags:
-            return False
-
-        # Normalize paths to absolute str for comparison
-        founded_dem_files = [str(Path(p).resolve()) for p in json.loads(tags[metadata_key])]
-        expected_dem_files = [str(Path(p).resolve()) for p in dem_files]
-
-        return set(expected_dem_files) == set(founded_dem_files)
-
-    except Exception as e:
-        # Defensive: in case of malformed metadata or corrupted file
-        logger.warning(f"Could not verify std_dem metadata ({output_path.name}): {e}")
-        return False
-
-
 #######################################################################################################################
 ##                                                  PLOT FUNCTIONS
 #######################################################################################################################
@@ -1510,16 +1326,6 @@ def plot_ddems(config: Config) -> None:
         ddem_files_dict = group["ddem_after_file"].dropna().to_dict()
         viz.generate_ddems_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_ddem.png", 
                                   title=f"({site} {dataset}) Mosaic of DDEMs after coregistration", overwrite=config.overwrite_plots)
-
-
-def plot_std_dems(config: Config) -> None:
-    """
-    Generate plots for each STD DEM found in ``std_dems_dir``.
-    """
-    for file in config.proc_dir.std_dems_dir.glob("*.tif"):
-        subdir = file.stem.replace("_std_dem", "")
-        output_path = config.plot_dir / subdir / file.with_suffix(".png").name
-        viz.generate_std_dem_plots(file, output_path, overwrite=config.overwrite_plots)
 
 
 def plot_landcover(config: Config) -> None:
