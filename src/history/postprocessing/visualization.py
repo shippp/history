@@ -351,7 +351,7 @@ def generate_sparse_pointclouds_mosaic(
     reference DEM.
 
     ``diff_files_dict`` maps each code to a point cloud diff file (as produced by
-    ``pipeline.generate_pointcloud_diff``), whose Z values already hold the elevation
+    ``pipeline.generate_sparsecloud_diff``), whose Z values already hold the elevation
     difference with the reference DEM. One subplot is created per point cloud, computed and
     drawn one at a time (rather than precomputing all point clouds' data upfront) to keep
     memory usage low regardless of how many point clouds are in the mosaic.

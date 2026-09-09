@@ -256,17 +256,17 @@ def plot_planned_submissions(config: Config, planned_outfile: str | Path) -> Non
     logger.info(f"Updated planned submissions saved to {planned_outfile}.")
 
 
-def save_pointcloud_diff(pointcloud_path: Path, ref_dem: gu.Raster, output_path: Path) -> None:
+def save_sparsecloud_diff(sparsecloud_path: Path, ref_dem: gu.Raster, output_path: Path) -> None:
     """Compute the elevation difference between a point cloud and a reference DEM, and save it as a LAS file."""
-    sparse_pc = gu.PointCloud(str(pointcloud_path))
+    sparse_pc = gu.PointCloud(str(sparsecloud_path))
     sparse_pc.reproject(ref_dem, inplace=True)
 
     ref_z = ref_dem.interp_points(sparse_pc, as_array=True)
-    pc_diff: gu.PointCloud = sparse_pc - ref_z
-    pc_diff.to_las(str(output_path))
+    sparsecloud_diff: gu.PointCloud = sparse_pc - ref_z
+    sparsecloud_diff.to_las(str(output_path))
 
-def generate_pointcloud_diff(
-    pointcloud_files: dict[str, Path],
+def generate_sparsecloud_diff(
+    sparsecloud_files: dict[str, Path],
     ref_dem: gu.Raster,
     output_dir: Path,
     overwrite: bool = False,
@@ -281,7 +281,7 @@ def generate_pointcloud_diff(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     diff_files: dict[str, Path] = {}
-    for code, f in tqdm(pointcloud_files.items(), desc="Point cloud diff"):
+    for code, f in tqdm(sparsecloud_files.items(), desc="Sparse cloud diff"):
         output_path = output_dir / f.name
 
         if not overwrite and is_output_up_to_date(f, output_path):
@@ -290,10 +290,10 @@ def generate_pointcloud_diff(
             continue
 
         try:
-            save_pointcloud_diff(f, ref_dem, output_path)
+            save_sparsecloud_diff(f, ref_dem, output_path)
             diff_files[code] = output_path
         except Exception as e:
-            logger.error(f"Error computing point cloud diff for {f.name}: {e}")
+            logger.error(f"Error computing sparse cloud diff for {f.name}: {e}")
             continue
 
     return diff_files
@@ -316,15 +316,17 @@ def generate_sparse_pointcloud_viz(config: Config) -> None:
             logger.warning(f"Skipping unparseable sparse point cloud filename {f.name}: {e}")
 
     # then create a mosaic for each group
-    for (site, dataset), pc_files_dict in grouped_files.items():
-        logger.debug(f"Plotting sparse point cloud mosaic **** {site} - {dataset} **** ({len(pc_files_dict)} files)")
+    for (site, dataset), sparsecloud_files_dict in grouped_files.items():
+        logger.debug(
+            f"Plotting sparse point cloud mosaic **** {site} - {dataset} **** ({len(sparsecloud_files_dict)} files)"
+        )
         ref_dem_path = config.references_data_mapping.get_ref_dem(site, dataset)
         ref_dem = gu.Raster(ref_dem_path)
 
-        diff_files_dict = generate_pointcloud_diff(
-            pc_files_dict, ref_dem, config.proc_dir.cache.pc_diff_dir, config.overwrite
+        diff_files_dict = generate_sparsecloud_diff(
+            sparsecloud_files_dict, ref_dem, config.proc_dir.sparsecloud_diff_dir, config.overwrite
         )
-        output_path = config.plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_sparse_pointcloud_diff.png"
+        output_path = config.plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_sparsecloud_diff.png"
 
         viz.generate_sparse_pointclouds_mosaic(
             diff_files_dict,
@@ -516,7 +518,9 @@ def generate_provided_dem_viz(config: Config) -> None:
         ref_dem_path = config.references_data_mapping.get_ref_dem(site, dataset)
         ref_dem = gu.Raster(ref_dem_path)
 
-        diff_files_dict = generate_dem_diff(dem_files_dict, ref_dem, config.proc_dir.cache.dem_diff_dir, config.overwrite)
+        diff_files_dict = generate_dem_diff(
+            dem_files_dict, ref_dem, config.proc_dir.provided_dem_diff_dir, config.overwrite
+        )
         output_path = config.plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_provided_ddem.png"
 
         viz.generate_provided_dems_mosaic(
