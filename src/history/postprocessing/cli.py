@@ -16,6 +16,8 @@ Two subcommands are available:
     check_planned  Check extracted submissions against the planned submissions sheet.
     sparse_viz     Generate sparse point cloud mosaics colored by elevation
                    difference with the reference DEM.
+    provided_dem     Plot a mosaic of user-provided DEMs against the reference DEM,
+                   grouped by (site, dataset).
     point2dem      Convert dense point clouds to DEMs via PDAL; integrate any
                    user-provided DEMs by reprojecting them on the reference grid.
     coregister     Coregister raw DEMs to the reference using Nuth–Kaab + vertical
@@ -50,8 +52,7 @@ logger = logging.getLogger(__name__)
 
 _TEMPLATE_CONFIG = Path(__file__).parent / "config.exemple.toml"
 
-RUN_STEPS = ["uncompress", "symlinks", "check_planned", "sparse_viz", "point2dem", "coregister", "ddem", "std_dem", "landcover", "generate_pdf", "all"]
-
+RUN_STEPS = ["uncompress", "symlinks", "check_planned", "sparse_viz", "provided_dem", "point2dem", "coregister", "ddem", "std_dem", "landcover", "generate_pdf", "all"]
 
 def _configure_logging(verbosity: int) -> None:
     """Set the ``history`` logger level based on the ``-v`` / ``-vv`` count."""
@@ -221,6 +222,11 @@ def _run_sparse_viz(config: Config) -> None:
     generate_sparse_pointcloud_viz(config)
 
 
+def _run_provided_dem(config: Config) -> None:
+    """Create visualisation for provided DEMs"""
+    from history.postprocessing.pipeline import generate_provided_dem_viz
+    generate_provided_dem_viz(config)
+
 def _run_point2dem(config: Config) -> None:
     """Convert dense point clouds to DEMs via PDAL, and integrate any user-provided DEMs."""
     from history.postprocessing.pipeline import process_pointclouds_to_dems, add_provided_dems, plot_point2dem, cleanup_orphaned_raw_dems
@@ -350,6 +356,7 @@ _STEP_RUNNERS = {
     "symlinks": _run_symlinks,
     "check_planned": _run_check_planned,
     "sparse_viz": _run_sparse_viz,
+    "provided_dem": _run_provided_dem,
     "point2dem": _run_point2dem,
     "coregister": _run_coregister,
     "ddem": _run_ddem,
@@ -380,7 +387,7 @@ def cmd_run(
 ) -> None:
     """Run one or more postprocessing steps.
 
-    STEP is one of: uncompress, symlinks, check_planned, sparse_viz, point2dem,
+    STEP is one of: uncompress, symlinks, check_planned, sparse_viz, provided_dem, point2dem,
     coregister, ddem, std_dem, landcover, generate_pdf, all.
     """
     _configure_logging(verbose)

@@ -11,11 +11,12 @@ class CacheConfig:
 
     base_dir: Path
     pc_diff_dir: Path
+    dem_diff_dir: Path
 
     @classmethod
     def from_base_dir(cls, base_dir: Path) -> "CacheConfig":
         """Build a ``CacheConfig`` with all sub-paths rooted at ``base_dir``."""
-        return cls(base_dir=base_dir, pc_diff_dir=base_dir / "pointcloud_diff")
+        return cls(base_dir=base_dir, pc_diff_dir=base_dir / "pointcloud_diff", dem_diff_dir=base_dir / "dem_diff")
 
 
 @dataclass(frozen=True)

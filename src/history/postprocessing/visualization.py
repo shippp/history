@@ -387,6 +387,51 @@ def generate_sparse_pointclouds_mosaic(
         fig.suptitle(title, fontsize=16)
 
 
+def generate_provided_dems_mosaic(
+    diff_files_dict: dict[str, Path],
+    output_path: Path,
+    title: str = "",
+    overwrite: bool = False,
+    vmin: float = -10,
+    vmax: float = 10,
+) -> None:
+    """
+    Plot a mosaic of elevation differences between each provided DEM and the reference DEM.
+
+    ``diff_files_dict`` maps each code to a precomputed diff raster (as produced by
+    ``pipeline.generate_dem_diff``), so this function only reads and plots them.
+    """
+    if not overwrite and is_output_up_to_date([*diff_files_dict.values()], output_path):
+        logger.debug(f"File {output_path} is up to date -> skipping.")
+        return
+
+    import geoutils as gu
+
+    logger.info(f"Generating mosaic of provided DEMs with {len(diff_files_dict)} input files...")
+
+    with _generate_mosaic_figure_and_axes(len(diff_files_dict), output_path) as (fig, axes):
+        for i, (code, file) in enumerate(diff_files_dict.items()):
+            try:
+                ddem = gu.Raster(file)
+
+                axes[i].imshow(ddem.data, cmap="coolwarm", vmin=vmin, vmax=vmax, interpolation="bilinear")
+
+                axes[i].set_aspect("equal")
+                axes[i].set_title(code)
+            except Exception as e:
+                logger.error(f"Issure plotting provided DEM {file} : {e}")
+                continue
+
+        # add the global color bar
+        cbar = fig.colorbar(
+            ScalarMappable(cmap="coolwarm", norm=plt.Normalize(vmin=vmin, vmax=vmax)),
+            ax=axes,
+            orientation="vertical",
+        )
+        cbar.set_label("Elevation difference (m)")
+        fig.suptitle(title, fontsize=16)
+
+
 #######################################################################################################################
 ##                                                  STATISTICS VISUALIZATION
 #######################################################################################################################

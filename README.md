@@ -66,6 +66,7 @@ The pipeline runs the following steps in order:
 | `symlinks` | Parse filenames and create typed symlink directories |
 | `check_planned` | Check extracted experiments against planned experiment |
 | `sparse_viz` | Generate sparse point cloud mosaics colored by elevation difference with the reference DEM |
+| `provided_dem` | Plot a mosaic of user-provided DEMs against the reference DEM |
 | `point2dem` | Convert dense point clouds to DEMs via PDAL |
 | `coregister` | Coregister DEMs to the reference (Nuth–Kaab + vertical shift) |
 | `ddem` | Compute differential DEMs before and after coregistration |
