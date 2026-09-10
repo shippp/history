@@ -389,6 +389,93 @@ def generate_provided_dems_mosaic(
 
 
 #######################################################################################################################
+##                                                  EXTRINSICS VISUALIZATION
+#######################################################################################################################
+
+
+def generate_extrinsics_position_mosaic(
+    extrinsics_df: pd.DataFrame,
+    initial_extrinsics_df: pd.DataFrame,
+    output_path: str | Path,
+    title: str = "",
+    overwrite: bool = False,
+) -> None:
+    """
+    Generate a mosaic of camera XY positions per submission, relative to each camera's initial position.
+
+    One subplot per submission; each point is a camera plotted at (x_map - initial_x_map,
+    y_map - initial_y_map), so the initial (provided) camera position sits at the origin.
+    ``extrinsics_df`` and ``initial_extrinsics_df`` are expected to cover a single (site, dataset)
+    group; ``initial_extrinsics_df`` is the camera position file provided alongside the raw images
+    (e.g. ``camera_model_extrinsics.csv``).
+    """
+    if not overwrite and Path(output_path).exists():
+        logger.debug(f"File {output_path} is up to date -> skipping.")
+        return
+
+    merged = _merge_extrinsics_with_initial(extrinsics_df, initial_extrinsics_df)
+    if merged.empty:
+        logger.warning("No extrinsics data could be matched with initial positions -> skipping plot.")
+        return
+
+    codes = sorted(merged["code"].unique())
+
+    with _generate_mosaic_figure_and_axes(len(codes), output_path) as (fig, axes):
+        for i, code in enumerate(codes):
+            ax = axes[i]
+            ax.axis("on")
+            group = merged.loc[merged["code"] == code]
+            ax.scatter(group["dx"], group["dy"], s=15, alpha=0.7, edgecolor="black", linewidth=0.3)
+            ax.axhline(0, color="grey", linewidth=0.8)
+            ax.axvline(0, color="grey", linewidth=0.8)
+            ax.set_aspect("equal")
+            ax.set_title(code, fontsize=9)
+
+        fig.supxlabel("X (m)")
+        fig.supylabel("Y (m)")
+        fig.suptitle(title, fontsize=16)
+
+
+def generate_extrinsics_z_boxplot(
+    extrinsics_df: pd.DataFrame,
+    initial_extrinsics_df: pd.DataFrame,
+    output_path: str | Path,
+    title: str = "",
+    overwrite: bool = False,
+) -> None:
+    """
+    Generate a boxplot of per-camera altitude shifts (optimized minus initial Z), one box per submission.
+
+    ``extrinsics_df`` and ``initial_extrinsics_df`` are expected to cover a single (site, dataset)
+    group, see :func:`generate_extrinsics_position_mosaic`.
+    """
+    if not overwrite and Path(output_path).exists():
+        logger.debug(f"File {output_path} is up to date -> skipping.")
+        return
+
+    merged = _merge_extrinsics_with_initial(extrinsics_df, initial_extrinsics_df)
+    if merged.empty:
+        logger.warning("No extrinsics data could be matched with initial positions -> skipping plot.")
+        return
+
+    codes = sorted(merged["code"].unique())
+    data = [merged.loc[merged["code"] == code, "dz"].to_numpy() for code in codes]
+
+    fig = Figure(figsize=(max(6, len(codes) * 0.5), 8))
+    ax = fig.add_subplot(1, 1, 1)
+    ax.boxplot(data)
+    ax.axhline(0, color="grey", linewidth=0.8)
+    ax.set_xticklabels(codes, rotation=90, ha="right")
+    ax.set_ylabel("Altitude shift: optimized minus initial (m)")
+    fig.suptitle(title, fontsize=16)
+    fig.tight_layout()
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(exist_ok=True, parents=True)
+    fig.savefig(output_path)
+
+
+#######################################################################################################################
 ##                                                  STATISTICS VISUALIZATION
 #######################################################################################################################
 
@@ -970,6 +1057,26 @@ def _plot_boolean_df(
             plt.show()
         else:
             plt.close()
+
+
+def _merge_extrinsics_with_initial(extrinsics_df: pd.DataFrame, initial_extrinsics_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Join a (site, dataset) group's submitted cameras with their initial positions on ``image_file_name``.
+
+    Adds ``dx``/``dy``/``dz`` columns holding the shift between the submitted (x_map, y_map, alt)
+    and the initial ones.
+    """
+    initial_df = initial_extrinsics_df.rename(columns=lambda c: c.strip().lower().replace(" ", "_"))
+    merged = extrinsics_df.reset_index().merge(
+        initial_df[["image_file_name", "x_map", "y_map", "alt"]],
+        on="image_file_name",
+        how="inner",
+        suffixes=("", "_initial"),
+    )
+    merged["dx"] = merged["x_map"] - merged["x_map_initial"]
+    merged["dy"] = merged["y_map"] - merged["y_map_initial"]
+    merged["dz"] = merged["alt"] - merged["alt_initial"]
+    return merged
 
 
 def _read_raster_with_max_size(file: str, maxsize: int = 2000):

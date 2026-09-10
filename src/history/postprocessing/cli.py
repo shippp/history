@@ -41,13 +41,13 @@ import click
 
 from history.cli_common import configure_logging, load_config
 from history.config import Config
-from history.postprocessing.pipeline import generate_sparse_pointcloud_viz, report_symlinks
+from history.postprocessing.pipeline import report_symlinks
 
 logger = logging.getLogger(__name__)
 
 _TEMPLATE_CONFIG = Path(__file__).parent / "config.exemple.toml"
 
-RUN_STEPS = ["uncompress", "symlinks", "check_planned", "sparse_viz", "provided_dem", "point2dem", "coregister", "ddem", "generate_pdf", "all"]
+RUN_STEPS = ["uncompress", "symlinks", "check_planned", "camera_viz", "sparse_viz", "provided_dem", "point2dem", "coregister", "ddem", "generate_pdf", "all"]
 
 
 @click.group()
@@ -151,9 +151,16 @@ def _run_check_planned(config: Config) -> None:
     if not config.no_plots:
         plot_planned_submissions(config, planned_outfile)
 
+def _run_camera_viz(config: Config) -> None:
+    """Generate vizualisation for intrinsics and extrinsics"""
+    from history.postprocessing.pipeline import generate_intrinsics_extrinsics_viz
+    generate_intrinsics_extrinsics_viz(config)
+
+
         
 def _run_sparse_viz(config: Config) -> None:
     """Generate viz for sparse point cloud"""
+    from history.postprocessing.pipeline import generate_sparse_pointcloud_viz
     generate_sparse_pointcloud_viz(config)
 
 
@@ -271,6 +278,7 @@ _STEP_RUNNERS = {
     "uncompress": _run_uncompress,
     "symlinks": _run_symlinks,
     "check_planned": _run_check_planned,
+    "camera_viz": _run_camera_viz,
     "sparse_viz": _run_sparse_viz,
     "provided_dem": _run_provided_dem,
     "point2dem": _run_point2dem,

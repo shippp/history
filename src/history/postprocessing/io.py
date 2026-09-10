@@ -1,14 +1,14 @@
+import logging
 import re
 import shutil
 import tarfile
 import zipfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Union
-import logging
 
+import gdown
 import pandas as pd
 import py7zr
-import gdown
 
 logger = logging.getLogger(__name__)
 
@@ -511,6 +511,70 @@ def analyze_submissions(
     return df, files_dict
 
 
+
+def concat_intrinsics_files(files: Sequence[str | Path]) -> pd.DataFrame:
+
+    MANDATORY_COLUMNS = ["focal_length", "pixel_pitch", "principal_point_x_mm", "principal_point_y_mm"]
+    results = []
+
+
+    for f in files:
+        try:
+            code, metadatas = parse_filename(f)
+            row = {"code": code, **metadatas}
+
+            df = pd.read_csv(f)
+
+            if len(df) != 1:
+                raise ValueError(f"Expected 1 row, found : {len(df)}")
+
+            # normalize df columns 
+            df.columns = df.columns.str.lower().str.strip().str.replace(" ", "_")
+
+            # add only mandatory columns if all are present and raise error if not
+            for mandatory_col in MANDATORY_COLUMNS:
+                if mandatory_col not in df.columns:
+                    raise ValueError(f"Missing the mandatory column : {mandatory_col}")
+                row[mandatory_col] = df.loc[0, mandatory_col]
+            
+            results.append(row)
+        except Exception as e:
+            logger.error(f"Error while processing {f} : {e}")
+            continue
+
+    return pd.DataFrame(results).set_index("code")
+
+
+def concat_extrinsics_files(files: Sequence[str | Path]) -> pd.DataFrame:
+    MANDATORY_COLUMNS = ["image_file_name", "lon", "lat", "alt", "x_map", "y_map"]
+    results = []
+
+    for f in files:
+        try:
+            code, metadatas = parse_filename(f)
+
+            df = pd.read_csv(f)
+
+            # normalize df columns
+            df.columns = df.columns.str.lower().str.strip().str.replace(" ", "_")
+
+            # add only mandatory columns if all are present and raise error if not
+            for mandatory_col in MANDATORY_COLUMNS:
+                if mandatory_col not in df.columns:
+                    raise ValueError(f"Missing the mandatory column : {mandatory_col}")
+
+            for _, extrinsics_row in df.iterrows():
+                row = {"code": code, **metadatas}
+                for mandatory_col in MANDATORY_COLUMNS:
+                    row[mandatory_col] = extrinsics_row[mandatory_col]
+                results.append(row)
+        except Exception as e:
+            logger.error(f"Error while processing {f} : {e}")
+            continue
+
+    return pd.DataFrame(results).set_index("code")
+
+
 def combine_intrinsics_files(files_dict: Dict[str, Dict[str, str]]) -> pd.DataFrame:
     """
     Combine all intrinsics CSV files from submissions into a single DataFrame.
@@ -956,80 +1020,6 @@ def validate_submissions(df: pd.DataFrame) -> None:
     logger.warning(f"{len(issues)}/{len(df)} submissions have missing mandatory files:")
     for code, missing in sorted(issues.items()):
         logger.warning(f"  {code}: missing {missing}")
-
-
-class ReferencesData:
-    def __init__(self, references_data_mapping: dict[tuple[str, str], dict[str, str | Path]]):
-        """
-        Initialize a ReferencesData instance, which manages access to reference data
-        for multiple sites and datasets, including DEMs, DEM masks, and landcover rasters.
-
-        The class provides methods to retrieve the appropriate reference files for a
-        given site and dataset, ensuring that all expected files exist.
-
-        Parameters
-        ----------
-        references_data_mapping : dict
-            A mapping from (site, dataset) tuples to dictionaries containing file paths for:
-            - "ref_dem": reference DEM raster
-            - "ref_dem_mask": corresponding DEM mask
-            - "landcover": landcover raster
-
-        Raises
-        ------
-        KeyError
-            If expected (site, dataset) keys or sub-keys are missing.
-        FileNotFoundError
-            If any referenced file does not exist.
-        """
-        self.__check_keys_validity(list(references_data_mapping.keys()))
-        self.__check_values_validity(references_data_mapping)
-        self.__references_data_mapping = references_data_mapping
-
-    def get_ref_dem(self, site: str, dataset: str) -> Path:
-        return Path(self.__references_data_mapping[(site, dataset)]["ref_dem"])
-
-    def get_ref_dem_mask(self, site: str, dataset: str) -> Path:
-        return Path(self.__references_data_mapping[(site, dataset)]["ref_dem_mask"])
-
-    def get_landcover(self, site: str, dataset: str) -> Path:
-        return Path(self.__references_data_mapping[(site, dataset)]["landcover"])
-
-    @staticmethod
-    def __check_keys_validity(keys: list[tuple[str, str]]) -> None:
-        expected_keys = {
-            (site, dataset)
-            for site in FILE_CODE_MAPPING["site"].values()
-            for dataset in FILE_CODE_MAPPING["dataset"].values()
-        }
-
-        # Detect missing keys
-        missing_keys = expected_keys - set(keys)
-        if missing_keys:
-            raise KeyError(
-                f"The following (site, dataset) keys are missing in references_data_mapping: {sorted(missing_keys)}"
-            )
-
-    @staticmethod
-    def __check_values_validity(references_data_mapping: dict[tuple[str, str], dict[str, str | Path]]) -> None:
-        expected_sub_keys = set(["ref_dem", "ref_dem_mask", "landcover"])
-
-        for (site, dataset), sub_dict in references_data_mapping.items():
-            sub_keys = set(sub_dict.keys())
-
-            # Detect missing keys
-            missing_keys = expected_sub_keys - set(sub_keys)
-            if missing_keys:
-                raise KeyError(
-                    f"The following ({site}, {dataset}) sub keys are missing in references_data_mapping: {sorted(missing_keys)}"
-                )
-
-            for file_type, file_path in sub_dict.items():
-                fp = Path(file_path)
-                if not fp.exists():
-                    raise FileNotFoundError(
-                        f"File '{fp}' for type '{file_type}' in ({site}, {dataset}) does not exist."
-                    )
 
 
 def get_filepaths_df(**kwargs: Iterable[str | Path]) -> pd.DataFrame:

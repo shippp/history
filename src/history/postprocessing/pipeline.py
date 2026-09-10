@@ -18,7 +18,6 @@ All I/O operations rely on ``geoutils``, ``rasterio``, ``laspy``, and related ge
 libraries, ensuring consistent handling of CRS, raster grids, and metadata.
 """
 
-from collections import defaultdict
 import json
 import logging
 import shutil
@@ -27,11 +26,12 @@ import sys
 import tarfile
 import time
 import zipfile
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable
+
 import geoutils as gu
-from history.config import Config
 import humanize
 import laspy
 import numpy as np
@@ -48,7 +48,13 @@ import history.postprocessing.io as io
 import history.postprocessing.sankey as sankey
 import history.postprocessing.statistics as stats
 import history.postprocessing.visualization as viz
-from history.postprocessing.io import ReferencesData, is_output_up_to_date, parse_filename
+from history.config import Config, ReferencesConfig
+from history.postprocessing.io import (
+    concat_extrinsics_files,
+    concat_intrinsics_files,
+    is_output_up_to_date,
+    parse_filename,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +260,43 @@ def plot_planned_submissions(config: Config, planned_outfile: str | Path) -> Non
     logger.info(f"Updated planned submissions saved to {planned_outfile}.")
 
 
+def generate_intrinsics_extrinsics_viz(config: Config) -> None:
+    """Concatenate submitted intrinsics/extrinsics, and plot camera positions/altitude shifts vs. the initial ones."""
+    intrinsics_files = list((config.proc_dir.symlinks_dir / "intrinsics").glob("*.csv"))
+    intrinsics_df = concat_intrinsics_files(intrinsics_files)
+
+    extrinsics_files = list((config.proc_dir.symlinks_dir / "extrinsics").glob("*.csv"))
+    extrinsics_df = concat_extrinsics_files(extrinsics_files)
+
+    if extrinsics_df.empty:
+        logger.warning("No extrinsics data found -> skipping extrinsics plots.")
+        return
+
+    for (site, dataset), group in extrinsics_df.groupby(["site", "dataset"]):
+        logger.debug(f"Plotting extrinsics **** {site} - {dataset} ****")
+        try:
+            initial_extrinsics_path = config.references_data_mapping.get_initial_extrinsics(site, dataset)
+            initial_extrinsics_df = pd.read_csv(initial_extrinsics_path)
+
+            sub_dir = config.plot_dir / f"{site}_{dataset}"
+            viz.generate_extrinsics_position_mosaic(
+                group,
+                initial_extrinsics_df,
+                sub_dir / "camera_positions_mosaic.png",
+                title=f"({site} {dataset}) Camera XY positions relative to initial position, per submission",
+                overwrite=config.overwrite_plots,
+            )
+            viz.generate_extrinsics_z_boxplot(
+                group,
+                initial_extrinsics_df,
+                sub_dir / "camera_z_shift_boxplot.png",
+                title=f"({site} {dataset}) Camera altitude shift (optimized minus initial), per submission",
+                overwrite=config.overwrite_plots,
+            )
+        except Exception as e:
+            logger.error(f"Error while plotting extrinsics for ({site}, {dataset}): {e}")
+            continue
+
 def save_sparsecloud_diff(sparsecloud_path: Path, ref_dem: gu.Raster, output_path: Path) -> None:
     """Compute the elevation difference between a point cloud and a reference DEM, and save it as a LAS file."""
     sparse_pc = gu.PointCloud(str(sparsecloud_path))
@@ -337,7 +380,7 @@ def generate_sparse_pointcloud_viz(config: Config) -> None:
 def process_pointclouds_to_dems(
     pointcloud_files: list[str | Path],
     output_directory: str | Path,
-    references_data: ReferencesData,
+    references_data: ReferencesConfig,
     pdal_exec_path: str = "pdal",
     overwrite: bool = False,
     dry_run: bool = False,
@@ -366,7 +409,7 @@ def process_pointclouds_to_dems(
         List of point cloud file paths to be converted.
     output_directory : str or Path
         Directory where the generated DEM files will be written.
-    references_data : ReferencesData
+    references_data : ReferencesConfig
         Object capable of providing the correct reference DEM for each (site, dataset).
     pdal_exec_path : str, optional
         Path to the PDAL executable. Default is ``"pdal"``.
@@ -540,7 +583,7 @@ def generate_provided_dem_viz(config: Config) -> None:
 def add_provided_dems(
     dem_files: list[str | Path],
     output_dir: str | Path,
-    references_data: ReferencesData,
+    references_data: ReferencesConfig,
     overwrite: bool = False,
     suffix: str = "-DEM",
 ) -> None:
@@ -563,7 +606,7 @@ def add_provided_dems(
         List of user-provided DEM file paths to process.
     output_dir : str or Path
         Directory where reprojected DEMs will be written. Created if necessary.
-    references_data : ReferencesData
+    references_data : ReferencesConfig
         Object used to retrieve reference DEMs based on metadata extracted from
         input filenames (e.g., ``site`` and ``dataset`` fields).
     overwrite : bool, optional
@@ -615,7 +658,7 @@ def add_provided_dems(
 def coregister_dems(
     dem_files: Iterable[str | Path],
     output_dir: str | Path,
-    references_data: ReferencesData,
+    references_data: ReferencesConfig,
     overwrite: bool = False,
     max_workers: int | None = None,
 ) -> None:
@@ -639,7 +682,7 @@ def coregister_dems(
         Iterable of DEM file paths to be coregistered.
     output_dir : str or Path
         Directory where coregistered DEMs will be saved.
-    references_data : ReferencesData
+    references_data : ReferencesConfig
         Object providing reference DEMs and masks for each (site, dataset) pair.
     overwrite : bool, optional
         If ``True``, overwrite existing output DEMs. Default is ``False``.
@@ -710,7 +753,7 @@ def coregister_dems(
 def generate_ddems(
     dem_files: Iterable[str | Path],
     output_dir: str | Path,
-    references_data: ReferencesData,
+    references_data: ReferencesConfig,
     overwrite: bool = False,
     max_workers: int | None = None,
     suffix: str = "-DDEM",
@@ -735,7 +778,7 @@ def generate_ddems(
         Iterable of DEM file paths to process.
     output_dir : str or Path
         Directory where DDEM files will be written. Created if missing.
-    references_data : ReferencesData
+    references_data : ReferencesConfig
         Object that maps (site, dataset) pairs to their reference DEM files.
     overwrite : bool, optional
         If ``True``, existing output files are replaced. Default is ``False``.
