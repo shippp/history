@@ -272,16 +272,19 @@ def generate_intrinsics_extrinsics_viz(config: Config) -> None:
             logger.debug(f"Plotting intrinsics spread **** {site} - {dataset} ****")
             try:
                 sub_dir = config.plot_dir / f"{site}_{dataset}"
-                viz.generate_focal_length_boxplot(
+                viz.generate_intrinsics_boxplots(
                     group,
-                    sub_dir / "focal_length_spread_boxplot.png",
-                    title=f"({site} {dataset}) Focal length spread across submissions",
-                    overwrite=config.overwrite_plots,
-                )
-                viz.generate_pixel_pitch_boxplot(
-                    group,
-                    sub_dir / "pixel_pitch_spread_boxplot.png",
-                    title=f"({site} {dataset}) Pixel pitch spread across submissions",
+                    variables=[
+                        ("focal_length", "Focal length (mm)"),
+                        ("pixel_pitch", "Pixel pitch (mm)"),
+                        ("k1", "K1 (radial distortion)"),
+                        ("k2", "K2 (radial distortion)"),
+                        ("k3", "K3 (radial distortion)"),
+                        ("p1", "P1 (tangential distortion)"),
+                        ("p2", "P2 (tangential distortion)")
+                    ],
+                    output_path=sub_dir / "intrinsics_spread_boxplots.png",
+                    title=f"({site} {dataset}) Intrinsics spread across submissions",
                     overwrite=config.overwrite_plots,
                 )
                 viz.generate_principal_point_scatter(

@@ -515,6 +515,7 @@ def analyze_submissions(
 def concat_intrinsics_files(files: Sequence[str | Path]) -> pd.DataFrame:
 
     MANDATORY_COLUMNS = ["focal_length", "pixel_pitch", "principal_point_x_mm", "principal_point_y_mm"]
+    OPTIONAL_COLUMNS = ["k1", "k2", "k3", "p1", "p2"]
     results = []
 
 
@@ -528,7 +529,7 @@ def concat_intrinsics_files(files: Sequence[str | Path]) -> pd.DataFrame:
             if len(df) != 1:
                 raise ValueError(f"Expected 1 row, found : {len(df)}")
 
-            # normalize df columns 
+            # normalize df columns
             df.columns = df.columns.str.lower().str.strip().str.replace(" ", "_")
 
             # add only mandatory columns if all are present and raise error if not
@@ -536,7 +537,11 @@ def concat_intrinsics_files(files: Sequence[str | Path]) -> pd.DataFrame:
                 if mandatory_col not in df.columns:
                     raise ValueError(f"Missing the mandatory column : {mandatory_col}")
                 row[mandatory_col] = df.loc[0, mandatory_col]
-            
+
+            # optional columns are set to NaN when the file doesn't provide them
+            for optional_col in OPTIONAL_COLUMNS:
+                row[optional_col] = df.loc[0, optional_col] if optional_col in df.columns else float("nan")
+
             results.append(row)
         except Exception as e:
             logger.error(f"Error while processing {f} : {e}")
