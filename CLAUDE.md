@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **History** is a research toolkit for comparing stereo reconstruction workflows applied to historical imagery (aerial, KH-9 PC, KH-9 MC) over two study sites: Casa Grande (Arizona) and Iceland. It covers three pipelines:
 
 1. **Preprocessing** – downloading and preparing raw historical images for stereo reconstruction (via Jupyter notebooks + `hipp`/`usgsxplore`)
-2. **Post-processing** – validating, organizing, and evaluating stereo reconstruction submissions from experiment participants (up through coregistered DEMs and dDEMs)
-3. **Analysis** – derived statistics and plots computed on top of the post-processing outputs (STD DEMs, landcover-stratified statistics)
+2. **Post-processing** – apply a common postprocessing of the submissions from all participants: DEM rasterization, coregistration, difference with reference elevation, quick plots to validate submissions
+3. **Analysis** – analysis, evaluation and intercomparison of the submissions output and derived outputs (DEMs, DEM difference etc)
 
 Post-processing and analysis share the same `Config`/`ProcConfig` and processing directory tree; analysis steps run after the corresponding post-processing steps have populated `coregistered_dems/`.
 
