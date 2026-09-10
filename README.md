@@ -72,7 +72,7 @@ The pipeline runs the following steps in order:
 | `ddem` | Compute differential DEMs before and after coregistration |
 | `generate_pdf` | Assemble all pipeline output plots into a single PDF report |
 
-Each step can also be run individually (e.g. `history-postprocess run point2dem --config …`). Use `--overwrite` to recompute existing outputs, `--no-plots` to skip figures, and `-v`/`-vv` to increase log verbosity.
+Each step can also be run individually, or as a subset (e.g. `history-postprocess run point2dem coregister --config …`) — steps always run in the pipeline order above, regardless of the order given on the command line. Use `--overwrite` to recompute existing outputs, `--no-plots` to skip figures, and `-v`/`-vv` to increase log verbosity.
 
 **3. Check progress**
 
@@ -97,7 +97,7 @@ history-analysis run all --config my_run/config.toml
 | `std_dem` | Build one standard-deviation DEM per (site, dataset) group from coregistered DEMs |
 | `landcover` | Compute and plot landcover-stratified statistics on dDEMs and STD DEMs |
 
-Each step can also be run individually (e.g. `history-analysis run std_dem --config …`), with the same `--overwrite`/`--no-plots`/`-v` flags as `history-postprocess`.
+Each step can also be run individually, or as a subset (e.g. `history-analysis run std_dem landcover --config …`), with the same `--overwrite`/`--no-plots`/`-v` flags as `history-postprocess`.
 
 ## Installation
 

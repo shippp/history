@@ -8,8 +8,9 @@ Two subcommands are available:
     Edit the generated ``config.toml`` to point to your data before running
     any pipeline step.
 
-``history-postprocess run <STEP> --config <path/to/config.toml>``
-    Execute one or all pipeline steps in order. Available steps:
+``history-postprocess run <STEP>... --config <path/to/config.toml>``
+    Execute one or more pipeline steps, always in pipeline order regardless of
+    the order given on the command line. Available steps:
 
     uncompress     Extract compressed submission archives into the extracted dir.
     symlinks       Index submissions, parse filenames, and create typed symlinks.
@@ -281,7 +282,7 @@ _STEP_RUNNERS = {
 
 
 @cli.command("run")
-@click.argument("step", type=click.Choice(RUN_STEPS))
+@click.argument("step", nargs=-1, required=True, type=click.Choice(RUN_STEPS))
 @click.option("--config", "config_path", default=Path("config.toml"), type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Path to config.toml (default: ./config.toml)")
 @click.option("--overwrite", is_flag=True, default=False, help="Force recompute of existing data outputs (overrides config)")
 @click.option("--overwrite-plots", "overwrite_plots", is_flag=True, default=False, help="Force regeneration of existing plots (overrides config)")
@@ -290,7 +291,7 @@ _STEP_RUNNERS = {
 @click.option("--max-workers", "max_workers", type=int, default=None, help="Number of parallel workers (overrides config)")
 @click.option("-v", "--verbose", "verbose", count=True, help="Increase verbosity (-v INFO, -vv DEBUG)")
 def cmd_run(
-    step: str,
+    step: tuple[str, ...],
     config_path: Path,
     overwrite: bool,
     overwrite_plots: bool,
@@ -301,20 +302,19 @@ def cmd_run(
 ) -> None:
     """Run one or more postprocessing steps.
 
-    STEP is one of: uncompress, symlinks, check_planned, sparse_viz, provided_dem, point2dem,
-    coregister, ddem, generate_pdf, all.
+    STEP is one or more of: uncompress, symlinks, check_planned, sparse_viz, provided_dem,
+    point2dem, coregister, ddem, generate_pdf, all. Steps always run in pipeline order,
+    regardless of the order given on the command line.
     """
     configure_logging(verbose, cli_logger_name=__name__)
     config = load_config(config_path, overwrite, overwrite_plots, dry_run, no_plots, max_workers)
 
-    if step == "all":
-        for name, runner in _STEP_RUNNERS.items():
-            logger.info(f"Running step: {name}")
-            runner(config)
-            logger.info(f"Step `{name}` finished")
+    steps_to_run = list(_STEP_RUNNERS) if "all" in step else [name for name in _STEP_RUNNERS if name in step]
 
-    else:
-        _STEP_RUNNERS[step](config)
+    for name in steps_to_run:
+        logger.info(f"Running step: {name}")
+        _STEP_RUNNERS[name](config)
+        logger.info(f"Step `{name}` finished")
 
 
 def main() -> None:
