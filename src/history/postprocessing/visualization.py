@@ -475,6 +475,138 @@ def generate_extrinsics_z_boxplot(
     fig.savefig(output_path)
 
 
+def generate_focal_length_boxplot(
+    intrinsics_df: pd.DataFrame,
+    output_path: str | Path,
+    title: str = "",
+    overwrite: bool = False,
+) -> None:
+    """
+    Generate a boxplot of the focal length spread across submissions, one point per code.
+
+    ``intrinsics_df`` is expected to cover a single (site, dataset) group, indexed by
+    submission ``code`` with a ``focal_length`` column, see :func:`generate_extrinsics_z_boxplot`.
+    """
+    if not overwrite and Path(output_path).exists():
+        logger.debug(f"File {output_path} is up to date -> skipping.")
+        return
+
+    focal_lengths = intrinsics_df["focal_length"].dropna()
+    if focal_lengths.empty:
+        logger.warning("No focal_length data found -> skipping plot.")
+        return
+
+    colors = plt.get_cmap("tab20")(np.linspace(0, 1, len(focal_lengths)))
+
+    fig = Figure(figsize=(max(6, len(focal_lengths) * 0.3), 8))
+    ax = fig.add_subplot(1, 1, 1)
+    ax.boxplot(focal_lengths, showfliers=False)
+    for (code, focal_length), color in zip(focal_lengths.items(), colors):
+        ax.scatter(1, focal_length, s=40, alpha=0.8, color=color, edgecolor="black", linewidth=0.3, label=code)
+
+    ax.set_xticks([])
+    ax.set_ylabel("Focal length (mm)")
+    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8)
+    fig.suptitle(title, fontsize=16)
+    fig.tight_layout()
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(exist_ok=True, parents=True)
+    fig.savefig(output_path)
+
+
+def generate_pixel_pitch_boxplot(
+    intrinsics_df: pd.DataFrame,
+    output_path: str | Path,
+    title: str = "",
+    overwrite: bool = False,
+) -> None:
+    """
+    Generate a boxplot of the pixel pitch spread across submissions, one point per code.
+
+    ``intrinsics_df`` is expected to cover a single (site, dataset) group, indexed by
+    submission ``code`` with a ``pixel_pitch`` column, see :func:`generate_extrinsics_z_boxplot`.
+    """
+    if not overwrite and Path(output_path).exists():
+        logger.debug(f"File {output_path} is up to date -> skipping.")
+        return
+
+    pixel_pitches = intrinsics_df["pixel_pitch"].dropna()
+    if pixel_pitches.empty:
+        logger.warning("No pixel_pitch data found -> skipping plot.")
+        return
+
+    colors = plt.get_cmap("tab20")(np.linspace(0, 1, len(pixel_pitches)))
+
+    fig = Figure(figsize=(max(6, len(pixel_pitches) * 0.3), 8))
+    ax = fig.add_subplot(1, 1, 1)
+    ax.boxplot(pixel_pitches, showfliers=False)
+    for (code, pixel_pitch), color in zip(pixel_pitches.items(), colors):
+        ax.scatter(1, pixel_pitch, s=40, alpha=0.8, color=color, edgecolor="black", linewidth=0.3, label=code)
+
+    ax.set_xticks([])
+    ax.set_ylabel("Pixel pitch (mm)")
+    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8)
+    fig.suptitle(title, fontsize=16)
+    fig.tight_layout()
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(exist_ok=True, parents=True)
+    fig.savefig(output_path)
+
+
+def generate_principal_point_scatter(
+    intrinsics_df: pd.DataFrame,
+    output_path: str | Path,
+    title: str = "",
+    overwrite: bool = False,
+) -> None:
+    """
+    Generate a scatter plot of the principal point spread across submissions, one point per code.
+
+    ``intrinsics_df`` is expected to cover a single (site, dataset) group, indexed by
+    submission ``code`` with ``principal_point_x_mm``/``principal_point_y_mm`` columns,
+    see :func:`generate_extrinsics_z_boxplot`.
+    """
+    if not overwrite and Path(output_path).exists():
+        logger.debug(f"File {output_path} is up to date -> skipping.")
+        return
+
+    points = intrinsics_df[["principal_point_x_mm", "principal_point_y_mm"]].dropna()
+    if points.empty:
+        logger.warning("No principal point data found -> skipping plot.")
+        return
+
+    colors = plt.get_cmap("tab20")(np.linspace(0, 1, len(points)))
+
+    fig = Figure(figsize=(8, 8))
+    ax = fig.add_subplot(1, 1, 1)
+    for (code, row), color in zip(points.iterrows(), colors):
+        ax.scatter(
+            row["principal_point_x_mm"],
+            row["principal_point_y_mm"],
+            s=40,
+            alpha=0.8,
+            color=color,
+            edgecolor="black",
+            linewidth=0.3,
+            label=code,
+        )
+
+    ax.axhline(0, color="grey", linewidth=0.8)
+    ax.axvline(0, color="grey", linewidth=0.8)
+    ax.set_aspect("equal")
+    ax.set_xlabel("Principal point X (mm)")
+    ax.set_ylabel("Principal point Y (mm)")
+    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8)
+    fig.suptitle(title, fontsize=16)
+    fig.tight_layout()
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(exist_ok=True, parents=True)
+    fig.savefig(output_path)
+
+
 #######################################################################################################################
 ##                                                  STATISTICS VISUALIZATION
 #######################################################################################################################

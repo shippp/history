@@ -261,9 +261,38 @@ def plot_planned_submissions(config: Config, planned_outfile: str | Path) -> Non
 
 
 def generate_intrinsics_extrinsics_viz(config: Config) -> None:
-    """Concatenate submitted intrinsics/extrinsics, and plot camera positions/altitude shifts vs. the initial ones."""
+    """Concatenate submitted intrinsics/extrinsics, and plot focal length/pixel pitch spread and camera positions/altitude shifts vs. the initial ones."""
     intrinsics_files = list((config.proc_dir.symlinks_dir / "intrinsics").glob("*.csv"))
     intrinsics_df = concat_intrinsics_files(intrinsics_files)
+
+    if intrinsics_df.empty:
+        logger.warning("No intrinsics data found -> skipping focal length/pixel pitch plots.")
+    else:
+        for (site, dataset), group in intrinsics_df.groupby(["site", "dataset"]):
+            logger.debug(f"Plotting intrinsics spread **** {site} - {dataset} ****")
+            try:
+                sub_dir = config.plot_dir / f"{site}_{dataset}"
+                viz.generate_focal_length_boxplot(
+                    group,
+                    sub_dir / "focal_length_spread_boxplot.png",
+                    title=f"({site} {dataset}) Focal length spread across submissions",
+                    overwrite=config.overwrite_plots,
+                )
+                viz.generate_pixel_pitch_boxplot(
+                    group,
+                    sub_dir / "pixel_pitch_spread_boxplot.png",
+                    title=f"({site} {dataset}) Pixel pitch spread across submissions",
+                    overwrite=config.overwrite_plots,
+                )
+                viz.generate_principal_point_scatter(
+                    group,
+                    sub_dir / "principal_point_scatter.png",
+                    title=f"({site} {dataset}) Principal point spread across submissions",
+                    overwrite=config.overwrite_plots,
+                )
+            except Exception as e:
+                logger.error(f"Error while plotting intrinsics spread for ({site}, {dataset}): {e}")
+                continue
 
     extrinsics_files = list((config.proc_dir.symlinks_dir / "extrinsics").glob("*.csv"))
     extrinsics_df = concat_extrinsics_files(extrinsics_files)
