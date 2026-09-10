@@ -23,7 +23,7 @@ def cli() -> None:
     """Analysis."""
 
 @cli.command("run")
-@click.argument("step", type=click.Choice(STEPS))
+@click.argument("step", nargs=-1, required=True, type=click.Choice(STEPS))
 @click.option("--config", "config_path", default=Path("config.toml"), type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Path to config.toml (default: ./config.toml)")
 @click.option("--overwrite", is_flag=True, default=False, help="Force recompute of existing data outputs (overrides config)")
 @click.option("--overwrite-plots", "overwrite_plots", is_flag=True, default=False, help="Force regeneration of existing plots (overrides config)")
@@ -32,7 +32,7 @@ def cli() -> None:
 @click.option("--max-workers", "max_workers", type=int, default=None, help="Number of parallel workers (overrides config)")
 @click.option("-v", "--verbose", "verbose", count=True, help="Increase verbosity (-v INFO, -vv DEBUG)")
 def cmd_run(
-    step: str,
+    step: tuple[str, ...],
     config_path: Path,
     overwrite: bool,
     overwrite_plots: bool,
@@ -41,18 +41,16 @@ def cmd_run(
     max_workers: int | None,
     verbose: int,
 ) -> None:
-    """Run one or more Analysis steps."""
+    """Run one or more Analysis steps, always in pipeline order regardless of the order given on the command line."""
     configure_logging(verbose, cli_logger_name=__name__)
     config = load_config(config_path, overwrite, overwrite_plots, dry_run, no_plots, max_workers)
 
-    if step == "all":
-        for name, runner in STEP_RUNNERS.items():
-            logger.info(f"Running step: {name}")
-            runner(config)
-            logger.info(f"Step `{name}` finished")
+    steps_to_run = list(STEP_RUNNERS) if "all" in step else [name for name in STEP_RUNNERS if name in step]
 
-    else:
-        STEP_RUNNERS[step](config)
+    for name in steps_to_run:
+        logger.info(f"Running step: {name}")
+        STEP_RUNNERS[name](config)
+        logger.info(f"Step `{name}` finished")
 
 
 def main():
