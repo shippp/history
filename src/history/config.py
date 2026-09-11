@@ -3,7 +3,51 @@ from pathlib import Path
 
 import tomllib
 
-from history.postprocessing.io import ReferencesData
+
+class ReferencesConfig:
+    """
+    Per-(site, dataset) reference file paths, as declared under
+    ``[references_data_mapping.<site>.<dataset>]`` in ``config.toml`` (reference DEM, DEM
+    mask, landcover, initial camera extrinsics, ...).
+
+    Nothing is checked at construction time, so a config missing an entry that a given run
+    never needs (e.g. ``initial_extrinsics`` for a dataset without one) is fine. A resource
+    is only resolved -- and validated -- when actually requested via one of the ``get_*``
+    methods: a ``KeyError`` is raised if it isn't declared in the config, and a
+    ``FileNotFoundError`` if the declared path doesn't exist on disk.
+    """
+
+    def __init__(self, mapping: dict[tuple[str, str], dict[str, str | Path]]):
+        self.__mapping = mapping
+
+    def get_ref_dem(self, site: str, dataset: str) -> Path:
+        """Reference DEM for a (site, dataset) combination."""
+        return self.__resolve(site, dataset, "ref_dem")
+
+    def get_ref_dem_mask(self, site: str, dataset: str) -> Path:
+        """Reference DEM mask for a (site, dataset) combination."""
+        return self.__resolve(site, dataset, "ref_dem_mask")
+
+    def get_landcover(self, site: str, dataset: str) -> Path:
+        """Landcover raster for a (site, dataset) combination."""
+        return self.__resolve(site, dataset, "landcover")
+
+    def get_initial_extrinsics(self, site: str, dataset: str) -> Path:
+        """Initial (pre-bundle-adjustment) camera extrinsics CSV for a (site, dataset) combination."""
+        return self.__resolve(site, dataset, "initial_extrinsics")
+
+    def __resolve(self, site: str, dataset: str, key: str) -> Path:
+        sub_dict = self.__mapping.get((site, dataset), {})
+        if key not in sub_dict:
+            raise KeyError(
+                f"Missing '{key}' for (site={site!r}, dataset={dataset!r}) -> add it under "
+                f"[references_data_mapping.{site}.{dataset}] in config.toml"
+            )
+
+        path = Path(sub_dict[key])
+        if not path.exists():
+            raise FileNotFoundError(f"'{key}' for (site={site!r}, dataset={dataset!r}) does not exist: {path}")
+        return path
 
 
 @dataclass(frozen=True)
@@ -36,6 +80,8 @@ class ProcConfig:
         Sparse point cloud vs. reference DEM diffs.
     provided_dem_diff_dir : Path
         User-provided DEM vs. reference DEM diffs.
+    camera_metadata_dir : Path
+        Concatenated intrinsics/extrinsics CSVs across all submissions.
     """
 
     base_dir: Path
@@ -47,6 +93,7 @@ class ProcConfig:
     std_dems_dir: Path
     sparsecloud_diff_dir: Path
     provided_dem_diff_dir: Path
+    camera_metadata_dir: Path
 
     @classmethod
     def from_base_dir(cls, base_dir: Path) -> "ProcConfig":
@@ -61,6 +108,7 @@ class ProcConfig:
             std_dems_dir=base_dir / "std_dems",
             sparsecloud_diff_dir=base_dir / "sparsecloud_diff",
             provided_dem_diff_dir=base_dir / "provided_dem_diff",
+            camera_metadata_dir=base_dir / "camera_metadata",
         )
 
 
@@ -83,9 +131,8 @@ class Config:
         Intermediate processing directory layout.
     plot_dir : Path
         Directory where all output plots are saved.
-    references_data_mapping : ReferencesData
-        Reference DEMs, masks, and landcover rasters for every
-        (site, dataset) combination.
+    references_data_mapping : ReferencesConfig
+        Reference DEMs, masks, landcover rasters, and other per-(site, dataset) resources.
     overwrite : bool
         If True, existing data outputs are recomputed. Default False.
     overwrite_plots : bool
@@ -105,7 +152,7 @@ class Config:
     proc_dir: ProcConfig
     plot_dir: Path
 
-    references_data_mapping: ReferencesData
+    references_data_mapping: ReferencesConfig
 
     overwrite: bool = False
     overwrite_plots: bool = False
@@ -146,7 +193,7 @@ class Config:
             extracted_dir=Path(data["extracted_dir"]),
             proc_dir=ProcConfig.from_base_dir(Path(data["proc_dir"])),
             plot_dir=Path(data["plot_dir"]),
-            references_data_mapping=ReferencesData(references_data_mapping),
+            references_data_mapping=ReferencesConfig(references_data_mapping),
             overwrite=data.get("overwrite", False),
             overwrite_plots=data.get("overwrite_plots", False),
             dry_run=data.get("dry_run", False),

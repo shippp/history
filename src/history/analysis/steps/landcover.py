@@ -17,8 +17,8 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Patch
 from tqdm import tqdm
 
-from history.config import Config
-from history.postprocessing.io import FILE_CODE_MAPPING, ReferencesData, is_output_up_to_date, parse_filename
+from history.config import Config, ReferencesConfig
+from history.postprocessing.io import FILE_CODE_MAPPING, is_output_up_to_date, parse_filename
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +134,7 @@ def compute_raster_statistics_by_landcover(
 
 
 def compute_landcover_statistics(
-    dem_files: Iterable[str | Path], references_data: ReferencesData, max_workers: int | None = None
+    dem_files: Iterable[str | Path], references_data: ReferencesConfig, max_workers: int | None = None
 ) -> pd.DataFrame:
     """
     Compute landcover-based raster statistics for a collection of DEM files.
@@ -156,7 +156,7 @@ def compute_landcover_statistics(
     ----------
     dem_files : Iterable[str | Path]
         List of DEM file paths to process.
-    references_data : ReferencesData
+    references_data : ReferencesConfig
         Object providing access to reference datasets, in particular landcover rasters.
     max_workers : int, optional
         Maximum number of worker threads to use for parallel computation.
@@ -224,7 +224,7 @@ def compute_landcover_statistics(
 
 
 def compute_landcover_statistics_on_std_dems(
-    dem_files: Iterable[str | Path], references_data: ReferencesData, max_workers: int | None = None
+    dem_files: Iterable[str | Path], references_data: ReferencesConfig, max_workers: int | None = None
 ) -> pd.DataFrame:
     """
     Compute landcover-based statistics for a collection of standardized DEM (STD DEM) files.
@@ -247,7 +247,7 @@ def compute_landcover_statistics_on_std_dems(
     ----------
     dem_files : Iterable[str | Path]
         Iterable of paths to standardized DEM files to process.
-    references_data : ReferencesData
+    references_data : ReferencesConfig
         Object providing access to reference datasets, including landcover rasters.
     max_workers : int, optional
         Maximum number of worker threads to use during parallel computation.

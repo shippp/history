@@ -10,10 +10,14 @@ pdal_exec_path = "pdal"
 max_workers = 4
 pdf_orientation = "auto"
 
+# Any key under a [references_data_mapping.<site>.<dataset>] section is only read (and
+# validated) the first time it's actually requested, so extra/optional keys like
+# initial_extrinsics below can be added only where relevant.
 [references_data_mapping.casa_grande.aerial]
 ref_dem = "/path/to/casa_grande/aerial/ref_dem.tif"
 ref_dem_mask = "/path/to/casa_grande/aerial/ref_dem_mask.tif"
 landcover = "/path/to/casa_grande/aerial/landcover.tif"
+# initial_extrinsics = "/path/to/casa_grande/aerial_images/1978_09_06/camera_model_extrinsics.csv"
 
 [references_data_mapping.casa_grande.kh9mc]
 ref_dem = "/path/to/casa_grande/kh9mc/ref_dem.tif"
