@@ -475,6 +475,33 @@ def generate_extrinsics_z_boxplot(
     fig.savefig(output_path)
 
 
+def _beeswarm_offsets(values: pd.Series | np.ndarray, spacing: float = 0.06, nbins: int = 20) -> np.ndarray:
+    """Compute x-offsets that spread out points sharing similar values, like a beeswarm plot.
+
+    Values are grouped into ``nbins`` equal-width bins; points in the same bin are stacked
+    symmetrically around 0, so close values push apart instead of overlapping.
+    """
+    values = np.asarray(values)
+    order = np.argsort(values)
+    sorted_values = values[order]
+
+    vmin, vmax = sorted_values.min(), sorted_values.max()
+    if vmax == vmin:
+        bin_idx = np.zeros(len(values), dtype=int)
+    else:
+        bin_idx = np.minimum(((sorted_values - vmin) / (vmax - vmin) * nbins).astype(int), nbins - 1)
+
+    offsets = np.empty(len(values))
+    for b in np.unique(bin_idx):
+        mask = bin_idx == b
+        k = mask.sum()
+        offsets[mask] = (np.arange(k) - (k - 1) / 2) * spacing
+
+    result = np.empty(len(values))
+    result[order] = offsets
+    return result
+
+
 def generate_intrinsics_boxplots(
     intrinsics_df: pd.DataFrame,
     variables: Sequence[tuple[str, str]],
@@ -483,7 +510,10 @@ def generate_intrinsics_boxplots(
     overwrite: bool = False,
 ) -> None:
     """
-    Generate one boxplot per intrinsics variable, side by side in a single figure, one point per code.
+    Generate one beeswarm scatter plot per intrinsics variable, side by side in a single figure, one point per code.
+
+    Points are jittered horizontally by local density (see :func:`_beeswarm_offsets`) so that
+    submissions with close values stay readable instead of overlapping.
 
     ``intrinsics_df`` is expected to cover a single (site, dataset) group, indexed by submission
     ``code``. ``variables`` is a list of ``(column, ylabel)`` pairs, e.g.
@@ -506,9 +536,13 @@ def generate_intrinsics_boxplots(
             logger.warning(f"No {column} data found -> skipping subplot.")
             ax.set_axis_off()
             continue
-        ax.boxplot(values, showfliers=False)
-        for code, value in values.items():
-            ax.scatter(1, value, s=40, alpha=0.8, color=color_by_code[code], edgecolor="black", linewidth=0.3, label=code)
+        offsets = _beeswarm_offsets(values.to_numpy())
+        for (code, value), offset in zip(values.items(), offsets):
+            ax.scatter(
+                1 + offset, value, s=40, alpha=0.8, color=color_by_code[code], edgecolor="black", linewidth=0.3, label=code
+            )
+        margin = max(0.5, np.abs(offsets).max() + 0.1)
+        ax.set_xlim(1 - margin, 1 + margin)
         ax.set_xticks([])
         ax.set_ylabel(ylabel)
 
