@@ -467,7 +467,7 @@ def generate_extrinsics_z_boxplot(
     ax.axhline(0, color="grey", linewidth=0.8)
     ax.set_xticklabels(codes, rotation=90, ha="right")
     ax.set_ylabel("Altitude shift: optimized minus initial (m)")
-    fig.suptitle(title, fontsize=16)
+    fig.suptitle(title, fontsize=16, wrap=True)
     fig.tight_layout()
 
     output_path = Path(output_path)
