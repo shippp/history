@@ -9,6 +9,10 @@ from typing import Any, Dict, Iterable, List, Sequence, Union
 import gdown
 import pandas as pd
 import py7zr
+from pyproj import Transformer
+import rasterio
+
+from history.config import ReferencesConfig
 
 logger = logging.getLogger(__name__)
 
@@ -511,6 +515,50 @@ def analyze_submissions(
     return df, files_dict
 
 
+def intrinsics_normalizer(df: pd.DataFrame) -> pd.DataFrame:
+
+    # normalize columns name
+    df.columns = df.columns.str.lower().str.strip().str.replace(" ", "_")
+
+    # renaming with synonyms
+    renaming_mapping = {
+        "principal_point_x_mm": ["xp", "x0", "cx"],
+        "principal_point_y_mm": ["yp", "y0", "cy"],
+        "focal_length": ["focal_lenght"],
+    }
+    for correct_colname, synonyms in renaming_mapping.items():
+        for synonym in synonyms:
+            if synonym in df.columns and correct_colname not in df.columns:
+                df.rename(columns={synonym: correct_colname}, inplace=True)
+
+    # add focal_length/pixel_pitch if missing
+    if "focal_length" not in df.columns:
+        df["focal_length"] = float("nan")
+    if "pixel_pitch" not in df.columns:
+        df["pixel_pitch"] = float("nan")
+
+    return df
+
+
+def extrinsics_normalizer(df: pd.DataFrame, site: str, dataset: str, references_config: ReferencesConfig) -> pd.DataFrame:
+    df.columns = df.columns.str.lower().str.strip().str.replace(" ", "_")
+
+    if {"x_map", "y_map"} <= set(df.columns) or not {"lon", "lat"} <= set(df.columns):
+        return df
+
+    valid = df["lon"].between(-180, 180) & df["lat"].between(-90, 90)
+    if not valid.any():
+        return df
+
+    with rasterio.open(references_config.get_ref_dem(site, dataset)) as src:
+        crs = src.crs
+
+    transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+    df.loc[valid, "x_map"], df.loc[valid, "y_map"] = transformer.transform(
+        df.loc[valid, "lon"].to_numpy(), df.loc[valid, "lat"].to_numpy()
+    )
+    return df
+
 
 def concat_intrinsics_files(files: Sequence[str | Path]) -> pd.DataFrame:
 
@@ -524,7 +572,7 @@ def concat_intrinsics_files(files: Sequence[str | Path]) -> pd.DataFrame:
             code, metadatas = parse_filename(f)
             row = {"code": code, **metadatas}
 
-            df = pd.read_csv(f)
+            df = intrinsics_normalizer(pd.read_csv(f))
 
             if len(df) != 1:
                 raise ValueError(f"Expected 1 row, found : {len(df)}")
@@ -550,7 +598,7 @@ def concat_intrinsics_files(files: Sequence[str | Path]) -> pd.DataFrame:
     return pd.DataFrame(results).set_index("code")
 
 
-def concat_extrinsics_files(files: Sequence[str | Path]) -> pd.DataFrame:
+def concat_extrinsics_files(files: Sequence[str | Path], references_config: ReferencesConfig) -> pd.DataFrame:
     MANDATORY_COLUMNS = ["image_file_name", "lon", "lat", "alt", "x_map", "y_map"]
     results = []
 
@@ -558,7 +606,7 @@ def concat_extrinsics_files(files: Sequence[str | Path]) -> pd.DataFrame:
         try:
             code, metadatas = parse_filename(f)
 
-            df = pd.read_csv(f)
+            df = extrinsics_normalizer(pd.read_csv(f), metadatas["site"], metadatas["dataset"], references_config)
 
             # normalize df columns
             df.columns = df.columns.str.lower().str.strip().str.replace(" ", "_")
@@ -578,6 +626,29 @@ def concat_extrinsics_files(files: Sequence[str | Path]) -> pd.DataFrame:
             continue
 
     return pd.DataFrame(results).set_index("code")
+
+
+def concat_files_raw(files: Sequence[str | Path]) -> pd.DataFrame:
+    """Concatenate CSV files as-is, tagging each row with its submission code.
+
+    No normalization, no mandatory-column checks, no row-count checks -- just a quick,
+    unfiltered look at what submissions actually contain, columns mismatches included.
+    """
+    dfs = []
+    for f in files:
+        try:
+            code, metadatas = parse_filename(f)
+            df = pd.read_csv(f)
+            df.columns = df.columns.str.lower().str.strip().str.replace(" ", "_")
+            df.insert(0, "code", code)
+            for key, value in metadatas.items():
+                df[key] = value
+            dfs.append(df)
+        except Exception as e:
+            logger.error(f"Error while processing {f} : {e}")
+            continue
+
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
 
 def combine_intrinsics_files(files_dict: Dict[str, Dict[str, str]]) -> pd.DataFrame:

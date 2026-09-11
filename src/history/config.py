@@ -80,6 +80,8 @@ class ProcConfig:
         Sparse point cloud vs. reference DEM diffs.
     provided_dem_diff_dir : Path
         User-provided DEM vs. reference DEM diffs.
+    camera_metadata_dir : Path
+        Concatenated intrinsics/extrinsics CSVs across all submissions.
     """
 
     base_dir: Path
@@ -91,6 +93,7 @@ class ProcConfig:
     std_dems_dir: Path
     sparsecloud_diff_dir: Path
     provided_dem_diff_dir: Path
+    camera_metadata_dir: Path
 
     @classmethod
     def from_base_dir(cls, base_dir: Path) -> "ProcConfig":
@@ -105,6 +108,7 @@ class ProcConfig:
             std_dems_dir=base_dir / "std_dems",
             sparsecloud_diff_dir=base_dir / "sparsecloud_diff",
             provided_dem_diff_dir=base_dir / "provided_dem_diff",
+            camera_metadata_dir=base_dir / "camera_metadata",
         )
 
 

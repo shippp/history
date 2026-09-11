@@ -51,6 +51,7 @@ import history.postprocessing.visualization as viz
 from history.config import Config, ReferencesConfig
 from history.postprocessing.io import (
     concat_extrinsics_files,
+    concat_files_raw,
     concat_intrinsics_files,
     is_output_up_to_date,
     parse_filename,
@@ -264,6 +265,11 @@ def generate_intrinsics_extrinsics_viz(config: Config) -> None:
     """Concatenate submitted intrinsics/extrinsics, and plot focal length/pixel pitch spread and camera positions/altitude shifts vs. the initial ones."""
     intrinsics_files = list((config.proc_dir.symlinks_dir / "intrinsics").glob("*.csv"))
     intrinsics_df = concat_intrinsics_files(intrinsics_files)
+    intrinsics_raw_df = concat_files_raw(intrinsics_files)
+
+    config.proc_dir.camera_metadata_dir.mkdir(parents=True, exist_ok=True)
+    intrinsics_df.to_csv(config.proc_dir.camera_metadata_dir / "intrinsics.csv")
+    intrinsics_raw_df.to_csv(config.proc_dir.camera_metadata_dir / "intrinsics_raw.csv", index=False)
 
     if intrinsics_df.empty:
         logger.warning("No intrinsics data found -> skipping focal length/pixel pitch plots.")
@@ -298,7 +304,12 @@ def generate_intrinsics_extrinsics_viz(config: Config) -> None:
                 continue
 
     extrinsics_files = list((config.proc_dir.symlinks_dir / "extrinsics").glob("*.csv"))
-    extrinsics_df = concat_extrinsics_files(extrinsics_files)
+    extrinsics_df = concat_extrinsics_files(extrinsics_files, config.references_data_mapping)
+    extrinsics_raw_df = concat_files_raw(extrinsics_files)
+
+    config.proc_dir.camera_metadata_dir.mkdir(parents=True, exist_ok=True)
+    extrinsics_df.to_csv(config.proc_dir.camera_metadata_dir / "extrinsics.csv")
+    extrinsics_raw_df.to_csv(config.proc_dir.camera_metadata_dir / "extrinsics_raw.csv", index=False)
 
     if extrinsics_df.empty:
         logger.warning("No extrinsics data found -> skipping extrinsics plots.")
