@@ -428,7 +428,7 @@ def generate_extrinsics_position_mosaic(
             ax.scatter(group["dx"], group["dy"], s=15, alpha=0.7, edgecolor="black", linewidth=0.3)
             ax.axhline(0, color="grey", linewidth=0.8)
             ax.axvline(0, color="grey", linewidth=0.8)
-            ax.set_aspect("equal")
+            ax.set_box_aspect(1)
             ax.set_title(code, fontsize=9)
 
         fig.supxlabel("X (m)")
