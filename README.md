@@ -70,11 +70,9 @@ The pipeline runs the following steps in order:
 | `point2dem` | Convert dense point clouds to DEMs via PDAL |
 | `coregister` | Coregister DEMs to the reference (Nuth–Kaab + vertical shift) |
 | `ddem` | Compute differential DEMs before and after coregistration |
-| `std_dem` | Build one standard-deviation DEM per (site, dataset) group |
-| `landcover` | Compute and plot landcover-stratified statistics |
 | `generate_pdf` | Assemble all pipeline output plots into a single PDF report |
 
-Each step can also be run individually (e.g. `history-postprocess run point2dem --config …`). Use `--overwrite` to recompute existing outputs, `--no-plots` to skip figures, and `-v`/`-vv` to increase log verbosity.
+Each step can also be run individually, or as a subset (e.g. `history-postprocess run point2dem coregister --config …`) — steps always run in the pipeline order above, regardless of the order given on the command line. Use `--overwrite` to recompute existing outputs, `--no-plots` to skip figures, and `-v`/`-vv` to increase log verbosity.
 
 **3. Check progress**
 
@@ -85,6 +83,21 @@ history-postprocess status --config my_run/config.toml
 Prints a quick file-count overview of every processing directory (extracted submissions, symlinks, raw/coregistered DEMs, dDEMs, STD DEMs, plots), to see at a glance how far the pipeline has progressed.
 
 For more details on the Post-Processing workflow, see this [README](notebooks/postprocessing/README.md).
+
+## Analysis
+
+Once `history-postprocess` has produced coregistered DEMs, the `history-analysis` CLI computes the derived statistics and plots on top of them, reusing the same `config.toml`:
+
+```bash
+history-analysis run all --config my_run/config.toml
+```
+
+| Step | Description |
+|---|---|
+| `std_dem` | Build one standard-deviation DEM per (site, dataset) group from coregistered DEMs |
+| `landcover` | Compute and plot landcover-stratified statistics on dDEMs and STD DEMs |
+
+Each step can also be run individually, or as a subset (e.g. `history-analysis run std_dem landcover --config …`), with the same `--overwrite`/`--no-plots`/`-v` flags as `history-postprocess`.
 
 ## Installation
 

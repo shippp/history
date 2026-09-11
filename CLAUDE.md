@@ -4,10 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**History** is a research toolkit for comparing stereo reconstruction workflows applied to historical imagery (aerial, KH-9 PC, KH-9 MC) over two study sites: Casa Grande (Arizona) and Iceland. It covers two pipelines:
+**History** is a research toolkit for comparing stereo reconstruction workflows applied to historical imagery (aerial, KH-9 PC, KH-9 MC) over two study sites: Casa Grande (Arizona) and Iceland. It covers three pipelines:
 
 1. **Preprocessing** – downloading and preparing raw historical images for stereo reconstruction (via Jupyter notebooks + `hipp`/`usgsxplore`)
-2. **Post-processing** – validating, organizing, and evaluating stereo reconstruction submissions from experiment participants
+2. **Post-processing** – apply a common postprocessing of the submissions from all participants: DEM rasterization, coregistration, difference with reference elevation, quick plots to validate submissions
+3. **Analysis** – analysis, evaluation and intercomparison of the submissions output and derived outputs (DEMs, DEM difference etc)
+
+Post-processing and analysis share the same `Config`/`ProcConfig` and processing directory tree; analysis steps run after the corresponding post-processing steps have populated `coregistered_dems/`.
 
 The repository does **not** implement any stereo pipeline itself.
 
@@ -36,11 +39,15 @@ ruff format src/
 
 Line length is 120 (`[tool.ruff]` in `pyproject.toml`). There are no automated tests.
 
-## CLI Entry Point
+## CLI Entry Points
 
-After `pip install -e .`, the `history-postprocess` command is available in the active environment. It exposes three subcommands.
+After `pip install -e .`, two commands are available in the active environment: `history-postprocess` and `history-analysis`. Both load configuration and logging setup from shared modules (`history.config`, `history.cli_common`) and take the same `--config`/`--overwrite`/`--overwrite-plots`/`--dry-run`/`--no-plots`/`--max-workers`/`-v` flags on `run`.
 
-### `history-postprocess create <output_dir>`
+### `history-postprocess`
+
+Exposes three subcommands.
+
+#### `history-postprocess create <output_dir>`
 
 Scaffolds a working directory and copies the config template into it:
 
@@ -51,7 +58,7 @@ history-postprocess create my_run/
 
 Edit `config.toml` to set your paths before running any step.
 
-### `history-postprocess run <STEP> --config <path/to/config.toml>`
+#### `history-postprocess run <STEP> --config <path/to/config.toml>`
 
 Executes one or all pipeline steps:
 
@@ -72,8 +79,6 @@ Available steps (executed in this order when using `all`):
 | `point2dem` | Convert dense point clouds to DEMs via PDAL; integrate user-provided DEMs |
 | `coregister` | Coregister raw DEMs to the reference (Nuth–Kaab + vertical shift) |
 | `ddem` | Compute differential DEMs before and after coregistration |
-| `std_dem` | Build one STD DEM per (site, dataset) group from all coregistered DEMs |
-| `landcover` | Compute and plot landcover-stratified statistics on dDEMs and STD DEMs |
 | `generate_pdf` | Assemble all pipeline output plots into a single PDF report |
 | `all` | Run all steps above in order |
 
@@ -87,9 +92,28 @@ Available steps (executed in this order when using `all`):
 | `--max-workers N` | Number of parallel worker threads |
 | `-v` / `-vv` | Increase verbosity (INFO / DEBUG) |
 
-### `history-postprocess status --config <path/to/config.toml>`
+#### `history-postprocess status --config <path/to/config.toml>`
 
 Prints a quick file-count overview of the processing directory tree (extracted submissions, each symlink type, raw/coregistered DEMs, dDEMs before/after coregistration, STD DEMs, plots), so progress can be checked at a glance without running any step.
+
+### `history-analysis`
+
+Runs derived statistics/plots on top of post-processing outputs. Only one subcommand: `run` (no `create`/`status` — it reuses the same `config.toml` scaffolded by `history-postprocess create`).
+
+```bash
+history-analysis run all --config my_run/config.toml
+history-analysis run std_dem --config my_run/config.toml --overwrite
+```
+
+Available steps (executed in this order when using `all`):
+
+| Step | Description |
+|---|---|
+| `std_dem` | Build one STD DEM per (site, dataset) group from `coregistered_dems/`, and plot them |
+| `landcover` | Compute landcover-stratified statistics on dDEMs and STD DEMs, and plot them |
+| `all` | Run all steps above in order |
+
+Takes the same `--config`/`--overwrite`/`--overwrite-plots`/`--dry-run`/`--no-plots`/`--max-workers`/`-v` flags as `history-postprocess run`.
 
 ## Scripts
 
@@ -107,12 +131,16 @@ python scripts/check_submissions.py test
 
 ### `src/history/`
 
-- **`postprocessing/cli.py`** – `history-postprocess` entry point. Two subcommands: `create` (scaffold a directory with `config.toml`) and `run` (dispatch one or all pipeline steps). CLI flags override config-file values.
-- **`postprocessing/config.py`** – `Config` and `ProcConfig` dataclasses. `Config.from_toml_file` loads the TOML config; `ProcConfig.from_base_dir` derives the full processing directory layout from a single root path.
-- **`postprocessing/pipeline.py`** – core batch-processing logic: archive extraction, symlink creation, point-cloud→DEM conversion (via PDAL subprocess), DEM coregistration (Nuth–Kaab + vertical shift using `xdem`), dDEM generation, STD DEM computation, user-provided DEM visualization (`generate_provided_dem_viz`). Each main step has a matching `plot_*` function. Supports parallel execution via `ThreadPoolExecutor`; errors are logged without stopping batch runs.
+- **`config.py`** – `Config` and `ProcConfig` dataclasses, shared by both CLIs. `Config.from_toml_file` loads the TOML config; `ProcConfig.from_base_dir` derives the full processing directory layout from a single root path.
+- **`cli_common.py`** – `configure_logging` and `load_config` helpers shared by `postprocessing/cli.py` and `analysis/cli.py` (logging setup, applying CLI flag overrides onto the loaded `Config`).
+- **`postprocessing/cli.py`** – `history-postprocess` entry point. Two subcommands: `create` (scaffold a directory with `config.toml`) and `run` (dispatch one or all pipeline steps: uncompress → symlinks → check_planned → sparse_viz → provided_dem → point2dem → coregister → ddem → generate_pdf).
+- **`postprocessing/pipeline.py`** – core batch-processing logic: archive extraction, symlink creation, point-cloud→DEM conversion (via PDAL subprocess), DEM coregistration (Nuth–Kaab + vertical shift using `xdem`), dDEM generation, user-provided DEM visualization (`generate_provided_dem_viz`). Each main step has a matching `plot_*` function. Supports parallel execution via `ThreadPoolExecutor`; errors are logged without stopping batch runs.
 - **`postprocessing/io.py`** – filename parsing (`parse_filename`), `ReferencesData` loader, and several helper functions used in notebooks: `analyze_submissions`, `combine_intrinsics_files`, `combine_extrinsics_files`, `filter_experiment_data`, `mirror_as_symlinks`, `get_filepaths_df`. Defines `FILE_CODE_MAPPING` and `FILENAME_PATTERN` for the submission naming convention.
-- **`postprocessing/statistics.py`** – statistics on DEMs and point clouds: basic raster stats, coregistration shifts, landcover-stratified dDEM statistics.
-- **`postprocessing/visualization.py`** – figure generation for all pipeline steps (mosaics, barplots, shift scatter plots, landcover boxplots, STD DEM maps).
+- **`postprocessing/statistics.py`** – generic statistics on DEMs and point clouds: basic raster stats, coregistration shifts, point cloud metadata. (Landcover-stratified statistics live in `analysis/steps/landcover.py`.)
+- **`postprocessing/visualization.py`** – figure generation for the post-processing steps (mosaics, barplots, shift scatter plots). (Landcover boxplots and STD DEM maps live in `analysis/steps/`.)
+- **`analysis/cli.py`** – `history-analysis` entry point. One subcommand: `run` (dispatch one or all analysis steps: std_dem → landcover), reusing the `config.toml` produced by `history-postprocess create`.
+- **`analysis/steps/std_dem.py`** – builds one STD DEM per (site, dataset) group from `coregistered_dems/` (`create_std_dem(s)`), plus its plot (`generate_std_dem_plots`/`plot_std_dems`) and metadata helpers (`is_existing_std_dem`, `get_dem_files_from_std_dem`). Entry point: `run_std_dem`.
+- **`analysis/steps/landcover.py`** – landcover-stratified statistics on dDEMs and STD DEMs (`compute_landcover_statistics(_on_std_dems)`, `LANDCOVER_MAPPING`), plus the associated boxplot/barplot figures. Entry point: `run_landcover`.
 - **`aux_data/download_tools.py`** – helpers to download Copernicus DEM tiles and auxiliary geospatial data.
 - **`utils.py`** – `log_to_file` context manager for adding timestamped file handlers to loggers.
 
@@ -139,9 +167,9 @@ AUTHOR_SITE_DATASET_IMAGES_CALIB_GEOREF_PCOREG_MTP[_VN]_SUFFIX.ext
 
 Parsing is implemented in both `src/history/postprocessing/io.py` (used by the post-processing pipeline) and `scripts/check_submissions.py` (standalone checker). The two implementations have slightly different regex details—keep them consistent when modifying the convention.
 
-### Post-processing Configuration
+### Configuration
 
-The config file (`config.exemple.toml`, copied by `history-postprocess create`) uses TOML format with the following keys:
+The config file (`config.exemple.toml`, copied by `history-postprocess create`, shared by `history-analysis run`) uses TOML format with the following keys:
 
 | Key | Description |
 |---|---|
@@ -178,4 +206,4 @@ Valid site values: `casa_grande`, `iceland`. Valid dataset values: `aerial`, `kh
 ### Notebooks
 
 - `notebooks/preprocessing/` – per-dataset preprocessing workflows (aerial fiducial detection, KH-9 PC joining/restitution, KH-9 MC reseau correction).
-- `notebooks/postprocessing/post_process_workflow.ipynb` – main 8-step evaluation workflow driving `history.postprocessing`: extract archives → analyze & symlink → point cloud→DEM → coregister → dDEM → landcover stats → STD DEMs → STD DEM stats.
+- `notebooks/postprocessing/post_process_workflow.ipynb` – main 8-step evaluation workflow: extract archives → analyze & symlink → point cloud→DEM → coregister → dDEM → landcover stats → STD DEMs → STD DEM stats. **Stale**: its landcover/STD DEM cells still call `pp.pipeline`/`pp.viz` functions (`create_std_dem`, `generate_std_dem_plots`, `generate_landcover_*`) that have since moved to `history.analysis.steps.std_dem`/`landcover`; update those cells' imports before rerunning.
