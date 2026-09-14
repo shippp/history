@@ -1250,6 +1250,9 @@ def extract_archive(archive_path: Path | str, output_dir: Path | str, flatten_ne
     for fp in output_dir.rglob("._*"):
         fp.unlink()
 
+    # Update output folder to avoid re-extracting in later runs
+    output_dir.touch()
+
     if flatten_nested:
         current = output_dir
 
