@@ -1015,18 +1015,18 @@ def _apply_filename_rename(filename: str, filename_renames: dict[str, str] | Non
 
 
 def scan_submissions(input_dir: str | Path, filename_renames: dict[str, str] | None = None) -> pd.DataFrame:
-    """Scan submission subdirectories and return a DataFrame indexed by submission code.
+    """Recursively scan a directory tree and return a DataFrame indexed by submission code.
 
     Each row represents one submission with columns for parsed metadata fields and file
     paths (one per recognised file type). Parse errors on relevant extensions (.las,
     .laz, .tif, .csv) are logged as warnings; all other extensions are logged at DEBUG.
-    If the same code appears in multiple submission folders, the first folder wins and a
-    warning is emitted.
+    If the same code and file type is found more than once (e.g. duplicated across
+    folders), the most recently modified file wins and a warning is emitted.
 
     Parameters
     ----------
     input_dir:
-        Directory containing one subdirectory per submission.
+        Directory tree to scan for submission files.
     filename_renames:
         Optional mapping of Python ``re.sub`` patterns to replacement strings. Applied
         before parsing; actual files on disk are never modified. Patterns are tried in
@@ -1038,39 +1038,35 @@ def scan_submissions(input_dir: str | Path, filename_renames: dict[str, str] | N
     _relevant_extensions = {".las", ".laz", ".tif", ".csv"}
     rows: dict[str, dict] = {}
 
-    for subdir in sorted(input_dir.iterdir()):
-        if not subdir.is_dir():
-            continue
-        logger.debug(f"Scanning {subdir.name}...")
-        for file in subdir.rglob("*"):
-            virtual_name = _apply_filename_rename(file.name, filename_renames)
+    for f in input_dir.rglob("*"):
+        if f.is_file():
+            virtual_name = _apply_filename_rename(f.name, filename_renames)
             try:
                 code, metadata = parse_filename(virtual_name)
             except FilenameParseError as e:
-                if file.suffix.lower() in _relevant_extensions:
+                if f.suffix.lower() in _relevant_extensions:
                     logger.warning(f"Cannot parse filename: {e}")
                 else:
                     logger.debug(f"Skipping non-submission file: {e}")
                 continue
 
-            if code in rows and rows[code]["submission"] != subdir.name:
-                logger.warning(
-                    f"{code}: found in multiple submission folders, keeping '{rows[code]['submission']}'"
-                )
-                continue
+            row = rows.setdefault(code, metadata)
 
-            row = rows.setdefault(code, {"submission": subdir.name, **metadata})
             for col, pattern in _ALL_FILE_PATTERNS.items():
                 if re.search(pattern, virtual_name, re.IGNORECASE):
                     if col in row:
-                        logger.warning(
-                            f"{code}: duplicate {col} — keeping '{row[col]}', ignoring '{file}'"
-                        )
+                        existing = row[col]
+                        if f.stat().st_mtime > existing.stat().st_mtime:
+                            logger.warning(
+                                f"Duplicate '{col}' for code {code!r}: keeping most recent '{f}' over '{existing}'"
+                            )
+                            row[col] = f
+                            row[col.removesuffix("_file") + "_name"] = virtual_name
                     else:
-                        row[col] = str(file)
+                        row[col] = f
                         row[col.removesuffix("_file") + "_name"] = virtual_name
                     break
-    
+
     logger.info(f"scan_submissions: found {len(rows)} submissions in {input_dir}")
     df = pd.DataFrame.from_dict(rows, orient="index")
     df.index.name = "code"
