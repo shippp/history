@@ -6,7 +6,7 @@ import math
 from contextlib import contextmanager
 import logging
 from pathlib import Path
-from typing import Generator
+from typing import Generator, Sequence
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -386,6 +386,231 @@ def generate_provided_dems_mosaic(
         )
         cbar.set_label("Elevation difference (m)")
         fig.suptitle(title, fontsize=16)
+
+
+#######################################################################################################################
+##                                                  EXTRINSICS VISUALIZATION
+#######################################################################################################################
+
+
+def generate_extrinsics_position_mosaic(
+    extrinsics_df: pd.DataFrame,
+    initial_extrinsics_df: pd.DataFrame,
+    output_path: str | Path,
+    title: str = "",
+    overwrite: bool = False,
+) -> None:
+    """
+    Generate a mosaic of camera XY positions per submission, relative to each camera's initial position.
+
+    One subplot per submission; each point is a camera plotted at (x_map - initial_x_map,
+    y_map - initial_y_map), so the initial (provided) camera position sits at the origin.
+    ``extrinsics_df`` and ``initial_extrinsics_df`` are expected to cover a single (site, dataset)
+    group; ``initial_extrinsics_df`` is the camera position file provided alongside the raw images
+    (e.g. ``camera_model_extrinsics.csv``).
+    """
+    if not overwrite and Path(output_path).exists():
+        logger.debug(f"File {output_path} is up to date -> skipping.")
+        return
+
+    merged = _merge_extrinsics_with_initial(extrinsics_df, initial_extrinsics_df)
+    if merged.empty:
+        logger.warning("No extrinsics data could be matched with initial positions -> skipping plot.")
+        return
+
+    codes = sorted(merged["code"].unique())
+
+    with _generate_mosaic_figure_and_axes(len(codes), output_path) as (fig, axes):
+        for i, code in enumerate(codes):
+            ax = axes[i]
+            ax.axis("on")
+            group = merged.loc[merged["code"] == code]
+            ax.scatter(group["dx"], group["dy"], s=15, alpha=0.7, edgecolor="black", linewidth=0.3)
+            ax.axhline(0, color="grey", linewidth=0.8)
+            ax.axvline(0, color="grey", linewidth=0.8)
+            ax.set_box_aspect(1)
+            ax.set_title(code, fontsize=9)
+
+        fig.supxlabel("X (m)")
+        fig.supylabel("Y (m)")
+        fig.suptitle(title, fontsize=16)
+
+
+def generate_extrinsics_z_boxplot(
+    extrinsics_df: pd.DataFrame,
+    initial_extrinsics_df: pd.DataFrame,
+    output_path: str | Path,
+    title: str = "",
+    overwrite: bool = False,
+) -> None:
+    """
+    Generate a boxplot of per-camera altitude shifts (optimized minus initial Z), one box per submission.
+
+    ``extrinsics_df`` and ``initial_extrinsics_df`` are expected to cover a single (site, dataset)
+    group, see :func:`generate_extrinsics_position_mosaic`.
+    """
+    if not overwrite and Path(output_path).exists():
+        logger.debug(f"File {output_path} is up to date -> skipping.")
+        return
+
+    merged = _merge_extrinsics_with_initial(extrinsics_df, initial_extrinsics_df)
+    if merged.empty:
+        logger.warning("No extrinsics data could be matched with initial positions -> skipping plot.")
+        return
+
+    codes = sorted(merged["code"].unique())
+    data = [merged.loc[merged["code"] == code, "dz"].to_numpy() for code in codes]
+
+    fig = Figure(figsize=(max(6, len(codes) * 0.5), 8))
+    ax = fig.add_subplot(1, 1, 1)
+    ax.boxplot(data)
+    ax.axhline(0, color="grey", linewidth=0.8)
+    ax.set_xticklabels(codes, rotation=90, ha="right")
+    ax.set_ylabel("Altitude shift: optimized minus initial (m)")
+    fig.suptitle(title, fontsize=16, wrap=True)
+    fig.tight_layout()
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(exist_ok=True, parents=True)
+    fig.savefig(output_path)
+
+
+def _beeswarm_offsets(values: pd.Series | np.ndarray, spacing: float = 0.06, nbins: int = 20) -> np.ndarray:
+    """Compute x-offsets that spread out points sharing similar values, like a beeswarm plot.
+
+    Values are grouped into ``nbins`` equal-width bins; points in the same bin are stacked
+    symmetrically around 0, so close values push apart instead of overlapping.
+    """
+    values = np.asarray(values)
+    order = np.argsort(values)
+    sorted_values = values[order]
+
+    vmin, vmax = sorted_values.min(), sorted_values.max()
+    if vmax == vmin:
+        bin_idx = np.zeros(len(values), dtype=int)
+    else:
+        bin_idx = np.minimum(((sorted_values - vmin) / (vmax - vmin) * nbins).astype(int), nbins - 1)
+
+    offsets = np.empty(len(values))
+    for b in np.unique(bin_idx):
+        mask = bin_idx == b
+        k = mask.sum()
+        offsets[mask] = (np.arange(k) - (k - 1) / 2) * spacing
+
+    result = np.empty(len(values))
+    result[order] = offsets
+    return result
+
+
+def generate_intrinsics_boxplots(
+    intrinsics_df: pd.DataFrame,
+    variables: Sequence[tuple[str, str]],
+    output_path: str | Path,
+    title: str = "",
+    overwrite: bool = False,
+) -> None:
+    """
+    Generate one beeswarm scatter plot per intrinsics variable, side by side in a single figure, one point per code.
+
+    Points are jittered horizontally by local density (see :func:`_beeswarm_offsets`) so that
+    submissions with close values stay readable instead of overlapping.
+
+    ``intrinsics_df`` is expected to cover a single (site, dataset) group, indexed by submission
+    ``code``. ``variables`` is a list of ``(column, ylabel)`` pairs, e.g.
+    ``[("focal_length", "Focal length (mm)"), ("pixel_pitch", "Pixel pitch (mm)")]``; each becomes
+    its own axis so more variables can be added without changing the plot layout logic.
+    """
+    if not overwrite and Path(output_path).exists():
+        logger.debug(f"File {output_path} is up to date -> skipping.")
+        return
+
+    codes = intrinsics_df.index.tolist()
+    color_by_code = dict(zip(codes, plt.get_cmap("tab20")(np.linspace(0, 1, len(codes)))))
+
+    fig = Figure(figsize=(2 * len(variables), 8))
+    axes = fig.subplots(1, len(variables), squeeze=False)[0]
+
+    for ax, (column, ylabel) in zip(axes, variables):
+        values = intrinsics_df[column].dropna()
+        if values.empty:
+            logger.warning(f"No {column} data found -> skipping subplot.")
+            ax.set_axis_off()
+            continue
+        offsets = _beeswarm_offsets(values.to_numpy())
+        for (code, value), offset in zip(values.items(), offsets):
+            ax.scatter(
+                1 + offset, value, s=40, alpha=0.8, color=color_by_code[code], edgecolor="black", linewidth=0.3, label=code
+            )
+        margin = max(0.5, np.abs(offsets).max() + 0.1)
+        ax.set_xlim(1 - margin, 1 + margin)
+        ax.set_xticks([])
+        ax.set_ylabel(ylabel)
+
+    handles, labels = {}, []
+    for ax in axes:
+        for handle, label in zip(*ax.get_legend_handles_labels()):
+            if label not in handles:
+                handles[label] = handle
+                labels.append(label)
+    fig.legend([handles[label] for label in labels], labels, bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8)
+    fig.suptitle(title, fontsize=16)
+    fig.tight_layout()
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(exist_ok=True, parents=True)
+    fig.savefig(output_path, bbox_inches="tight")
+
+
+def generate_principal_point_scatter(
+    intrinsics_df: pd.DataFrame,
+    output_path: str | Path,
+    title: str = "",
+    overwrite: bool = False,
+) -> None:
+    """
+    Generate a scatter plot of the principal point spread across submissions, one point per code.
+
+    ``intrinsics_df`` is expected to cover a single (site, dataset) group, indexed by
+    submission ``code`` with ``principal_point_x_mm``/``principal_point_y_mm`` columns,
+    see :func:`generate_extrinsics_z_boxplot`.
+    """
+    if not overwrite and Path(output_path).exists():
+        logger.debug(f"File {output_path} is up to date -> skipping.")
+        return
+
+    points = intrinsics_df[["principal_point_x_mm", "principal_point_y_mm"]].dropna()
+    if points.empty:
+        logger.warning("No principal point data found -> skipping plot.")
+        return
+
+    colors = plt.get_cmap("tab20")(np.linspace(0, 1, len(points)))
+
+    fig = Figure(figsize=(8, 8))
+    ax = fig.add_subplot(1, 1, 1)
+    for (code, row), color in zip(points.iterrows(), colors):
+        ax.scatter(
+            row["principal_point_x_mm"],
+            row["principal_point_y_mm"],
+            s=40,
+            alpha=0.8,
+            color=color,
+            edgecolor="black",
+            linewidth=0.3,
+            label=code,
+        )
+
+    ax.axhline(0, color="grey", linewidth=0.8)
+    ax.axvline(0, color="grey", linewidth=0.8)
+    ax.set_aspect("equal")
+    ax.set_xlabel("Principal point X (mm)")
+    ax.set_ylabel("Principal point Y (mm)")
+    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8)
+    fig.suptitle(title, fontsize=16)
+    fig.tight_layout()
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(exist_ok=True, parents=True)
+    fig.savefig(output_path)
 
 
 #######################################################################################################################
@@ -970,6 +1195,26 @@ def _plot_boolean_df(
             plt.show()
         else:
             plt.close()
+
+
+def _merge_extrinsics_with_initial(extrinsics_df: pd.DataFrame, initial_extrinsics_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Join a (site, dataset) group's submitted cameras with their initial positions on ``image_file_name``.
+
+    Adds ``dx``/``dy``/``dz`` columns holding the shift between the submitted (x_map, y_map, alt)
+    and the initial ones.
+    """
+    initial_df = initial_extrinsics_df.rename(columns=lambda c: c.strip().lower().replace(" ", "_"))
+    merged = extrinsics_df.reset_index().merge(
+        initial_df[["image_file_name", "x_map", "y_map", "alt"]],
+        on="image_file_name",
+        how="inner",
+        suffixes=("", "_initial"),
+    )
+    merged["dx"] = merged["x_map"] - merged["x_map_initial"]
+    merged["dy"] = merged["y_map"] - merged["y_map_initial"]
+    merged["dz"] = merged["alt"] - merged["alt_initial"]
+    return merged
 
 
 def _read_raster_with_max_size(file: str, maxsize: int = 2000):
