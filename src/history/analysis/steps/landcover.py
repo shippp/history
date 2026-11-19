@@ -18,7 +18,8 @@ from matplotlib.patches import Patch
 from tqdm import tqdm
 
 from history.config import Config, ReferencesConfig
-from history.postprocessing.io import FILE_CODE_MAPPING, is_output_up_to_date, parse_filename
+from history.postprocessing.io import FILE_CODE_MAPPING, parse_filename
+from history.utils import skip_overwrite, write_file
 
 logger = logging.getLogger(__name__)
 
@@ -408,11 +409,8 @@ def generate_landcover_grouped_boxplot(
     None
         The plot is saved to the specified path without returning a value.
     """
-    if not overwrite:
-        check = is_output_up_to_date(inputs, output_path) if inputs is not None else Path(output_path).exists()
-        if check:
-            logger.debug(f"File {output_path} is up to date -> skipping.")
-            return
+    if skip_overwrite(inputs, output_path, overwrite):
+        return
 
     # order group with the mean of nmad
     code_order = landcover_df.groupby("code")["nmad"].mean().sort_values().index
@@ -431,8 +429,8 @@ def generate_landcover_grouped_boxplot(
         title=title,
     )
 
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path)
+    with write_file(output_path) as out:
+        fig.savefig(out)
 
 
 def generate_landcover_boxplot(
@@ -457,11 +455,8 @@ def generate_landcover_boxplot(
     None
         The plot is saved to the specified path without returning a value.
     """
-    if not overwrite:
-        check = is_output_up_to_date(inputs, output_path) if inputs is not None else Path(output_path).exists()
-        if check:
-            logger.debug(f"File {output_path} is up to date -> skipping.")
-            return
+    if skip_overwrite(inputs, output_path, overwrite):
+        return
 
     box_data = []
     labels = []
@@ -486,8 +481,8 @@ def generate_landcover_boxplot(
     ax.set_title(f"Boxplot of mean values from {len(landcover_df['code'].unique())} raster(s) by landcover class")
     fig.tight_layout()
 
-    Path(output_path).parent.mkdir(exist_ok=True, parents=True)
-    fig.savefig(output_path)
+    with write_file(output_path) as out:
+        fig.savefig(out)
 
 
 def generate_landcover_nmad(
@@ -514,11 +509,8 @@ def generate_landcover_nmad(
     None
         The plot is saved to the specified path.
     """
-    if not overwrite:
-        check = is_output_up_to_date(inputs, output_path) if inputs is not None else Path(output_path).exists()
-        if check:
-            logger.debug(f"File {output_path} is up to date -> skipping.")
-            return
+    if skip_overwrite(inputs, output_path, overwrite):
+        return
 
     df_plot = landcover_df.pivot_table(
         index="landcover_label",  # x axe
@@ -548,8 +540,8 @@ def generate_landcover_nmad(
     fig.tight_layout()
 
     # Save
-    Path(output_path).parent.mkdir(exist_ok=True, parents=True)
-    fig.savefig(output_path)
+    with write_file(output_path) as out:
+        fig.savefig(out)
 
 
 def generate_landcover_grouped_boxplot_from_std_dems(
@@ -585,11 +577,8 @@ def generate_landcover_grouped_boxplot_from_std_dems(
         - The y-axis represents altitude standard deviation in meters.
         - The landcover labels include mean percentage values for readability.
     """
-    if not overwrite:
-        check = is_output_up_to_date(inputs, output_path) if inputs is not None else Path(output_path).exists()
-        if check:
-            logger.debug(f"File {output_path} is up to date -> skipping.")
-            return
+    if skip_overwrite(inputs, output_path, overwrite):
+        return
 
     df = std_landcover_df.copy()
 
@@ -612,7 +601,8 @@ def generate_landcover_grouped_boxplot_from_std_dems(
         y_label="Altitude STD (m)",
         title="Boxplot of altitude STD by landcover class for each dataset + site groups",
     )
-    fig.savefig(output_path)
+    with write_file(output_path) as out:
+        fig.savefig(out)
 
 
 #######################################################################################################################

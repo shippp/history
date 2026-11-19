@@ -16,7 +16,8 @@ from matplotlib.colors import LightSource
 from matplotlib.figure import Figure
 from rasterio.enums import Resampling
 
-from history.postprocessing.io import is_output_up_to_date, parse_filename
+from history.postprocessing.io import parse_filename
+from history.utils import is_output_up_to_date, skip_overwrite, write_file
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +71,7 @@ def generate_dems_mosaic(
         The function saves the generated figure to ``output_path`` and does not
         return any value.
     """
-    if not overwrite and is_output_up_to_date(list(dem_files_dict.values()), _mosaic_output_paths(len(dem_files_dict), output_path)):
-        logger.debug(f"File {output_path} is up to date -> skipping.")
+    if skip_overwrite(list(dem_files_dict.values()), _mosaic_output_paths(len(dem_files_dict), output_path), overwrite):
         return
 
     for fig, axes, page in _mosaic_pages(sorted(dem_files_dict.items()), output_path, title):
@@ -133,8 +133,7 @@ def generate_ddems_mosaic(
         The function saves the generated mosaic to `output_path` and does not
         return any value.
     """
-    if not overwrite and is_output_up_to_date(list(ddem_files_dict.values()), _mosaic_output_paths(len(ddem_files_dict), output_path)):
-        logger.debug(f"File {output_path} is up to date -> skipping.")
+    if skip_overwrite(list(ddem_files_dict.values()), _mosaic_output_paths(len(ddem_files_dict), output_path), overwrite):
         return
 
     for fig, axes, page in _mosaic_pages(sorted(ddem_files_dict.items()), output_path, title):
@@ -202,8 +201,7 @@ def generate_slopes_mosaic(
         The function saves the generated mosaic to `output_path` and does not
         return any value.
     """
-    if not overwrite and is_output_up_to_date(list(dem_files_dict.values()), _mosaic_output_paths(len(dem_files_dict), output_path)):
-        logger.debug(f"File {output_path} is up to date -> skipping.")
+    if skip_overwrite(list(dem_files_dict.values()), _mosaic_output_paths(len(dem_files_dict), output_path), overwrite):
         return
 
     for fig, axes, page in _mosaic_pages(sorted(dem_files_dict.items()), output_path, title):
@@ -276,8 +274,7 @@ def generate_hillshades_mosaic(
     None
         The function saves the generated hillshade mosaic to `output_path`.
     """
-    if not overwrite and is_output_up_to_date(list(dem_files_dict.values()), _mosaic_output_paths(len(dem_files_dict), output_path)):
-        logger.debug(f"File {output_path} is up to date -> skipping.")
+    if skip_overwrite(list(dem_files_dict.values()), _mosaic_output_paths(len(dem_files_dict), output_path), overwrite):
         return
 
     for fig, axes, page in _mosaic_pages(sorted(dem_files_dict.items()), output_path, title):
@@ -321,8 +318,7 @@ def generate_sparse_pointclouds_mosaic(
     drawn one at a time (rather than precomputing all point clouds' data upfront) to keep
     memory usage low regardless of how many point clouds are in the mosaic.
     """
-    if not overwrite and is_output_up_to_date(list(diff_files_dict.values()), _mosaic_output_paths(len(diff_files_dict), output_path)):
-        logger.debug(f"File {output_path} is up to date -> skipping.")
+    if skip_overwrite(list(diff_files_dict.values()), _mosaic_output_paths(len(diff_files_dict), output_path), overwrite):
         return
 
     # local import: keeps laspy out of this module's top-level imports.
@@ -367,8 +363,7 @@ def generate_provided_dems_mosaic(
     ``diff_files_dict`` maps each code to a precomputed diff raster (as produced by
     ``pipeline.generate_dem_diff``), so this function only reads and plots them.
     """
-    if not overwrite and is_output_up_to_date([*diff_files_dict.values()], _mosaic_output_paths(len(diff_files_dict), output_path)):
-        logger.debug(f"File {output_path} is up to date -> skipping.")
+    if skip_overwrite([*diff_files_dict.values()], _mosaic_output_paths(len(diff_files_dict), output_path), overwrite):
         return
 
     logger.info(f"Generating mosaic of provided DEMs with {len(diff_files_dict)} input files...")
@@ -423,8 +418,7 @@ def generate_extrinsics_position_mosaic(
 
     codes = sorted(merged["code"].unique())
 
-    if not overwrite and all(p.exists() for p in _mosaic_output_paths(len(codes), output_path)):
-        logger.debug(f"File {output_path} is up to date -> skipping.")
+    if skip_overwrite(None, _mosaic_output_paths(len(codes), output_path), overwrite):
         return
 
     for fig, axes, page in _mosaic_pages(codes, output_path, title):
@@ -454,6 +448,9 @@ def generate_extrinsics_z_boxplot(
     ``extrinsics_df`` and ``initial_extrinsics_df`` are expected to cover a single (site, dataset)
     group, see :func:`generate_extrinsics_position_mosaic`.
     """
+    if skip_overwrite(None, output_path, overwrite):
+        return
+
     merged = _merge_extrinsics_with_initial(extrinsics_df, initial_extrinsics_df)
     if merged.empty:
         logger.warning("No extrinsics data could be matched with initial positions -> skipping plot.")
@@ -471,9 +468,8 @@ def generate_extrinsics_z_boxplot(
     fig.suptitle(title, fontsize=16, wrap=True)
     fig.tight_layout()
 
-    output_path = Path(output_path)
-    output_path.parent.mkdir(exist_ok=True, parents=True)
-    fig.savefig(output_path)
+    with write_file(output_path) as out:
+        fig.savefig(out)
 
 
 def _beeswarm_offsets(values: pd.Series | np.ndarray, spacing: float = 0.06, nbins: int = 20) -> np.ndarray:
@@ -521,8 +517,7 @@ def generate_intrinsics_boxplots(
     ``[("focal_length", "Focal length (mm)"), ("pixel_pitch", "Pixel pitch (mm)")]``; each becomes
     its own axis so more variables can be added without changing the plot layout logic.
     """
-    if not overwrite and Path(output_path).exists():
-        logger.debug(f"File {output_path} is up to date -> skipping.")
+    if skip_overwrite(None, output_path, overwrite):
         return
 
     codes = intrinsics_df.index.tolist()
@@ -557,9 +552,8 @@ def generate_intrinsics_boxplots(
     fig.suptitle(title, fontsize=16)
     fig.tight_layout()
 
-    output_path = Path(output_path)
-    output_path.parent.mkdir(exist_ok=True, parents=True)
-    fig.savefig(output_path, bbox_inches="tight")
+    with write_file(output_path) as out:
+        fig.savefig(out, bbox_inches="tight")
 
 
 def generate_principal_point_scatter(
@@ -575,8 +569,7 @@ def generate_principal_point_scatter(
     submission ``code`` with ``principal_point_x_mm``/``principal_point_y_mm`` columns,
     see :func:`generate_extrinsics_z_boxplot`.
     """
-    if not overwrite and Path(output_path).exists():
-        logger.debug(f"File {output_path} is up to date -> skipping.")
+    if skip_overwrite(None, output_path, overwrite):
         return
 
     points = intrinsics_df[["principal_point_x_mm", "principal_point_y_mm"]].dropna()
@@ -609,9 +602,8 @@ def generate_principal_point_scatter(
     fig.suptitle(title, fontsize=16)
     fig.tight_layout()
 
-    output_path = Path(output_path)
-    output_path.parent.mkdir(exist_ok=True, parents=True)
-    fig.savefig(output_path)
+    with write_file(output_path) as out:
+        fig.savefig(out)
 
 
 #######################################################################################################################
@@ -652,15 +644,8 @@ def barplot_var(
     """
     file_cols = [c for c in global_df.columns if c == "file" or c.endswith("_file")]
     inputs = pd.concat([global_df[c].dropna() for c in file_cols]).values if file_cols else None
-    if not overwrite:
-        check = (
-            is_output_up_to_date(inputs, output_path)
-            if inputs is not None and len(inputs) > 0
-            else Path(output_path).exists()
-        )
-        if check:
-            logger.debug(f"File {output_path} is up to date -> skipping.")
-            return
+    if skip_overwrite(inputs, output_path, overwrite):
+        return
 
     df = global_df.dropna(subset=[colname]).copy(True)
 
@@ -701,9 +686,8 @@ def barplot_var(
     ax.legend(bars, labels, title="Groupes")
 
     fig.tight_layout()
-    output_path = Path(output_path)
-    output_path.parent.mkdir(exist_ok=True, parents=True)
-    fig.savefig(output_path)
+    with write_file(output_path) as out:
+        fig.savefig(out)
 
 
 def generate_plot_coreg_shifts(
@@ -735,11 +719,8 @@ def generate_plot_coreg_shifts(
     - Rows with NaN values in any of the shift columns are ignored.
     - Shifts are displayed in meters with labels above each bar.
     """
-    if not overwrite:
-        check = is_output_up_to_date(inputs, output_path) if inputs is not None else Path(output_path).exists()
-        if check:
-            logger.debug(f"File {output_path} is up to date -> skipping.")
-            return
+    if skip_overwrite(inputs, output_path, overwrite):
+        return
 
     colnames = ["coreg_shift_x", "coreg_shift_y", "coreg_shift_z"]
     dropped_df = (
@@ -762,8 +743,8 @@ def generate_plot_coreg_shifts(
     fig.suptitle(title, fontsize=16)
     fig.tight_layout()
 
-    Path(output_path).parent.mkdir(exist_ok=True, parents=True)
-    fig.savefig(output_path)
+    with write_file(output_path) as out:
+        fig.savefig(out)
 
 
 def generate_plot_nmad_before_vs_after(
@@ -790,17 +771,10 @@ def generate_plot_nmad_before_vs_after(
     None
         The plot is saved to the specified path without returning a value.
     """
-    if not overwrite:
-        file_cols = [c for c in ("ddem_before_file", "ddem_after_file") if c in df.columns]
-        inputs = pd.concat([df[c].dropna() for c in file_cols]).values if file_cols else None
-        check = (
-            is_output_up_to_date(inputs, output_path)
-            if inputs is not None and len(inputs) > 0
-            else Path(output_path).exists()
-        )
-        if check:
-            logger.debug(f"File {output_path} is up to date -> skipping.")
-            return
+    file_cols = [c for c in ("ddem_before_file", "ddem_after_file") if c in df.columns]
+    inputs = pd.concat([df[c].dropna() for c in file_cols]).values if file_cols else None
+    if skip_overwrite(inputs, output_path, overwrite):
+        return
 
     colnames = ["ddem_before_nmad", "ddem_after_nmad"]
     dropped_df = df.dropna(subset=colnames).sort_values(by="ddem_after_nmad")
@@ -817,8 +791,8 @@ def generate_plot_nmad_before_vs_after(
     fig.suptitle(title, fontsize=16)
     fig.tight_layout()
 
-    Path(output_path).parent.mkdir(exist_ok=True, parents=True)
-    fig.savefig(output_path)
+    with write_file(output_path) as out:
+        fig.savefig(out)
 
 
 #######################################################################################################################
@@ -846,10 +820,9 @@ def visualize_files_presence_map(
     """
     directories: list[Path] = [Path(d) for d in directories if d.is_dir()]
 
-    if not overwrite and output_path is not None:
+    if output_path is not None:
         input_files = [f for d in directories for f in d.iterdir() if f.is_file()]
-        if is_output_up_to_date(input_files, output_path):
-            logger.debug(f"File {output_path} is up to date -> skipping.")
+        if skip_overwrite(input_files, output_path, overwrite):
             return
     rows: dict[str, dict] = {}
 
@@ -894,7 +867,8 @@ def visualize_files_presence_map(
     fig.tight_layout()
 
     if output_path:
-        plt.savefig(output_path, bbox_inches="tight")
+        with write_file(output_path) as out:
+            plt.savefig(out, bbox_inches="tight")
 
     if output_path is None:
         plt.show()
@@ -920,16 +894,10 @@ def visualize_files_size_map(df: pd.DataFrame, output_path: str | Path | None = 
     output_path : str or Path or None, optional
         If provided the plot is saved there; otherwise it is displayed interactively.
     """
-    if not overwrite and output_path is not None:
+    if output_path is not None:
         file_cols = [c for c in df.columns if c.endswith("_file")]
         inputs = pd.concat([df[c].dropna() for c in file_cols]).values if file_cols else None
-        check = (
-            is_output_up_to_date(inputs, output_path)
-            if inputs is not None and len(inputs) > 0
-            else Path(output_path).exists()
-        )
-        if check:
-            logger.debug(f"File {output_path} is up to date -> skipping.")
+        if skip_overwrite(inputs, output_path, overwrite):
             return
 
     _SIZE_COLS = {
@@ -1029,7 +997,8 @@ def visualize_files_size_map(df: pd.DataFrame, output_path: str | Path | None = 
     fig.tight_layout()
 
     if output_path:
-        plt.savefig(output_path, bbox_inches="tight")
+        with write_file(output_path) as out:
+            plt.savefig(out, bbox_inches="tight")
 
     if output_path is None:
         plt.show()
@@ -1066,9 +1035,7 @@ def generate_coregistration_individual_plots(
     None
         Saves individual PNG plots for each code; does not return anything.
     """
-    # create the output directory if needed
     output_directory = Path(output_directory)
-    output_directory.mkdir(exist_ok=True, parents=True)
 
     dropped_df = df.dropna(subset=["ddem_before_file", "ddem_after_file"])
 
@@ -1076,8 +1043,7 @@ def generate_coregistration_individual_plots(
         output_path = output_directory / f"{code}.png"
 
         input_files = [row["ddem_before_file"], row["ddem_after_file"]]
-        if not overwrite and is_output_up_to_date(input_files, output_path):
-            logger.debug(f"File {output_path} is up to date -> skipping.")
+        if skip_overwrite(input_files, output_path, overwrite):
             continue
 
         # open the raw dDEM and the coregistered dDEM
@@ -1114,7 +1080,8 @@ def generate_coregistration_individual_plots(
         )
         cbar.set_label("Altitude difference(m)")
 
-        fig.savefig(output_path)
+        with write_file(output_path) as out:
+            fig.savefig(out)
 
 
 #######################################################################################################################
@@ -1138,7 +1105,6 @@ def _mosaic_pages(items: list, output_path: str | Path, title: str = "") -> Gene
     """Yield `(fig, axes, page_items)` per page of at most 25 subplots, saving each figure once the caller is done."""
     output_path = Path(output_path)
     paths = _mosaic_output_paths(len(items), output_path)
-    output_path.parent.mkdir(exist_ok=True, parents=True)
     # remove files of a previous run that used a different page count
     for old in [output_path, *output_path.parent.glob(f"{output_path.stem}_p*{output_path.suffix}")]:
         if old not in paths:
@@ -1160,7 +1126,8 @@ def _mosaic_pages(items: list, output_path: str | Path, title: str = "") -> Gene
 
         yield fig, axes, page
 
-        fig.savefig(path)
+        with write_file(path) as out:
+            fig.savefig(out)
         del fig
 
 
@@ -1210,7 +1177,8 @@ def _plot_boolean_df(
     if standalone:
         fig.tight_layout()
         if output_path:
-            plt.savefig(output_path)
+            with write_file(output_path) as out:
+                plt.savefig(out)
         if show:
             plt.show()
         else:

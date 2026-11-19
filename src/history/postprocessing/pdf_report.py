@@ -194,7 +194,7 @@ def generate_pdf_report(
         Path to the generated PDF file.
     """
     from history.postprocessing import io
-    from history.postprocessing.io import is_output_up_to_date
+    from history.utils import is_output_up_to_date
 
     plot_dir = Path(plot_dir)
     output_path = Path(output_path) if output_path else plot_dir / "report.pdf"

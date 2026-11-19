@@ -53,9 +53,9 @@ from history.postprocessing.io import (
     concat_extrinsics_files,
     concat_files_raw,
     concat_intrinsics_files,
-    is_output_up_to_date,
     parse_filename,
 )
+from history.utils import is_output_up_to_date, skip_overwrite, write_file
 
 logger = logging.getLogger(__name__)
 
@@ -245,19 +245,18 @@ def plot_planned_submissions(config: Config, planned_outfile: str | Path) -> Non
     """Generate a Sankey diagram of planned submissions by software, dataset, and georef strategy."""
     planned_outfile = Path(planned_outfile)
     output_path = config.plot_dir / "planned_submissions_sankey.png"
-    if not config.overwrite_plots and is_output_up_to_date(planned_outfile, output_path):
-        logger.info(f"Skip {output_path.name}: output is up to date.")
+    if skip_overwrite(planned_outfile, output_path, config.overwrite_plots):
         return
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    sankey.save_sankey(
-        planned_outfile,
-        output_path,
-        columns=["software", "dataset", "georef"],
-        columns_label=["Software", "Dataset", "Georef strategy"],
-        force_color={"georef": sankey.light_grey},
-        title="Planned Submissions",
-    )
+    with write_file(output_path):
+        sankey.save_sankey(
+            planned_outfile,
+            output_path,
+            columns=["software", "dataset", "georef"],
+            columns_label=["Software", "Dataset", "Georef strategy"],
+            force_color={"georef": sankey.light_grey},
+            title="Planned Submissions",
+        )
     logger.info(f"Updated planned submissions saved to {planned_outfile}.")
 
 
@@ -1307,17 +1306,13 @@ def plot_symlinks(config: Config, submissions_df: pd.DataFrame | None = None) ->
     logger.info("Plotting PC count, presence map and file size.")
 
     output_pc_count = config.plot_dir / "pointcloud_point_count.png"
-    if not config.overwrite_plots and is_output_up_to_date(pointcloud_files, output_pc_count):
-        logger.info(f"Skip {output_pc_count.name}: output is up to date.")
-    else:
+    if not skip_overwrite(pointcloud_files, output_pc_count, config.overwrite_plots):
         df = stats.compute_pcs_statistics_df(pointcloud_files)
         viz.barplot_var(df, output_pc_count, "point_count", "Point count in dense point-cloud file", overwrite=True)
 
     sparse_pointcloud_files = list((config.proc_dir.symlinks_dir / "sparse_pointclouds").iterdir())
     output_sparse_pc_count = config.plot_dir / "sparse_pointcloud_point_count.png"
-    if not config.overwrite_plots and is_output_up_to_date(sparse_pointcloud_files, output_sparse_pc_count):
-        logger.info(f"Skip {output_sparse_pc_count.name}: output is up to date.")
-    else:
+    if not skip_overwrite(sparse_pointcloud_files, output_sparse_pc_count, config.overwrite_plots):
         sparse_df = stats.compute_pcs_statistics_df(sparse_pointcloud_files)
         viz.barplot_var(
             sparse_df, output_sparse_pc_count, "point_count", "Point count in sparse point-cloud file", overwrite=True

@@ -1,7 +1,10 @@
 import logging
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -38,3 +41,61 @@ def log_to_file(log_path: str | Path, logger: logging.Logger):
     finally:
         logger.removeHandler(file_handler)
         file_handler.close()
+
+
+def is_output_up_to_date(inputs: str | Path | Sequence[str | Path], outputs: str | Path | Sequence[str | Path]) -> bool:
+    """Return True if all outputs exist and are newer than all inputs."""
+    inputs = [inputs] if isinstance(inputs, (str, Path)) else inputs
+    outputs = [outputs] if isinstance(outputs, (str, Path)) else outputs
+
+    # standardize path
+    inputs = [Path(f) for f in inputs]
+    outputs = [Path(f) for f in outputs]
+
+    if not inputs:
+        raise ValueError("inputs cannot be empty")
+    if not outputs:
+        raise ValueError("outputs cannot be empty")
+
+    if any(not p.exists() for p in outputs):
+        return False
+
+    for p in inputs:
+        if not p.exists():
+            raise FileNotFoundError(f"Input file not found: {p}")
+
+    oldest_output = min(p.stat().st_mtime for p in outputs)
+    newest_input = max(p.stat().st_mtime for p in inputs)
+
+    return newest_input <= oldest_output
+
+
+def skip_overwrite(
+    inputs: str | Path | Sequence[str | Path] | None, outputs: str | Path | Sequence[str | Path], overwrite: bool
+) -> bool:
+    """Return True (and log it) if the outputs are up to date and `overwrite` is not set.
+
+    If `inputs` is None or empty, only the existence of the outputs is checked.
+    """
+    if overwrite:
+        return False
+
+    files = [outputs] if isinstance(outputs, (str, Path)) else list(outputs)
+    if inputs is None or not isinstance(inputs, (str, Path)) and len(inputs) == 0:
+        up_to_date = all(Path(f).exists() for f in files)
+    else:
+        up_to_date = is_output_up_to_date(inputs, files)
+
+    if up_to_date:
+        label = files[0] if len(files) == 1 else f"{files[0]} (+{len(files) - 1} more)"
+        logger.info("%s - already up to date, skipped (use overwrite to redo)", label)
+    return up_to_date
+
+
+@contextmanager
+def write_file(output_path: str | Path) -> Generator[Path, None, None]:
+    """Create the parent directory of `output_path`, yield it, and log once the file has been written."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    yield output_path
+    logger.info(f"Written {output_path}")
