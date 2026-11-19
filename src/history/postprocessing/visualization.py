@@ -3,7 +3,6 @@ Contains functions to generate post-processing Visualization
 """
 
 import math
-from contextlib import contextmanager
 import logging
 from pathlib import Path
 from typing import Generator, Sequence
@@ -67,16 +66,16 @@ def generate_dems_mosaic(
         The function saves the generated figure to ``output_path`` and does not
         return any value.
     """
-    if not overwrite and is_output_up_to_date(list(dem_files_dict.values()), output_path):
+    if not overwrite and is_output_up_to_date(list(dem_files_dict.values()), _mosaic_output_paths(len(dem_files_dict), output_path)):
         logger.debug(f"File {output_path} is up to date -> skipping.")
         return
 
-    with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
-        for i, (subtitle, file) in enumerate(sorted(dem_files_dict.items())):
+    for fig, axes, page in _mosaic_pages(sorted(dem_files_dict.items()), output_path, title):
+        for ax, (subtitle, file) in zip(axes, page):
             dem = _read_raster_with_max_size(file)
 
-            axes[i].imshow(dem, cmap="terrain", vmin=vmin, vmax=vmax)
-            axes[i].set_title(subtitle)
+            ax.imshow(dem, cmap="terrain", vmin=vmin, vmax=vmax)
+            ax.set_title(subtitle)
 
         # add the global color bar
         cbar = fig.colorbar(
@@ -85,7 +84,6 @@ def generate_dems_mosaic(
             orientation="vertical",
         )
         cbar.set_label("Altitude (m)")
-        fig.suptitle(title, fontsize=16)
 
 
 def generate_ddems_mosaic(
@@ -127,18 +125,18 @@ def generate_ddems_mosaic(
         The function saves the generated mosaic to `output_path` and does not
         return any value.
     """
-    if not overwrite and is_output_up_to_date(list(ddem_files_dict.values()), output_path):
+    if not overwrite and is_output_up_to_date(list(ddem_files_dict.values()), _mosaic_output_paths(len(ddem_files_dict), output_path)):
         logger.debug(f"File {output_path} is up to date -> skipping.")
         return
 
-    with _generate_mosaic_figure_and_axes(len(ddem_files_dict), output_path) as (fig, axes):
-        for i, (subtitle, file) in enumerate(sorted(ddem_files_dict.items())):
+    for fig, axes, page in _mosaic_pages(sorted(ddem_files_dict.items()), output_path, title):
+        for ax, (subtitle, file) in zip(axes, page):
             try:
                 dem = _read_raster_with_max_size(file)
                 dem = np.clip(dem, vmin, vmax)
 
-                axes[i].imshow(dem, cmap="coolwarm", vmin=vmin, vmax=vmax)
-                axes[i].set_title(subtitle)
+                ax.imshow(dem, cmap="coolwarm", vmin=vmin, vmax=vmax)
+                ax.set_title(subtitle)
             except Exception as e:
                 logger.error(f"Issue plotting file {file}: {e}")
                 continue
@@ -150,7 +148,6 @@ def generate_ddems_mosaic(
             orientation="vertical",
         )
         cbar.set_label("Altitude difference (m)")
-        fig.suptitle(title, fontsize=16)
 
 
 def generate_slopes_mosaic(
@@ -193,12 +190,12 @@ def generate_slopes_mosaic(
         The function saves the generated mosaic to `output_path` and does not
         return any value.
     """
-    if not overwrite and is_output_up_to_date(list(dem_files_dict.values()), output_path):
+    if not overwrite and is_output_up_to_date(list(dem_files_dict.values()), _mosaic_output_paths(len(dem_files_dict), output_path)):
         logger.debug(f"File {output_path} is up to date -> skipping.")
         return
 
-    with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
-        for i, (subtitle, file) in enumerate(sorted(dem_files_dict.items())):
+    for fig, axes, page in _mosaic_pages(sorted(dem_files_dict.items()), output_path, title):
+        for ax, (subtitle, file) in zip(axes, page):
             dem = _read_raster_with_max_size(file)
 
             with rasterio.open(file) as src:
@@ -212,9 +209,9 @@ def generate_slopes_mosaic(
             slope_dem = np.degrees(slope_rad)
             slope_dem = np.clip(slope_dem, vmin, vmax)
 
-            axes[i].imshow(slope_dem, cmap="terrain", vmin=vmin, vmax=vmax)
-            axes[i].axis("off")
-            axes[i].set_title(subtitle)
+            ax.imshow(slope_dem, cmap="terrain", vmin=vmin, vmax=vmax)
+            ax.axis("off")
+            ax.set_title(subtitle)
 
         # add the global color bar
         cbar = fig.colorbar(
@@ -222,7 +219,6 @@ def generate_slopes_mosaic(
         )
         cbar.set_label("Slope (Degree)")
 
-        fig.suptitle(title, fontsize=16)
 
 
 def generate_hillshades_mosaic(
@@ -265,12 +261,12 @@ def generate_hillshades_mosaic(
     None
         The function saves the generated hillshade mosaic to `output_path`.
     """
-    if not overwrite and is_output_up_to_date(list(dem_files_dict.values()), output_path):
+    if not overwrite and is_output_up_to_date(list(dem_files_dict.values()), _mosaic_output_paths(len(dem_files_dict), output_path)):
         logger.debug(f"File {output_path} is up to date -> skipping.")
         return
 
-    with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
-        for i, (subtitle, file) in enumerate(sorted(dem_files_dict.items())):
+    for fig, axes, page in _mosaic_pages(sorted(dem_files_dict.items()), output_path, title):
+        for ax, (subtitle, file) in zip(axes, page):
             dem = _read_raster_with_max_size(file)
 
             with rasterio.open(file) as src:
@@ -280,9 +276,9 @@ def generate_hillshades_mosaic(
             hillshade = ls.hillshade(dem, vert_exag=1, dx=dx, dy=dy)
             clean = np.asarray(hillshade).copy()
 
-            axes[i].imshow(hillshade, cmap="gray", vmin=0, vmax=np.nanpercentile(clean, 99))
-            axes[i].axis("off")
-            axes[i].set_title(subtitle)
+            ax.imshow(hillshade, cmap="gray", vmin=0, vmax=np.nanpercentile(clean, 99))
+            ax.axis("off")
+            ax.set_title(subtitle)
 
         # add the global color bar
         cbar = fig.colorbar(
@@ -291,7 +287,6 @@ def generate_hillshades_mosaic(
             orientation="vertical",
         )
         cbar.set_label("Hillshade")
-        fig.suptitle(title, fontsize=16)
 
 
 def generate_sparse_pointclouds_mosaic(
@@ -312,7 +307,7 @@ def generate_sparse_pointclouds_mosaic(
     drawn one at a time (rather than precomputing all point clouds' data upfront) to keep
     memory usage low regardless of how many point clouds are in the mosaic.
     """
-    if not overwrite and is_output_up_to_date(list(diff_files_dict.values()), output_path):
+    if not overwrite and is_output_up_to_date(list(diff_files_dict.values()), _mosaic_output_paths(len(diff_files_dict), output_path)):
         logger.debug(f"File {output_path} is up to date -> skipping.")
         return
 
@@ -321,14 +316,14 @@ def generate_sparse_pointclouds_mosaic(
 
     logger.info(f"Generating mosaic of sparse point clouds with {len(diff_files_dict)} input files...")
 
-    with _generate_mosaic_figure_and_axes(len(diff_files_dict), output_path) as (fig, axes):
-        for i, (code, file) in enumerate(sorted(diff_files_dict.items())):
+    for fig, axes, page in _mosaic_pages(sorted(diff_files_dict.items()), output_path, title):
+        for ax, (code, file) in zip(axes, page):
             try:
                 las = laspy.read(file)
                 x, y, dz = np.asarray(las.x), np.asarray(las.y), np.asarray(las.z)
-                axes[i].scatter(x, y, c=dz, s=1, cmap="coolwarm", vmin=vmin, vmax=vmax)
-                axes[i].set_aspect("equal")
-                axes[i].set_title(code)
+                ax.scatter(x, y, c=dz, s=1, cmap="coolwarm", vmin=vmin, vmax=vmax)
+                ax.set_aspect("equal")
+                ax.set_title(code)
             except Exception as e:
                 logger.error(f"Issue plotting point cloud {file}: {e}")
                 continue
@@ -340,7 +335,6 @@ def generate_sparse_pointclouds_mosaic(
             orientation="vertical",
         )
         cbar.set_label("Elevation difference (m)")
-        fig.suptitle(title, fontsize=16)
 
 
 def generate_provided_dems_mosaic(
@@ -357,7 +351,7 @@ def generate_provided_dems_mosaic(
     ``diff_files_dict`` maps each code to a precomputed diff raster (as produced by
     ``pipeline.generate_dem_diff``), so this function only reads and plots them.
     """
-    if not overwrite and is_output_up_to_date([*diff_files_dict.values()], output_path):
+    if not overwrite and is_output_up_to_date([*diff_files_dict.values()], _mosaic_output_paths(len(diff_files_dict), output_path)):
         logger.debug(f"File {output_path} is up to date -> skipping.")
         return
 
@@ -365,15 +359,15 @@ def generate_provided_dems_mosaic(
 
     logger.info(f"Generating mosaic of provided DEMs with {len(diff_files_dict)} input files...")
 
-    with _generate_mosaic_figure_and_axes(len(diff_files_dict), output_path) as (fig, axes):
-        for i, (code, file) in enumerate(diff_files_dict.items()):
+    for fig, axes, page in _mosaic_pages(list(diff_files_dict.items()), output_path, title):
+        for ax, (code, file) in zip(axes, page):
             try:
                 ddem = gu.Raster(file)
 
-                axes[i].imshow(ddem.data, cmap="coolwarm", vmin=vmin, vmax=vmax, interpolation="bilinear")
+                ax.imshow(ddem.data, cmap="coolwarm", vmin=vmin, vmax=vmax, interpolation="bilinear")
 
-                axes[i].set_aspect("equal")
-                axes[i].set_title(code)
+                ax.set_aspect("equal")
+                ax.set_title(code)
             except Exception as e:
                 logger.error(f"Issure plotting provided DEM {file} : {e}")
                 continue
@@ -385,7 +379,6 @@ def generate_provided_dems_mosaic(
             orientation="vertical",
         )
         cbar.set_label("Elevation difference (m)")
-        fig.suptitle(title, fontsize=16)
 
 
 #######################################################################################################################
@@ -409,10 +402,6 @@ def generate_extrinsics_position_mosaic(
     group; ``initial_extrinsics_df`` is the camera position file provided alongside the raw images
     (e.g. ``camera_model_extrinsics.csv``).
     """
-    if not overwrite and Path(output_path).exists():
-        logger.debug(f"File {output_path} is up to date -> skipping.")
-        return
-
     merged = _merge_extrinsics_with_initial(extrinsics_df, initial_extrinsics_df)
     if merged.empty:
         logger.warning("No extrinsics data could be matched with initial positions -> skipping plot.")
@@ -420,9 +409,12 @@ def generate_extrinsics_position_mosaic(
 
     codes = sorted(merged["code"].unique())
 
-    with _generate_mosaic_figure_and_axes(len(codes), output_path) as (fig, axes):
-        for i, code in enumerate(codes):
-            ax = axes[i]
+    if not overwrite and all(p.exists() for p in _mosaic_output_paths(len(codes), output_path)):
+        logger.debug(f"File {output_path} is up to date -> skipping.")
+        return
+
+    for fig, axes, page in _mosaic_pages(codes, output_path, title):
+        for ax, code in zip(axes, page):
             ax.axis("on")
             group = merged.loc[merged["code"] == code]
             ax.scatter(group["dx"], group["dy"], s=15, alpha=0.7, edgecolor="black", linewidth=0.3)
@@ -433,7 +425,6 @@ def generate_extrinsics_position_mosaic(
 
         fig.supxlabel("X (m)")
         fig.supylabel("Y (m)")
-        fig.suptitle(title, fontsize=16)
 
 
 def generate_extrinsics_z_boxplot(
@@ -449,10 +440,6 @@ def generate_extrinsics_z_boxplot(
     ``extrinsics_df`` and ``initial_extrinsics_df`` are expected to cover a single (site, dataset)
     group, see :func:`generate_extrinsics_position_mosaic`.
     """
-    if not overwrite and Path(output_path).exists():
-        logger.debug(f"File {output_path} is up to date -> skipping.")
-        return
-
     merged = _merge_extrinsics_with_initial(extrinsics_df, initial_extrinsics_df)
     if merged.empty:
         logger.warning("No extrinsics data could be matched with initial positions -> skipping plot.")
@@ -1121,26 +1108,45 @@ def generate_coregistration_individual_plots(
 #######################################################################################################################
 
 
-@contextmanager
-def _generate_mosaic_figure_and_axes(
-    n: int, output_path: str | Path
-) -> Generator[tuple[Figure, list[Axes]], None, None]:
-    try:
-        ncols = int(np.ceil(np.sqrt(n)))
-        nrows = int(np.ceil(n / ncols))
+_MOSAIC_MAX_PER_PAGE = 25
+
+
+def _mosaic_output_paths(n: int, output_path: str | Path) -> list[Path]:
+    """Return the file paths a mosaic of `n` subplots is saved to (`_p1`, `_p2`... suffixes if paginated)."""
+    output_path = Path(output_path)
+    n_pages = math.ceil(n / _MOSAIC_MAX_PER_PAGE)
+    if n_pages <= 1:
+        return [output_path]
+    return [output_path.with_name(f"{output_path.stem}_p{p}{output_path.suffix}") for p in range(1, n_pages + 1)]
+
+
+def _mosaic_pages(items: list, output_path: str | Path, title: str = "") -> Generator[tuple[Figure, list[Axes], list], None, None]:
+    """Yield `(fig, axes, page_items)` per page of at most 25 subplots, saving each figure once the caller is done."""
+    output_path = Path(output_path)
+    paths = _mosaic_output_paths(len(items), output_path)
+    output_path.parent.mkdir(exist_ok=True, parents=True)
+    # remove files of a previous run that used a different page count
+    for old in [output_path, *output_path.parent.glob(f"{output_path.stem}_p*{output_path.suffix}")]:
+        if old not in paths:
+            old.unlink(missing_ok=True)
+
+    per_page = math.ceil(len(items) / len(paths))
+    for k, path in enumerate(paths):
+        page = items[k * per_page : (k + 1) * per_page]
+        ncols = math.ceil(math.sqrt(len(page)))
+        if ncols == 5 and len(page) <= 24:
+            ncols = 6  # 4x6 is more compact than 5x5 for 21-24 subplots
+        nrows = math.ceil(len(page) / ncols)
         # enforce a minimum width so the suptitle fits even for a single-panel mosaic
         fig = Figure(figsize=(max(4 * ncols, 6), 4 * nrows), constrained_layout=True)
-        axes = fig.subplots(nrows, ncols)
-        axes = list(axes.flatten()) if isinstance(axes, np.ndarray) else [axes]
+        axes = np.atleast_1d(fig.subplots(nrows, ncols)).flatten().tolist()
+        for ax in axes:
+            ax.axis("off")
+        fig.suptitle(f"{title} (page {k + 1}/{len(paths)})" if len(paths) > 1 else title, fontsize=16)
 
-        for i in range(ncols * nrows):
-            axes[i].axis("off")
+        yield fig, axes, page
 
-        yield fig, axes
-    finally:
-        output_path = Path(output_path)
-        output_path.parent.mkdir(exist_ok=True, parents=True)
-        fig.savefig(output_path)
+        fig.savefig(path)
         del fig
 
 

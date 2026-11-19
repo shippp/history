@@ -82,6 +82,14 @@ def _add_png_page(
     plt.close(fig)
 
 
+def _add_mosaic_pages(pdf: PdfPages, path: Path, orientation: Literal["auto", "portrait", "landscape"] = "auto") -> None:
+    """Insert a mosaic PNG, or all its paginated `_p1`, `_p2`... files in order if it was split."""
+    path = Path(path)
+    pages = sorted(path.parent.glob(f"{path.stem}_p*{path.suffix}"), key=lambda p: int(p.stem.rsplit("_p", 1)[1]))
+    for page in pages if not path.exists() and pages else [path]:
+        _add_png_page(pdf, page, orientation)
+
+
 def _add_section_title_page(pdf: PdfPages, title: str) -> None:
     """Add a centred text page as a section separator (A4 portrait)."""
     fig, ax = plt.subplots(figsize=(_PAGE_W, _PAGE_H))
@@ -223,12 +231,12 @@ def generate_pdf_report(
             sub_dir = plot_dir / f"{site}_{dataset}"
             _add_section_title_page(pdf, f"{_SITE_DISPLAY[site]}  —  {_DATASET_DISPLAY[dataset]}")
 
-            _add_png_page(pdf, sub_dir / "mosaic" / "mosaic_sparsecloud_diff.png", orientation)
-            _add_png_page(pdf, sub_dir / "mosaic" / "mosaic_raw_dem.png", orientation)
-            _add_png_page(pdf, sub_dir / "mosaic" / "mosaic_ddem.png", orientation)
-            _add_png_page(pdf, sub_dir / "mosaic" / "mosaic_provided_ddem.png", orientation)
-            _add_png_page(pdf, sub_dir / "mosaic" / "mosaic_hillshades.png", orientation)
-            _add_png_page(pdf, sub_dir / "mosaic" / "mosaic_slopes.png", orientation)
+            _add_mosaic_pages(pdf, sub_dir / "mosaic" / "mosaic_sparsecloud_diff.png", orientation)
+            _add_mosaic_pages(pdf, sub_dir / "mosaic" / "mosaic_raw_dem.png", orientation)
+            _add_mosaic_pages(pdf, sub_dir / "mosaic" / "mosaic_ddem.png", orientation)
+            _add_mosaic_pages(pdf, sub_dir / "mosaic" / "mosaic_provided_ddem.png", orientation)
+            _add_mosaic_pages(pdf, sub_dir / "mosaic" / "mosaic_hillshades.png", orientation)
+            _add_mosaic_pages(pdf, sub_dir / "mosaic" / "mosaic_slopes.png", orientation)
             _add_png_page(pdf, sub_dir / "nmad_before_vs_after_coregistration.png", orientation)
             _add_png_page(pdf, sub_dir / "coregistration_shifts.png", orientation)
 
