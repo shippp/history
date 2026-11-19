@@ -141,6 +141,8 @@ class Config:
         If True, PDAL commands are prepared but not executed. Default False.
     no_plots : bool
         If True, plot generation is skipped for all steps. Default False.
+    plots_only : bool
+        If True, steps skip their computation and only (re)generate plots. Default False.
     pdal_exec_path : str
         Path or name of the PDAL executable. Default ``"pdal"``.
     max_workers : int
@@ -158,6 +160,7 @@ class Config:
     overwrite_plots: bool = False
     dry_run: bool = False
     no_plots: bool = False
+    plots_only: bool = False
     pdal_exec_path: str = "pdal"
     max_workers: int = 4
     filename_renames: dict[str, str] | None = None

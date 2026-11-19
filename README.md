@@ -72,7 +72,7 @@ The pipeline runs the following steps in order:
 | `ddem` | Compute differential DEMs before and after coregistration |
 | `generate_pdf` | Assemble all pipeline output plots into a single PDF report |
 
-Each step can also be run individually, or as a subset (e.g. `history-postprocess run point2dem coregister --config …`) — steps always run in the pipeline order above, regardless of the order given on the command line. Use `--overwrite` to recompute existing outputs, `--no-plots` to skip figures, and `-v`/`-vv` to increase log verbosity.
+Each step can also be run individually, or as a subset (e.g. `history-postprocess run point2dem coregister --config …`) — steps always run in the pipeline order above, regardless of the order given on the command line. Use `--overwrite` to recompute existing outputs, `--no-plots` to skip figures, `--plots-only` to skip computation and only regenerate figures from existing outputs, and `-v`/`-vv` to increase log verbosity.
 
 **3. Check progress**
 
