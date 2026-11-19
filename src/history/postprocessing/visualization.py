@@ -32,6 +32,8 @@ def generate_dems_mosaic(
     vmax: float,
     title: str = "",
     overwrite: bool = False,
+    *,
+    quicklooks_dir: str | Path,
 ) -> None:
     """
     Generate a mosaic figure composed of multiple DEM images.
@@ -59,6 +61,8 @@ def generate_dems_mosaic(
         empty string.
     overwrite : bool, optional
         Set to True to force overwriting existing output. Default is False.
+    quicklooks_dir : str | Path
+        Directory caching the downsampled rasters (see :func:`_read_quicklook`).
 
     Returns
     -------
@@ -72,7 +76,7 @@ def generate_dems_mosaic(
 
     for fig, axes, page in _mosaic_pages(sorted(dem_files_dict.items()), output_path, title):
         for ax, (subtitle, file) in zip(axes, page):
-            dem = _read_raster_with_max_size(file)
+            dem = _read_quicklook(file, quicklooks_dir)
 
             ax.imshow(dem, cmap="terrain", vmin=vmin, vmax=vmax)
             ax.set_title(subtitle)
@@ -93,6 +97,8 @@ def generate_ddems_mosaic(
     vmax: float = 10,
     title: str = "",
     overwrite: bool = False,
+    *,
+    quicklooks_dir: str | Path,
 ) -> None:
     """
     Generate a mosaic of dDEM (differential DEM) rasters and save it as an image.
@@ -118,6 +124,8 @@ def generate_ddems_mosaic(
         Global title for the mosaic figure. Default is an empty string.
     overwrite : bool, optional
         Set to True to force overwriting existing output. Default is False.
+    quicklooks_dir : str | Path
+        Directory caching the downsampled rasters (see :func:`_read_quicklook`).
 
     Returns
     -------
@@ -132,7 +140,7 @@ def generate_ddems_mosaic(
     for fig, axes, page in _mosaic_pages(sorted(ddem_files_dict.items()), output_path, title):
         for ax, (subtitle, file) in zip(axes, page):
             try:
-                dem = _read_raster_with_max_size(file)
+                dem = _read_quicklook(file, quicklooks_dir)
                 dem = np.clip(dem, vmin, vmax)
 
                 ax.imshow(dem, cmap="coolwarm", vmin=vmin, vmax=vmax)
@@ -157,6 +165,8 @@ def generate_slopes_mosaic(
     vmax: float = 40,
     title: str = "",
     overwrite: bool = False,
+    *,
+    quicklooks_dir: str | Path,
 ) -> None:
     """
     Generate a mosaic of slope maps derived from elevation rasters.
@@ -183,6 +193,8 @@ def generate_slopes_mosaic(
         Global title for the mosaic figure. Default is an empty string.
     overwrite : bool, optional
         Set to True to force overwriting existing output. Default is False.
+    quicklooks_dir : str | Path
+        Directory caching the downsampled rasters (see :func:`_read_quicklook`).
 
     Returns
     -------
@@ -196,9 +208,8 @@ def generate_slopes_mosaic(
 
     for fig, axes, page in _mosaic_pages(sorted(dem_files_dict.items()), output_path, title):
         for ax, (subtitle, file) in zip(axes, page):
-            dem = _read_raster_with_max_size(file)
-
-            with rasterio.open(file) as src:
+            with rasterio.open(_quicklook(file, quicklooks_dir)) as src:
+                dem = src.read(1, masked=True)
                 dx, dy = src.res
 
             # compute slope in degree
@@ -228,6 +239,8 @@ def generate_hillshades_mosaic(
     vmax: float = 1,
     title: str = "",
     overwrite: bool = False,
+    *,
+    quicklooks_dir: str | Path,
 ) -> None:
     """
     Generate a mosaic of hillshade visualizations from elevation rasters.
@@ -255,6 +268,8 @@ def generate_hillshades_mosaic(
         Global title for the hillshade mosaic. Default is an empty string.
     overwrite : bool, optional
         Set to True to force overwriting existing output. Default is False.
+    quicklooks_dir : str | Path
+        Directory caching the downsampled rasters (see :func:`_read_quicklook`).
 
     Returns
     -------
@@ -267,9 +282,8 @@ def generate_hillshades_mosaic(
 
     for fig, axes, page in _mosaic_pages(sorted(dem_files_dict.items()), output_path, title):
         for ax, (subtitle, file) in zip(axes, page):
-            dem = _read_raster_with_max_size(file)
-
-            with rasterio.open(file) as src:
+            with rasterio.open(_quicklook(file, quicklooks_dir)) as src:
+                dem = src.read(1, masked=True)
                 dx, dy = src.res
 
             ls = LightSource(azdeg=315, altdeg=45)  # azimuth, sun altitude
@@ -344,6 +358,8 @@ def generate_provided_dems_mosaic(
     overwrite: bool = False,
     vmin: float = -10,
     vmax: float = 10,
+    *,
+    quicklooks_dir: str | Path,
 ) -> None:
     """
     Plot a mosaic of elevation differences between each provided DEM and the reference DEM.
@@ -355,16 +371,14 @@ def generate_provided_dems_mosaic(
         logger.debug(f"File {output_path} is up to date -> skipping.")
         return
 
-    import geoutils as gu
-
     logger.info(f"Generating mosaic of provided DEMs with {len(diff_files_dict)} input files...")
 
     for fig, axes, page in _mosaic_pages(list(diff_files_dict.items()), output_path, title):
         for ax, (code, file) in zip(axes, page):
             try:
-                ddem = gu.Raster(file)
+                ddem = _read_quicklook(file, quicklooks_dir)
 
-                ax.imshow(ddem.data, cmap="coolwarm", vmin=vmin, vmax=vmax, interpolation="bilinear")
+                ax.imshow(ddem, cmap="coolwarm", vmin=vmin, vmax=vmax, interpolation="bilinear")
 
                 ax.set_aspect("equal")
                 ax.set_title(code)
@@ -1221,6 +1235,49 @@ def _merge_extrinsics_with_initial(extrinsics_df: pd.DataFrame, initial_extrinsi
     merged["dy"] = merged["y_map"] - merged["y_map_initial"]
     merged["dz"] = merged["alt"] - merged["alt_initial"]
     return merged
+
+
+_QUICKLOOK_MAXSIZE = 600
+
+
+def _quicklook(file: str | Path, quicklooks_dir: str | Path) -> Path:
+    """Return the cached downsampled GeoTIFF of `file`, generating it if missing or older than `file`.
+
+    Quicklooks are stored in `quicklooks_dir / <parent dir name of file> / <file name>`, the parent dir name
+    avoids collisions between rasters sharing a file name (e.g. raw and coregistered DEMs).
+    """
+    file = Path(file)
+    path = Path(quicklooks_dir) / file.parent.name / file.name
+    if is_output_up_to_date(file, path):
+        return path
+
+    with rasterio.open(file) as src:
+        scale = min(1, _QUICKLOOK_MAXSIZE / max(src.height, src.width))
+        height, width = max(1, round(src.height * scale)), max(1, round(src.width * scale))
+        data = src.read(1, out_shape=(height, width), resampling=Resampling.average, masked=True)
+        profile = {
+            "driver": "GTiff",
+            "count": 1,
+            "dtype": "float32",
+            "height": height,
+            "width": width,
+            "crs": src.crs,
+            "transform": src.transform * src.transform.scale(src.width / width, src.height / height),
+            "nodata": np.nan,
+            "compress": "deflate",
+            "predictor": 3,
+        }
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(data.astype("float32").filled(np.nan), 1)
+    return path
+
+
+def _read_quicklook(file: str | Path, quicklooks_dir: str | Path):
+    """Read the first band of the quicklook of `file` as a masked array."""
+    with rasterio.open(_quicklook(file, quicklooks_dir)) as src:
+        return src.read(1, masked=True)
 
 
 def _read_raster_with_max_size(file: str, maxsize: int = 2000):

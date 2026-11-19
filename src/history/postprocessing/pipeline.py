@@ -613,7 +613,8 @@ def generate_provided_dem_viz(config: Config) -> None:
             diff_files_dict,
             output_path,
             title=f"({site} {dataset}) Mosaic of provided DEM(s) \n altitude difference vs reference DEM",
-            overwrite=config.overwrite_plots
+            overwrite=config.overwrite_plots,
+            quicklooks_dir=config.proc_dir.quicklooks_dir / f"{site}_{dataset}",
         )
 
     df = stats.compute_dems_statistics_df(all_diff_files.values(), max_workers=config.max_workers)
@@ -1342,7 +1343,7 @@ def plot_point2dem(config: Config) -> None:
         logger.debug(f"Plotting **** {site} - {dataset} ****")
         output_path = config.plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_raw_dem.png"
         vmin, vmax = group["min"].median(), group["max"].median()
-        viz.generate_dems_mosaic(group["file"].to_dict(), output_path, vmin, vmax, f"({site} {dataset}) Mosaic Raw DEMs", config.overwrite_plots)
+        viz.generate_dems_mosaic(group["file"].to_dict(), output_path, vmin, vmax, f"({site} {dataset}) Mosaic Raw DEMs", config.overwrite_plots, quicklooks_dir=config.proc_dir.quicklooks_dir / f"{site}_{dataset}")
 
 
 def plot_coregistration(config: Config) -> None:
@@ -1366,15 +1367,15 @@ def plot_coregistration(config: Config) -> None:
         vmin, vmax = group["min"].median(), group["max"].median()
 
         logger.debug("Plotting coregistered DEMs mosaic")
-        viz.generate_dems_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_coreg_dem.png", vmin, vmax, f"({site} {dataset}) Mosaic Coregistered DEMs", config.overwrite_plots)
+        viz.generate_dems_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_coreg_dem.png", vmin, vmax, f"({site} {dataset}) Mosaic Coregistered DEMs", config.overwrite_plots, quicklooks_dir=config.proc_dir.quicklooks_dir / f"{site}_{dataset}")
 
         logger.debug("Plotting slope mosaic")
         viz.generate_slopes_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_slopes.png", 
-                                   title=f"({site} {dataset}) Mosaic slopes of DEMs after coregistration", overwrite=config.overwrite_plots)
+                                   title=f"({site} {dataset}) Mosaic slopes of DEMs after coregistration", overwrite=config.overwrite_plots, quicklooks_dir=config.proc_dir.quicklooks_dir / f"{site}_{dataset}")
 
         logger.debug("Plotting hillshade mosaic")
         viz.generate_hillshades_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_hillshades.png", 
-                                       title=f"({site} {dataset}) Mosaic hillshades of DEMs after coregistration", overwrite=config.overwrite_plots)
+                                       title=f"({site} {dataset}) Mosaic hillshades of DEMs after coregistration", overwrite=config.overwrite_plots, quicklooks_dir=config.proc_dir.quicklooks_dir / f"{site}_{dataset}")
 
     # Build per-(site, dataset) file mapping from df (which has the "file" column)
     coreg_files_by_group = {key: list(g["file"]) for key, g in df.groupby(["site", "dataset"])}
@@ -1414,7 +1415,7 @@ def plot_ddems(config: Config) -> None:
 
         ddem_files_dict = group["ddem_after_file"].dropna().to_dict()
         viz.generate_ddems_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_ddem.png", 
-                                  title=f"({site} {dataset}) Mosaic of DDEMs after coregistration", overwrite=config.overwrite_plots)
+                                  title=f"({site} {dataset}) Mosaic of DDEMs after coregistration", overwrite=config.overwrite_plots, quicklooks_dir=config.proc_dir.quicklooks_dir / f"{site}_{dataset}")
 
 
 #######################################################################################################################
