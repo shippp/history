@@ -4,17 +4,19 @@ Contains functions to generate post-processing Visualization
 
 import math
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Generator, Sequence
+from typing import Generator, Literal, Sequence
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import rasterio
 from matplotlib.axes import Axes
 from matplotlib.cm import ScalarMappable
-from matplotlib.colors import LightSource
 from matplotlib.figure import Figure
 from rasterio.enums import Resampling
+from rasterio.windows import Window
+from tqdm import tqdm
 
 from history.postprocessing.io import parse_filename
 from history.utils import is_output_up_to_date, skip_overwrite, write_file
@@ -35,6 +37,7 @@ def generate_dems_mosaic(
     overwrite: bool = False,
     *,
     quicklooks_dir: str | Path,
+    max_workers: int | None = None,
 ) -> None:
     """
     Generate a mosaic figure composed of multiple DEM images.
@@ -64,6 +67,8 @@ def generate_dems_mosaic(
         Set to True to force overwriting existing output. Default is False.
     quicklooks_dir : str | Path
         Directory caching the downsampled rasters (see :func:`_read_quicklook`).
+    max_workers : int | None, optional
+        Number of threads generating the missing quicklooks. Defaults to the ThreadPoolExecutor default.
 
     Returns
     -------
@@ -73,6 +78,8 @@ def generate_dems_mosaic(
     """
     if skip_overwrite(list(dem_files_dict.values()), _mosaic_output_paths(len(dem_files_dict), output_path), overwrite):
         return
+
+    _build_quicklooks(dem_files_dict.values(), quicklooks_dir, max_workers)
 
     for fig, axes, page in _mosaic_pages(sorted(dem_files_dict.items()), output_path, title):
         for ax, (subtitle, file) in zip(axes, page):
@@ -99,6 +106,7 @@ def generate_ddems_mosaic(
     overwrite: bool = False,
     *,
     quicklooks_dir: str | Path,
+    max_workers: int | None = None,
 ) -> None:
     """
     Generate a mosaic of dDEM (differential DEM) rasters and save it as an image.
@@ -126,6 +134,8 @@ def generate_ddems_mosaic(
         Set to True to force overwriting existing output. Default is False.
     quicklooks_dir : str | Path
         Directory caching the downsampled rasters (see :func:`_read_quicklook`).
+    max_workers : int | None, optional
+        Number of threads generating the missing quicklooks. Defaults to the ThreadPoolExecutor default.
 
     Returns
     -------
@@ -135,6 +145,8 @@ def generate_ddems_mosaic(
     """
     if skip_overwrite(list(ddem_files_dict.values()), _mosaic_output_paths(len(ddem_files_dict), output_path), overwrite):
         return
+
+    _build_quicklooks(ddem_files_dict.values(), quicklooks_dir, max_workers)
 
     for fig, axes, page in _mosaic_pages(sorted(ddem_files_dict.items()), output_path, title):
         for ax, (subtitle, file) in zip(axes, page):
@@ -166,6 +178,7 @@ def generate_slopes_mosaic(
     overwrite: bool = False,
     *,
     quicklooks_dir: str | Path,
+    max_workers: int | None = None,
 ) -> None:
     """
     Generate a mosaic of slope maps derived from elevation rasters.
@@ -194,6 +207,8 @@ def generate_slopes_mosaic(
         Set to True to force overwriting existing output. Default is False.
     quicklooks_dir : str | Path
         Directory caching the downsampled rasters (see :func:`_read_quicklook`).
+    max_workers : int | None, optional
+        Number of threads generating the missing quicklooks. Defaults to the ThreadPoolExecutor default.
 
     Returns
     -------
@@ -204,19 +219,11 @@ def generate_slopes_mosaic(
     if skip_overwrite(list(dem_files_dict.values()), _mosaic_output_paths(len(dem_files_dict), output_path), overwrite):
         return
 
+    _build_quicklooks(dem_files_dict.values(), quicklooks_dir, "slope", max_workers)
+
     for fig, axes, page in _mosaic_pages(sorted(dem_files_dict.items()), output_path, title):
         for ax, (subtitle, file) in zip(axes, page):
-            with rasterio.open(_quicklook(file, quicklooks_dir)) as src:
-                dem = src.read(1, masked=True)
-                dx, dy = src.res
-
-            # compute slope in degree
-            grad_y, grad_x = np.gradient(dem, dy, dx)
-            # Ignore runtime warnings only inside this block
-            with np.errstate(invalid="ignore", divide="ignore"):
-                slope_rad = np.arctan(np.sqrt(grad_x**2 + grad_y**2))
-            slope_dem = np.degrees(slope_rad)
-            slope_dem = np.clip(slope_dem, vmin, vmax)
+            slope_dem = np.clip(_read_quicklook(file, quicklooks_dir, "slope"), vmin, vmax)
 
             ax.imshow(slope_dem, cmap="terrain", vmin=vmin, vmax=vmax)
             ax.axis("off")
@@ -239,6 +246,7 @@ def generate_hillshades_mosaic(
     overwrite: bool = False,
     *,
     quicklooks_dir: str | Path,
+    max_workers: int | None = None,
 ) -> None:
     """
     Generate a mosaic of hillshade visualizations from elevation rasters.
@@ -268,6 +276,8 @@ def generate_hillshades_mosaic(
         Set to True to force overwriting existing output. Default is False.
     quicklooks_dir : str | Path
         Directory caching the downsampled rasters (see :func:`_read_quicklook`).
+    max_workers : int | None, optional
+        Number of threads generating the missing quicklooks. Defaults to the ThreadPoolExecutor default.
 
     Returns
     -------
@@ -277,17 +287,13 @@ def generate_hillshades_mosaic(
     if skip_overwrite(list(dem_files_dict.values()), _mosaic_output_paths(len(dem_files_dict), output_path), overwrite):
         return
 
+    _build_quicklooks(dem_files_dict.values(), quicklooks_dir, "hillshade", max_workers)
+
     for fig, axes, page in _mosaic_pages(sorted(dem_files_dict.items()), output_path, title):
         for ax, (subtitle, file) in zip(axes, page):
-            with rasterio.open(_quicklook(file, quicklooks_dir)) as src:
-                dem = src.read(1, masked=True)
-                dx, dy = src.res
+            hillshade = _read_quicklook(file, quicklooks_dir, "hillshade")
 
-            ls = LightSource(azdeg=315, altdeg=45)  # azimuth, sun altitude
-            hillshade = ls.hillshade(dem, vert_exag=1, dx=dx, dy=dy)
-            clean = np.asarray(hillshade).copy()
-
-            ax.imshow(hillshade, cmap="gray", vmin=0, vmax=np.nanpercentile(clean, 99))
+            ax.imshow(hillshade, cmap="gray", vmin=0, vmax=np.nanpercentile(hillshade.filled(np.nan), 99))
             ax.axis("off")
             ax.set_title(subtitle)
 
@@ -1089,7 +1095,8 @@ def generate_coregistration_individual_plots(
 #######################################################################################################################
 
 
-_MOSAIC_MAX_PER_PAGE = 25
+_MOSAIC_NCOLS, _MOSAIC_NROWS = 4, 6
+_MOSAIC_MAX_PER_PAGE = _MOSAIC_NCOLS * _MOSAIC_NROWS
 
 
 def _mosaic_output_paths(n: int, output_path: str | Path) -> list[Path]:
@@ -1102,7 +1109,7 @@ def _mosaic_output_paths(n: int, output_path: str | Path) -> list[Path]:
 
 
 def _mosaic_pages(items: list, output_path: str | Path, title: str = "") -> Generator[tuple[Figure, list[Axes], list], None, None]:
-    """Yield `(fig, axes, page_items)` per page of at most 25 subplots, saving each figure once the caller is done."""
+    """Yield `(fig, axes, page_items)` per page of at most 24 subplots on a fixed 4x6 grid, saving each figure once the caller is done."""
     output_path = Path(output_path)
     paths = _mosaic_output_paths(len(items), output_path)
     # remove files of a previous run that used a different page count
@@ -1113,13 +1120,8 @@ def _mosaic_pages(items: list, output_path: str | Path, title: str = "") -> Gene
     per_page = math.ceil(len(items) / len(paths))
     for k, path in enumerate(paths):
         page = items[k * per_page : (k + 1) * per_page]
-        ncols = math.ceil(math.sqrt(len(page)))
-        if ncols == 5 and len(page) <= 24:
-            ncols = 6  # 4x6 is more compact than 5x5 for 21-24 subplots
-        nrows = math.ceil(len(page) / ncols)
-        # enforce a minimum width so the suptitle fits even for a single-panel mosaic
-        fig = Figure(figsize=(max(4 * ncols, 6), 4 * nrows), constrained_layout=True)
-        axes = np.atleast_1d(fig.subplots(nrows, ncols)).flatten().tolist()
+        fig = Figure(figsize=(4 * _MOSAIC_NCOLS, 4 * _MOSAIC_NROWS), constrained_layout=True)
+        axes = fig.subplots(_MOSAIC_NROWS, _MOSAIC_NCOLS).flatten().tolist()
         for ax in axes:
             ax.axis("off")
         fig.suptitle(f"{title} (page {k + 1}/{len(paths)})" if len(paths) > 1 else title, fontsize=16)
@@ -1208,29 +1210,77 @@ def _merge_extrinsics_with_initial(extrinsics_df: pd.DataFrame, initial_extrinsi
 _QUICKLOOK_MAXSIZE = 600
 
 
-def _quicklook(file: str | Path, quicklooks_dir: str | Path) -> Path:
+def _quicklook(file: str | Path, quicklooks_dir: str | Path, product: Literal["hillshade", "slope"] | None = None) -> Path:
     """Return the cached downsampled GeoTIFF of `file`, generating it if missing or older than `file`.
 
-    Quicklooks are stored in `quicklooks_dir / <parent dir name of file> / <file name>`, the parent dir name
-    avoids collisions between rasters sharing a file name (e.g. raw and coregistered DEMs).
+    With `product`, the terrain product (Horn, as `gdaldem`) is computed at full resolution and only then downsampled:
+    deriving it from an already averaged DEM would smooth out the relief it highlights (see `_write_quicklook`).
+    Quicklooks are stored in `quicklooks_dir / <parent dir name of file>[_<product>] / <file name>`, the parent dir
+    name avoids collisions between rasters sharing a file name (e.g. raw and coregistered DEMs).
     """
     file = Path(file)
-    path = Path(quicklooks_dir) / file.parent.name / file.name
-    if is_output_up_to_date(file, path):
-        return path
+    path = Path(quicklooks_dir) / (f"{file.parent.name}_{product}" if product else file.parent.name) / file.name
+    if not is_output_up_to_date(file, path):
+        _write_quicklook(file, path, product)
+    return path
 
+
+def _write_quicklook(file: Path, path: Path, product: Literal["hillshade", "slope"] | None) -> None:
+    """Write `file` (or its slope in degrees / hillshade in 0-255) averaged down to at most `_QUICKLOOK_MAXSIZE` px.
+
+    Processed in strips of rows with a 1-pixel halo, so memory stays low whatever the raster size.
+
+    Tested on a synthetic DEM with a nodata hole, whose size is a multiple of the block size: the output matches
+    rasterio's average resampling (no product) and `gdaldem` slope/hillshade (Horn), the latter within 8-bit rounding.
+    """
+    az, alt = math.radians(315), math.radians(45)
     with rasterio.open(file) as src:
-        scale = min(1, _QUICKLOOK_MAXSIZE / max(src.height, src.width))
-        height, width = max(1, round(src.height * scale)), max(1, round(src.width * scale))
-        data = src.read(1, out_shape=(height, width), resampling=Resampling.average, masked=True)
+        xres, yres = abs(src.transform.a), abs(src.transform.e)
+        f = max(1, math.ceil(max(src.height, src.width) / _QUICKLOOK_MAXSIZE))  # integer block size to average
+        out_h, out_w = math.ceil(src.height / f), math.ceil(src.width / f)
+        out = np.empty((out_h, out_w), dtype="float32")
+
+        step = max(1, 1024 // f)  # output rows per strip
+        for o0 in range(0, out_h, step):
+            o1 = min(out_h, o0 + step)
+            r0, r1 = o0 * f, min(src.height, o1 * f)
+            rr0, rr1 = max(r0 - 1, 0), min(r1 + 1, src.height)
+            # NaN padding: the halo outside the raster makes the terrain product undefined on the edges, like gdaldem
+            z = np.full((r1 - r0 + 2, src.width + 2), np.nan, dtype="float32")
+            data = src.read(1, window=Window(0, rr0, src.width, rr1 - rr0), masked=True)
+            z[rr0 - r0 + 1 : rr1 - r0 + 1, 1:-1] = data.astype("float32").filled(np.nan)
+
+            if product is None:
+                res = z[1:-1, 1:-1]
+            else:
+                a, b, c = z[:-2, :-2], z[:-2, 1:-1], z[:-2, 2:]
+                d, e, g, h, i = z[1:-1, :-2], z[1:-1, 2:], z[2:, :-2], z[2:, 1:-1], z[2:, 2:]
+                dzdx = ((c + 2 * e + i) - (a + 2 * d + g)) / (8 * xres)
+                dzdy = ((a + 2 * b + c) - (g + 2 * h + i)) / (8 * yres)
+                if product == "slope":
+                    res = np.degrees(np.arctan(np.hypot(dzdx, dzdy)))
+                else:
+                    light = np.sin(alt) - np.cos(alt) * (dzdx * np.sin(az) + dzdy * np.cos(az))
+                    cang = light / np.sqrt(1 + dzdx**2 + dzdy**2)
+                    res = np.where(cang <= 0, 1, 1 + 254 * cang)
+
+            # NaN-aware block average, padded to whole blocks
+            full = np.full(((o1 - o0) * f, out_w * f), np.nan, dtype="float32")
+            full[: res.shape[0], : res.shape[1]] = res
+            valid = np.isfinite(full)
+            blocks = (o1 - o0, f, out_w, f)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                total = np.where(valid, full, 0).reshape(blocks).sum(axis=(1, 3))
+                out[o0:o1] = total / valid.reshape(blocks).sum(axis=(1, 3))
+
         profile = {
             "driver": "GTiff",
             "count": 1,
             "dtype": "float32",
-            "height": height,
-            "width": width,
+            "height": out_h,
+            "width": out_w,
             "crs": src.crs,
-            "transform": src.transform * src.transform.scale(src.width / width, src.height / height),
+            "transform": src.transform * src.transform.scale(src.width / out_w, src.height / out_h),  # keeps the extent
             "nodata": np.nan,
             "compress": "deflate",
             "predictor": 3,
@@ -1238,13 +1288,22 @@ def _quicklook(file: str | Path, quicklooks_dir: str | Path) -> Path:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(path, "w", **profile) as dst:
-        dst.write(data.astype("float32").filled(np.nan), 1)
-    return path
+        dst.write(out, 1)
 
 
-def _read_quicklook(file: str | Path, quicklooks_dir: str | Path):
+def _build_quicklooks(
+    files, quicklooks_dir: str | Path, product: Literal["hillshade", "slope"] | None = None, max_workers: int | None = None
+) -> None:
+    """Generate the missing quicklooks of `files` in parallel threads with a progress bar."""
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(_quicklook, file, quicklooks_dir, product) for file in files]
+        for future in tqdm(as_completed(futures), total=len(futures), desc=f"Quicklooks{f' ({product})' if product else ''}"):
+            future.result()
+
+
+def _read_quicklook(file: str | Path, quicklooks_dir: str | Path, product: Literal["hillshade", "slope"] | None = None):
     """Read the first band of the quicklook of `file` as a masked array."""
-    with rasterio.open(_quicklook(file, quicklooks_dir)) as src:
+    with rasterio.open(_quicklook(file, quicklooks_dir, product)) as src:
         return src.read(1, masked=True)
 
 
