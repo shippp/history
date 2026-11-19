@@ -339,9 +339,33 @@ def generate_intrinsics_extrinsics_viz(config: Config) -> None:
             logger.error(f"Error while plotting extrinsics for ({site}, {dataset}): {e}")
             continue
 
+# a mosaic subplot cannot show more points than this, and plotting time grows linearly with it
+SPARSECLOUD_MAX_POINTS = 50_000
+
+
+def _read_sparsecloud_sample(path: Path, max_points: int = SPARSECLOUD_MAX_POINTS) -> gu.PointCloud:
+    """Read a point cloud, keeping a reproducible random sample of about `max_points` points if it has more.
+
+    The file is read in chunks so that huge clouds never have to fit in memory.
+    """
+    rng = np.random.default_rng(0)
+    with laspy.open(path) as reader:
+        if reader.header.point_count == 0:
+            raise ValueError("empty point cloud")
+        keep_fraction = min(1, max_points / reader.header.point_count)
+        chunks = []
+        for chunk in reader.chunk_iterator(1_000_000):
+            keep = rng.random(len(chunk)) < keep_fraction
+            chunks.append(np.column_stack([chunk.x[keep], chunk.y[keep], chunk.z[keep]]))
+        crs = reader.header.parse_crs()
+
+    x, y, z = np.concatenate(chunks).T
+    return gu.PointCloud.from_xyz(x, y, z, crs=crs, data_column="Z")
+
+
 def save_sparsecloud_diff(sparsecloud_path: Path, ref_dem: gu.Raster, output_path: Path) -> None:
-    """Compute the elevation difference between a point cloud and a reference DEM, and save it as a LAS file."""
-    sparse_pc = gu.PointCloud(str(sparsecloud_path))
+    """Compute the elevation difference between a (subsampled) point cloud and a reference DEM, and save it as a LAS file."""
+    sparse_pc = _read_sparsecloud_sample(sparsecloud_path)
     sparse_pc.reproject(ref_dem, inplace=True)
 
     ref_z = ref_dem.interp_points(sparse_pc, as_array=True)
@@ -357,6 +381,7 @@ def generate_sparsecloud_diff(
     """Cache, for each point cloud, a copy whose Z values hold the elevation difference with ``ref_dem``.
 
     Outputs are cached LAS files under ``output_dir``, one per input file, skipped when already up to date.
+    Each input is randomly subsampled to about ``SPARSECLOUD_MAX_POINTS`` points.
 
     Returns:
         Mapping from code to output path, for the files successfully cached.
