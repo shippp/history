@@ -543,20 +543,43 @@ def intrinsics_normalizer(df: pd.DataFrame) -> pd.DataFrame:
 def extrinsics_normalizer(df: pd.DataFrame, site: str, dataset: str, references_config: ReferencesConfig) -> pd.DataFrame:
     df.columns = df.columns.str.lower().str.strip().str.replace(" ", "_")
 
-    if {"x_map", "y_map"} <= set(df.columns) or not {"lon", "lat"} <= set(df.columns):
-        return df
-
-    valid = df["lon"].between(-180, 180) & df["lat"].between(-90, 90)
-    if not valid.any():
-        return df
+    # renaming with synonyms
+    renaming_mapping = {
+        "image_file_name": ["image_name", "image_id", "image"],
+        "x_map": ["x", "X", "X_utm"],
+        "y_map": ["y", "Y", "Y_utm"],
+        "alt": ["z", "Z", "Z_utm"],
+    }
+    for correct_colname, synonyms in renaming_mapping.items():
+        for synonym in synonyms:
+            if synonym in df.columns and correct_colname not in df.columns:
+                logger.debug(f"Renaming {synonym} -> {correct_colname}")
+                df.rename(columns={synonym: correct_colname}, inplace=True)
 
     with rasterio.open(references_config.get_ref_dem(site, dataset)) as src:
         crs = src.crs
 
-    transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
-    df.loc[valid, "x_map"], df.loc[valid, "y_map"] = transformer.transform(
-        df.loc[valid, "lon"].to_numpy(), df.loc[valid, "lat"].to_numpy()
-    )
+    # if x_map/y_map exist, but not lat/lon, calculate them
+    if ({"x_map", "y_map"} <= set(df.columns)) and not ({"lon", "lat"} <= set(df.columns)):
+        transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+        df.loc[:, "lon"], df.loc[:, "lat"] = transformer.transform(
+            df.loc[:, "x_map"].to_numpy(), df.loc[:, "y_map"].to_numpy()
+        )
+
+    # if lon/lat exist, but not x_map/y_map, calculate them
+    if ({"lon", "lat"} <= set(df.columns)) and not ({"x_map", "y_map"} <= set(df.columns)):
+
+        # First check that values are in valid range
+        valid = df["lon"].between(-180, 180) & df["lat"].between(-90, 90)
+        if not valid.any():
+            return df
+
+        # Convert
+        transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+        df.loc[valid, "x_map"], df.loc[valid, "y_map"] = transformer.transform(
+            df.loc[valid, "lon"].to_numpy(), df.loc[valid, "lat"].to_numpy()
+        )
+
     return df
 
 
@@ -566,7 +589,6 @@ def concat_intrinsics_files(files: Sequence[str | Path]) -> pd.DataFrame:
     OPTIONAL_COLUMNS = ["k1", "k2", "k3", "p1", "p2"]
     results = []
 
-
     for f in files:
         try:
             code, metadatas = parse_filename(f)
@@ -575,7 +597,9 @@ def concat_intrinsics_files(files: Sequence[str | Path]) -> pd.DataFrame:
             df = intrinsics_normalizer(pd.read_csv(f))
 
             if len(df) != 1:
-                raise ValueError(f"Expected 1 row, found : {len(df)}")
+                logger.warning(f"File {f} - Found multiple lines, taking the mean value")
+                df = df.select_dtypes(include=['number'])  # drop non-numeric columns, like filename
+                df = df.mean().to_frame().T  # calculate mean and return a Dataframe with same columns
 
             # normalize df columns
             df.columns = df.columns.str.lower().str.strip().str.replace(" ", "_")
