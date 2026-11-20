@@ -6,7 +6,7 @@ import math
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Generator, Literal, Sequence
+from typing import Generator, Iterable, Literal, Sequence
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -79,9 +79,9 @@ def generate_dems_mosaic(
     if skip_overwrite(list(dem_files_dict.values()), _mosaic_output_paths(len(dem_files_dict), output_path), overwrite):
         return
 
-    _build_quicklooks(dem_files_dict.values(), quicklooks_dir, max_workers)
+    _build_quicklooks(dem_files_dict.values(), quicklooks_dir, max_workers=max_workers)
 
-    for fig, axes, page in _mosaic_pages(sorted(dem_files_dict.items()), output_path, title):
+    for fig, axes, page in _mosaic_pages(dem_files_dict.items(), output_path, title):
         for ax, (subtitle, file) in zip(axes, page):
             dem = _read_quicklook(file, quicklooks_dir)
 
@@ -146,9 +146,9 @@ def generate_ddems_mosaic(
     if skip_overwrite(list(ddem_files_dict.values()), _mosaic_output_paths(len(ddem_files_dict), output_path), overwrite):
         return
 
-    _build_quicklooks(ddem_files_dict.values(), quicklooks_dir, max_workers)
+    _build_quicklooks(ddem_files_dict.values(), quicklooks_dir, max_workers=max_workers)
 
-    for fig, axes, page in _mosaic_pages(sorted(ddem_files_dict.items()), output_path, title):
+    for fig, axes, page in _mosaic_pages(ddem_files_dict.items(), output_path, title):
         for ax, (subtitle, file) in zip(axes, page):
             try:
                 dem = _read_quicklook(file, quicklooks_dir)
@@ -219,9 +219,9 @@ def generate_slopes_mosaic(
     if skip_overwrite(list(dem_files_dict.values()), _mosaic_output_paths(len(dem_files_dict), output_path), overwrite):
         return
 
-    _build_quicklooks(dem_files_dict.values(), quicklooks_dir, "slope", max_workers)
+    _build_quicklooks(dem_files_dict.values(), quicklooks_dir, "slope", max_workers=max_workers)
 
-    for fig, axes, page in _mosaic_pages(sorted(dem_files_dict.items()), output_path, title):
+    for fig, axes, page in _mosaic_pages(dem_files_dict.items(), output_path, title):
         for ax, (subtitle, file) in zip(axes, page):
             slope_dem = np.clip(_read_quicklook(file, quicklooks_dir, "slope"), vmin, vmax)
 
@@ -287,9 +287,9 @@ def generate_hillshades_mosaic(
     if skip_overwrite(list(dem_files_dict.values()), _mosaic_output_paths(len(dem_files_dict), output_path), overwrite):
         return
 
-    _build_quicklooks(dem_files_dict.values(), quicklooks_dir, "hillshade", max_workers)
+    _build_quicklooks(dem_files_dict.values(), quicklooks_dir, "hillshade", max_workers=max_workers)
 
-    for fig, axes, page in _mosaic_pages(sorted(dem_files_dict.items()), output_path, title):
+    for fig, axes, page in _mosaic_pages(dem_files_dict.items(), output_path, title):
         for ax, (subtitle, file) in zip(axes, page):
             hillshade = _read_quicklook(file, quicklooks_dir, "hillshade")
 
@@ -332,7 +332,7 @@ def generate_sparse_pointclouds_mosaic(
 
     logger.info(f"Generating mosaic of sparse point clouds with {len(diff_files_dict)} input files...")
 
-    for fig, axes, page in _mosaic_pages(sorted(diff_files_dict.items()), output_path, title):
+    for fig, axes, page in _mosaic_pages(diff_files_dict.items(), output_path, title):
         for ax, (code, file) in zip(axes, page):
             try:
                 las = laspy.read(file)
@@ -374,7 +374,7 @@ def generate_provided_dems_mosaic(
 
     logger.info(f"Generating mosaic of provided DEMs with {len(diff_files_dict)} input files...")
 
-    for fig, axes, page in _mosaic_pages(list(diff_files_dict.items()), output_path, title):
+    for fig, axes, page in _mosaic_pages(diff_files_dict.items(), output_path, title):
         for ax, (code, file) in zip(axes, page):
             try:
                 ddem = _read_quicklook(file, quicklooks_dir)
@@ -1109,8 +1109,9 @@ def _mosaic_output_paths(n: int, output_path: str | Path) -> list[Path]:
     return [output_path.with_name(f"{output_path.stem}_p{p}{output_path.suffix}") for p in range(1, n_pages + 1)]
 
 
-def _mosaic_pages(items: list, output_path: str | Path, title: str = "") -> Generator[tuple[Figure, list[Axes], list], None, None]:
-    """Yield `(fig, axes, page_items)` per page of at most 24 subplots filled row by row on a grid of at most 4 columns and 6 rows, saving each figure once the caller is done."""
+def _mosaic_pages(items: Iterable, output_path: str | Path, title: str = "") -> Generator[tuple[Figure, list[Axes], list], None, None]:
+    """Yield `(fig, axes, page_items)` per page of at most 24 sorted subplots filled row by row on a grid of at most 4 columns and 6 rows, saving each figure once the caller is done."""
+    items = sorted(items)
     output_path = Path(output_path)
     paths = _mosaic_output_paths(len(items), output_path)
     # remove files of a previous run that used a different page count

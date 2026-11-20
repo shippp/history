@@ -55,7 +55,7 @@ from history.postprocessing.io import (
     concat_intrinsics_files,
     parse_filename,
 )
-from history.utils import is_output_up_to_date, skip_overwrite, write_file
+from history.utils import atomic_output, is_output_up_to_date, skip_overwrite, write_file
 
 logger = logging.getLogger(__name__)
 
@@ -1249,63 +1249,36 @@ def extract_archive(archive_path: Path | str, output_dir: Path | str, flatten_ne
     if archive_path.suffix not in [".zip", ".7z", ".tar", ".tgz", ".gz", ".bz2", ".xz"]:
         raise ValueError(f"Extraction for this type not implemented: {archive_path.suffix}")
 
-    # overwrite if existing
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
+    with atomic_output(output_dir) as tmp:
+        tmp.mkdir()
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+        if archive_path.suffix == ".zip":
+            with zipfile.ZipFile(archive_path, "r") as zf:
+                zf.extractall(tmp)
+        elif archive_path.suffix == ".7z":
+            with py7zr.SevenZipFile(archive_path, mode="r") as szf:
+                szf.extractall(tmp)
+        else:
+            with tarfile.open(archive_path, "r:*") as tf:
+                tf.extractall(tmp)
 
-    # Extraction logic
-    if archive_path.suffix == ".zip":
-        with zipfile.ZipFile(archive_path, "r") as zf:
-            zf.extractall(output_dir)
-    elif archive_path.suffix == ".7z":
-        with py7zr.SevenZipFile(archive_path, mode="r") as szf:
-            szf.extractall(output_dir)
-    elif archive_path.suffix in [".tar", ".tgz", ".gz", ".bz2", ".xz"]:
-        with tarfile.open(archive_path, "r:*") as tf:
-            tf.extractall(output_dir)
+        shutil.rmtree(tmp / "__MACOSX", ignore_errors=True)
+        for fp in tmp.rglob("._*"):
+            fp.unlink()
 
-    # remove macOS metadata if exists
-    macosx_dir = output_dir / "__MACOSX"
-    if macosx_dir.exists():
-        shutil.rmtree(macosx_dir)
+        if flatten_nested:
+            # the tmp folder is renamed to output_dir.name on success, so nested folders are compared to that name
+            current = tmp
+            while len(kids := list(current.iterdir())) == 1 and kids[0].is_dir() and kids[0].name == output_dir.name:
+                current = kids[0]
 
-    # Remove AppleDouble files (._xxx)
-    for fp in output_dir.rglob("._*"):
-        fp.unlink()
-
-    # Update output folder to avoid re-extracting in later runs
-    output_dir.touch()
-
-    if flatten_nested:
-        current = output_dir
-
-        while True:
-            children = list(current.iterdir())
-
-            # A SINGLE folder?
-            if len(children) == 1 and children[0].is_dir() and children[0].name == current.name:
-                current = children[0]
-            else:
-                break
-
-        if current == output_dir:
-            return
-
-        # Now 'current' is the deepest redundant folder
-        # Move everything back one time at the top-level
-        for item in current.iterdir():
-            item.touch()  # Update file time
-            shutil.move(str(item), output_dir)
-
-        # Now delete entire chain of empty redundant folders
-        # from deepest to upper
-        tmp = current
-        while tmp != output_dir:
-            parent = tmp.parent
-            tmp.rmdir()
-            tmp = parent
+            if current != tmp:
+                # move the contents out of the deepest redundant folder, then drop the emptied chain
+                for item in current.iterdir():
+                    shutil.move(str(item), tmp)
+                while current != tmp:
+                    current.rmdir()
+                    current = current.parent
 
 
 #######################################################################################################################

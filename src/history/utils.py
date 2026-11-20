@@ -1,10 +1,42 @@
 import logging
-from collections.abc import Generator, Sequence
+import shutil
+from collections.abc import Generator, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def atomic_output(path: str | Path) -> Iterator[Path]:
+    """Yield a temporary sibling of `path` to write to; it replaces `path` only if the block succeeds.
+
+    Works for files and directories.
+    """
+    path = Path(path)
+    # keep the suffix so rasterio / savefig still infer the format from the name
+    tmp = path.with_name(f".tmp-{path.name}")
+
+    # leftover from a previous run killed before cleanup
+    _remove(tmp)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        yield tmp
+    except BaseException:
+        _remove(tmp)
+        raise
+    _remove(path)
+    tmp.replace(path)
+
+
+def _remove(path: Path) -> None:
+    """Delete a file or directory tree if it exists."""
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
 
 
 @contextmanager
