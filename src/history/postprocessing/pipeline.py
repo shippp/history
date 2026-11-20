@@ -53,9 +53,9 @@ from history.postprocessing.io import (
     concat_extrinsics_files,
     concat_files_raw,
     concat_intrinsics_files,
-    is_output_up_to_date,
     parse_filename,
 )
+from history.utils import atomic_output, is_output_up_to_date, skip_overwrite, write_file
 
 logger = logging.getLogger(__name__)
 
@@ -245,19 +245,18 @@ def plot_planned_submissions(config: Config, planned_outfile: str | Path) -> Non
     """Generate a Sankey diagram of planned submissions by software, dataset, and georef strategy."""
     planned_outfile = Path(planned_outfile)
     output_path = config.plot_dir / "planned_submissions_sankey.png"
-    if not config.overwrite_plots and is_output_up_to_date(planned_outfile, output_path):
-        logger.info(f"Skip {output_path.name}: output is up to date.")
+    if skip_overwrite(planned_outfile, output_path, config.overwrite_plots):
         return
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    sankey.save_sankey(
-        planned_outfile,
-        output_path,
-        columns=["software", "dataset", "georef"],
-        columns_label=["Software", "Dataset", "Georef strategy"],
-        force_color={"georef": sankey.light_grey},
-        title="Planned Submissions",
-    )
+    with write_file(output_path):
+        sankey.save_sankey(
+            planned_outfile,
+            output_path,
+            columns=["software", "dataset", "georef"],
+            columns_label=["Software", "Dataset", "Georef strategy"],
+            force_color={"georef": sankey.light_grey},
+            title="Planned Submissions",
+        )
     logger.info(f"Updated planned submissions saved to {planned_outfile}.")
 
 
@@ -340,9 +339,63 @@ def generate_intrinsics_extrinsics_viz(config: Config) -> None:
             logger.error(f"Error while plotting extrinsics for ({site}, {dataset}): {e}")
             continue
 
+# a mosaic subplot cannot show more points than this, and plotting time grows linearly with it
+SPARSECLOUD_MAX_POINTS = 50_000
+
+
+def _detect_pointcloud_crs(pointcloud_path: Path, ref_dem: gu.Raster):
+    """Return the CRS of a LAS/LAZ file, guessing it from the header bounds when the file has none.
+
+    The candidates are the reference DEM CRS and EPSG:4326; the first one placing the cloud within the
+    reference DEM bounds (buffered by 10%) wins. Raises ValueError if none fits.
+    """
+    if ref_dem.crs is None:
+        raise ValueError("The reference DEM has no CRS.")
+
+    with laspy.open(pointcloud_path) as reader:
+        pc_crs = reader.header.parse_crs()
+        mins, maxs = reader.header.mins, reader.header.maxs
+    if pc_crs is not None:
+        return pc_crs
+
+    test_crs_list = [str(ref_dem.crs), "EPSG:4326"]
+    logger.warning(f"{pointcloud_path.name} : No CRS found, try CRSs : {test_crs_list}")
+
+    pc_box = box(mins[0], mins[1], maxs[0], maxs[1])
+    ref_box = box(*ref_dem.bounds)
+    ref_box_buffered = ref_box.buffer(np.sqrt(ref_box.area) * 0.1)
+
+    for tested_crs in test_crs_list:
+        transformer = Transformer.from_crs(tested_crs, ref_dem.crs, always_xy=True)
+        if transform(pc_box, transformer.transform, interleaved=False).within(ref_box_buffered):
+            return tested_crs
+    raise ValueError(f"{pointcloud_path.name} : Can't find a valid CRS")
+
+
+def _read_sparsecloud_sample(path: Path, ref_dem: gu.Raster, max_points: int = SPARSECLOUD_MAX_POINTS) -> gu.PointCloud:
+    """Read a point cloud, keeping a reproducible random sample of about `max_points` points if it has more.
+
+    The file is read in chunks so that huge clouds never have to fit in memory. A missing CRS is guessed
+    against `ref_dem`.
+    """
+    rng = np.random.default_rng(0)
+    with laspy.open(path) as reader:
+        if reader.header.point_count == 0:
+            raise ValueError("empty point cloud")
+        keep_fraction = min(1, max_points / reader.header.point_count)
+        chunks = []
+        for chunk in reader.chunk_iterator(1_000_000):
+            keep = rng.random(len(chunk)) < keep_fraction
+            chunks.append(np.column_stack([chunk.x[keep], chunk.y[keep], chunk.z[keep]]))
+
+    crs = _detect_pointcloud_crs(path, ref_dem)
+    x, y, z = np.concatenate(chunks).T
+    return gu.PointCloud.from_xyz(x, y, z, crs=crs, data_column="Z")
+
+
 def save_sparsecloud_diff(sparsecloud_path: Path, ref_dem: gu.Raster, output_path: Path) -> None:
-    """Compute the elevation difference between a point cloud and a reference DEM, and save it as a LAS file."""
-    sparse_pc = gu.PointCloud(str(sparsecloud_path))
+    """Compute the elevation difference between a (subsampled) point cloud and a reference DEM, and save it as a LAS file."""
+    sparse_pc = _read_sparsecloud_sample(sparsecloud_path, ref_dem)
     sparse_pc.reproject(ref_dem, inplace=True)
 
     ref_z = ref_dem.interp_points(sparse_pc, as_array=True)
@@ -358,6 +411,7 @@ def generate_sparsecloud_diff(
     """Cache, for each point cloud, a copy whose Z values hold the elevation difference with ``ref_dem``.
 
     Outputs are cached LAS files under ``output_dir``, one per input file, skipped when already up to date.
+    Each input is randomly subsampled to about ``SPARSECLOUD_MAX_POINTS`` points.
 
     Returns:
         Mapping from code to output path, for the files successfully cached.
@@ -538,20 +592,13 @@ def process_pointclouds_to_dems(
                 print(f)
 
 
-def save_dem_diff(dem_path: Path, ref_dem: gu.Raster, output_path: Path) -> None:
-    """Compute the elevation difference between a DEM and a reference DEM, and save it as a raster."""
-    dem = gu.Raster(dem_path).reproject(ref_dem)
-    ddem = ref_dem - dem
-    ddem.save(str(output_path))
-
-
 def generate_dem_diff(
     dem_files: dict[str, Path],
-    ref_dem: gu.Raster,
+    ref_dem_path: Path,
     output_dir: Path,
     overwrite: bool = False,
 ) -> dict[str, Path]:
-    """Cache, for each DEM, its elevation difference with ``ref_dem``.
+    """Cache, for each DEM, its elevation difference (DEM - reference) with the DEM at ``ref_dem_path``.
 
     Outputs are cached GeoTIFF files under ``output_dir``, one per input file, skipped when
     already up to date.
@@ -571,7 +618,7 @@ def generate_dem_diff(
             continue
 
         try:
-            save_dem_diff(f, ref_dem, output_path)
+            generate_ddem(f, ref_dem_path, output_path)
             diff_files[code] = output_path
         except Exception as e:
             logger.error(f"Error computing DEM diff for {f.name}: {e}")
@@ -601,10 +648,9 @@ def generate_provided_dem_viz(config: Config) -> None:
     for (site, dataset), dem_files_dict in grouped_files.items():
         logger.debug(f"Plotting provided DEMs mosaic **** {site} - {dataset} **** ({len(dem_files_dict)} files)")
         ref_dem_path = config.references_data_mapping.get_ref_dem(site, dataset)
-        ref_dem = gu.Raster(ref_dem_path)
 
         diff_files_dict = generate_dem_diff(
-            dem_files_dict, ref_dem, config.proc_dir.provided_dem_diff_dir, config.overwrite
+            dem_files_dict, ref_dem_path, config.proc_dir.provided_dem_diff_dir, config.overwrite
         )
         all_diff_files.update(diff_files_dict)
         output_path = config.plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_provided_ddem.png"
@@ -613,7 +659,8 @@ def generate_provided_dem_viz(config: Config) -> None:
             diff_files_dict,
             output_path,
             title=f"({site} {dataset}) Mosaic of provided DEM(s) \n altitude difference vs reference DEM",
-            overwrite=config.overwrite_plots
+            overwrite=config.overwrite_plots,
+            quicklooks_dir=config.proc_dir.quicklooks_dir / f"{site}_{dataset}",
         )
 
     df = stats.compute_dems_statistics_df(all_diff_files.values(), max_workers=config.max_workers)
@@ -1007,36 +1054,9 @@ def convert_pointcloud_to_dem(
     )
     output_pipeline_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with laspy.open(pointcloud_path) as las_reader:
-        pc_crs = las_reader.header.parse_crs()
-
     ref_dem = gu.Raster(reference_dem_path)
     ref_crs = ref_dem.crs
-    if ref_crs is None:
-        raise ValueError(f"The reference dem {reference_dem_path} has no CRS.")
-    ref_box = box(*ref_dem.bounds)
-
-    # if no crs found in pc_crs, tests with a list of CRS
-    if pc_crs is None:
-        test_crs_list = [str(ref_crs), "EPSG:4326"]
-
-        logger.warning(f"{pointcloud_path.name} : No CRS found, try CRSs : {test_crs_list}")
-
-        # open the real bounding box of the pointcloud file
-        las = laspy.read(pointcloud_path)
-        pc_box = box(float(las.x.min()), float(las.y.min()), float(las.x.max()), float(las.y.max()))
-
-        # buffered of 10% of area the ref_dem bounding box
-        ref_box_buffered = ref_box.buffer(np.sqrt(ref_box.area) * 0.1)
-
-        for tested_crs in test_crs_list:
-            transformer = Transformer.from_crs(tested_crs, ref_crs, always_xy=True)
-            pc_box_reprojected = transform(pc_box, transformer.transform, interleaved=False)
-            if pc_box_reprojected.within(ref_box_buffered):
-                pc_crs = tested_crs
-
-    if pc_crs is None:
-        raise ValueError(f"{pointcloud_path.name} : Can't find a valid CRS")
+    pc_crs = _detect_pointcloud_crs(pointcloud_path, ref_dem)
 
     if not ProjCRS.from_user_input(pc_crs).equals(ProjCRS.from_user_input(ref_crs)):
         logger.warning(
@@ -1162,30 +1182,20 @@ def coregister_dem(
     return output_dem_path
 
 
-def generate_ddem(dem_path1: str | Path, dem_path2: str | Path, output_path: str | Path) -> Path:
+def generate_ddem(dem_path: str | Path, ref_dem_path: str | Path, output_path: str | Path) -> Path:
+    """Save the differential DEM (DEM - reference), with the DEM reprojected onto the reference grid.
+
+    :param dem_path: path to the DEM to evaluate
+    :param ref_dem_path: path to the reference DEM
+    :param output_path: path where the dDEM is saved
+    :return: path to the generated dDEM file
     """
-    Generates a differential DEM (dDEM) by subtracting one DEM from another.
+    ref_dem = gu.Raster(ref_dem_path)
+    ddem = gu.Raster(dem_path).reproject(ref_dem) - ref_dem
 
-    This function computes the pixel-wise difference between two input DEMs and saves the
-    resulting dDEM to the specified output path.
-
-    Args:
-        dem_path1 (str | Path): Path to the first DEM (minuend).
-        dem_path2 (str | Path): Path to the second DEM (subtrahend).
-        output_path (str | Path): Path where the resulting dDEM will be saved.
-
-    Returns:
-        Path: Path to the generated dDEM file.
-    """
-    output_path = Path(output_path)
-
-    dem1 = gu.Raster(dem_path1)
-    dem2 = gu.Raster(dem_path2)
-    ddem = dem1 - dem2
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    ddem.save(output_path)
-    return output_path
+    with write_file(output_path):
+        ddem.save(output_path)
+    return Path(output_path)
 
 
 def extract_archive(archive_path: Path | str, output_dir: Path | str, flatten_nested: bool = True) -> None:
@@ -1224,63 +1234,36 @@ def extract_archive(archive_path: Path | str, output_dir: Path | str, flatten_ne
     if archive_path.suffix not in [".zip", ".7z", ".tar", ".tgz", ".gz", ".bz2", ".xz"]:
         raise ValueError(f"Extraction for this type not implemented: {archive_path.suffix}")
 
-    # overwrite if existing
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
+    with atomic_output(output_dir) as tmp:
+        tmp.mkdir()
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+        if archive_path.suffix == ".zip":
+            with zipfile.ZipFile(archive_path, "r") as zf:
+                zf.extractall(tmp)
+        elif archive_path.suffix == ".7z":
+            with py7zr.SevenZipFile(archive_path, mode="r") as szf:
+                szf.extractall(tmp)
+        else:
+            with tarfile.open(archive_path, "r:*") as tf:
+                tf.extractall(tmp)
 
-    # Extraction logic
-    if archive_path.suffix == ".zip":
-        with zipfile.ZipFile(archive_path, "r") as zf:
-            zf.extractall(output_dir)
-    elif archive_path.suffix == ".7z":
-        with py7zr.SevenZipFile(archive_path, mode="r") as szf:
-            szf.extractall(output_dir)
-    elif archive_path.suffix in [".tar", ".tgz", ".gz", ".bz2", ".xz"]:
-        with tarfile.open(archive_path, "r:*") as tf:
-            tf.extractall(output_dir)
+        shutil.rmtree(tmp / "__MACOSX", ignore_errors=True)
+        for fp in tmp.rglob("._*"):
+            fp.unlink()
 
-    # remove macOS metadata if exists
-    macosx_dir = output_dir / "__MACOSX"
-    if macosx_dir.exists():
-        shutil.rmtree(macosx_dir)
+        if flatten_nested:
+            # the tmp folder is renamed to output_dir.name on success, so nested folders are compared to that name
+            current = tmp
+            while len(kids := list(current.iterdir())) == 1 and kids[0].is_dir() and kids[0].name == output_dir.name:
+                current = kids[0]
 
-    # Remove AppleDouble files (._xxx)
-    for fp in output_dir.rglob("._*"):
-        fp.unlink()
-
-    # Update output folder to avoid re-extracting in later runs
-    output_dir.touch()
-
-    if flatten_nested:
-        current = output_dir
-
-        while True:
-            children = list(current.iterdir())
-
-            # A SINGLE folder?
-            if len(children) == 1 and children[0].is_dir() and children[0].name == current.name:
-                current = children[0]
-            else:
-                break
-
-        if current == output_dir:
-            return
-
-        # Now 'current' is the deepest redundant folder
-        # Move everything back one time at the top-level
-        for item in current.iterdir():
-            item.touch()  # Update file time
-            shutil.move(str(item), output_dir)
-
-        # Now delete entire chain of empty redundant folders
-        # from deepest to upper
-        tmp = current
-        while tmp != output_dir:
-            parent = tmp.parent
-            tmp.rmdir()
-            tmp = parent
+            if current != tmp:
+                # move the contents out of the deepest redundant folder, then drop the emptied chain
+                for item in current.iterdir():
+                    shutil.move(str(item), tmp)
+                while current != tmp:
+                    current.rmdir()
+                    current = current.parent
 
 
 #######################################################################################################################
@@ -1306,17 +1289,13 @@ def plot_symlinks(config: Config, submissions_df: pd.DataFrame | None = None) ->
     logger.info("Plotting PC count, presence map and file size.")
 
     output_pc_count = config.plot_dir / "pointcloud_point_count.png"
-    if not config.overwrite_plots and is_output_up_to_date(pointcloud_files, output_pc_count):
-        logger.info(f"Skip {output_pc_count.name}: output is up to date.")
-    else:
+    if not skip_overwrite(pointcloud_files, output_pc_count, config.overwrite_plots):
         df = stats.compute_pcs_statistics_df(pointcloud_files)
         viz.barplot_var(df, output_pc_count, "point_count", "Point count in dense point-cloud file", overwrite=True)
 
     sparse_pointcloud_files = list((config.proc_dir.symlinks_dir / "sparse_pointclouds").iterdir())
     output_sparse_pc_count = config.plot_dir / "sparse_pointcloud_point_count.png"
-    if not config.overwrite_plots and is_output_up_to_date(sparse_pointcloud_files, output_sparse_pc_count):
-        logger.info(f"Skip {output_sparse_pc_count.name}: output is up to date.")
-    else:
+    if not skip_overwrite(sparse_pointcloud_files, output_sparse_pc_count, config.overwrite_plots):
         sparse_df = stats.compute_pcs_statistics_df(sparse_pointcloud_files)
         viz.barplot_var(
             sparse_df, output_sparse_pc_count, "point_count", "Point count in sparse point-cloud file", overwrite=True
@@ -1342,7 +1321,7 @@ def plot_point2dem(config: Config) -> None:
         logger.debug(f"Plotting **** {site} - {dataset} ****")
         output_path = config.plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_raw_dem.png"
         vmin, vmax = group["min"].median(), group["max"].median()
-        viz.generate_dems_mosaic(group["file"].to_dict(), output_path, vmin, vmax, f"({site} {dataset}) Mosaic Raw DEMs", config.overwrite_plots)
+        viz.generate_dems_mosaic(group["file"].to_dict(), output_path, vmin, vmax, f"({site} {dataset}) Mosaic Raw DEMs", config.overwrite_plots, quicklooks_dir=config.proc_dir.quicklooks_dir / f"{site}_{dataset}", max_workers=config.max_workers)
 
 
 def plot_coregistration(config: Config) -> None:
@@ -1366,15 +1345,15 @@ def plot_coregistration(config: Config) -> None:
         vmin, vmax = group["min"].median(), group["max"].median()
 
         logger.debug("Plotting coregistered DEMs mosaic")
-        viz.generate_dems_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_coreg_dem.png", vmin, vmax, f"({site} {dataset}) Mosaic Coregistered DEMs", config.overwrite_plots)
+        viz.generate_dems_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_coreg_dem.png", vmin, vmax, f"({site} {dataset}) Mosaic Coregistered DEMs", config.overwrite_plots, quicklooks_dir=config.proc_dir.quicklooks_dir / f"{site}_{dataset}", max_workers=config.max_workers)
 
         logger.debug("Plotting slope mosaic")
         viz.generate_slopes_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_slopes.png", 
-                                   title=f"({site} {dataset}) Mosaic slopes of DEMs after coregistration", overwrite=config.overwrite_plots)
+                                   title=f"({site} {dataset}) Mosaic slopes of DEMs after coregistration", overwrite=config.overwrite_plots, quicklooks_dir=config.proc_dir.quicklooks_dir / f"{site}_{dataset}", max_workers=config.max_workers)
 
         logger.debug("Plotting hillshade mosaic")
         viz.generate_hillshades_mosaic(dem_files_dict, sub_dir / "mosaic" / "mosaic_hillshades.png", 
-                                       title=f"({site} {dataset}) Mosaic hillshades of DEMs after coregistration", overwrite=config.overwrite_plots)
+                                       title=f"({site} {dataset}) Mosaic hillshades of DEMs after coregistration", overwrite=config.overwrite_plots, quicklooks_dir=config.proc_dir.quicklooks_dir / f"{site}_{dataset}", max_workers=config.max_workers)
 
     # Build per-(site, dataset) file mapping from df (which has the "file" column)
     coreg_files_by_group = {key: list(g["file"]) for key, g in df.groupby(["site", "dataset"])}
@@ -1414,7 +1393,7 @@ def plot_ddems(config: Config) -> None:
 
         ddem_files_dict = group["ddem_after_file"].dropna().to_dict()
         viz.generate_ddems_mosaic(ddem_files_dict, sub_dir / "mosaic" / "mosaic_ddem.png", 
-                                  title=f"({site} {dataset}) Mosaic of DDEMs after coregistration", overwrite=config.overwrite_plots)
+                                  title=f"({site} {dataset}) Mosaic of DDEMs after coregistration", overwrite=config.overwrite_plots, quicklooks_dir=config.proc_dir.quicklooks_dir / f"{site}_{dataset}", max_workers=config.max_workers)
 
 
 #######################################################################################################################

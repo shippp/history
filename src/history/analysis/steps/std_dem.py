@@ -14,8 +14,9 @@ from matplotlib.figure import Figure
 from rasterio.windows import Window
 
 from history.config import Config
-from history.postprocessing.io import is_output_up_to_date, parse_filename
+from history.postprocessing.io import parse_filename
 from history.postprocessing.visualization import _read_raster_with_max_size
+from history.utils import is_output_up_to_date, skip_overwrite, write_file
 
 logger = logging.getLogger(__name__)
 
@@ -224,8 +225,7 @@ def generate_std_dem_plots(dem_path: str | Path, output_path: str | Path, overwr
     """
     dem_path = Path(dem_path)
 
-    if not overwrite and is_output_up_to_date(dem_path, output_path):
-        logger.debug(f"File {output_path} is up to date -> skipping.")
+    if skip_overwrite(dem_path, output_path, overwrite):
         return
 
     std_dem = _read_raster_with_max_size(dem_path)
@@ -241,8 +241,8 @@ def generate_std_dem_plots(dem_path: str | Path, output_path: str | Path, overwr
     cbar = fig.colorbar(im, ax=ax)
     cbar.set_label("Elevation standard deviation (m)")
 
-    Path(output_path).parent.mkdir(exist_ok=True, parents=True)
-    fig.savefig(output_path)
+    with write_file(output_path) as out:
+        fig.savefig(out)
 
 
 def plot_std_dems(config: Config) -> None:

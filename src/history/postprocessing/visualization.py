@@ -3,21 +3,23 @@ Contains functions to generate post-processing Visualization
 """
 
 import math
-from contextlib import contextmanager
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Generator, Sequence
+from typing import Generator, Iterable, Literal, Sequence
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import rasterio
 from matplotlib.axes import Axes
 from matplotlib.cm import ScalarMappable
-from matplotlib.colors import LightSource
 from matplotlib.figure import Figure
 from rasterio.enums import Resampling
+from rasterio.windows import Window
+from tqdm import tqdm
 
-from history.postprocessing.io import is_output_up_to_date, parse_filename
+from history.postprocessing.io import parse_filename
+from history.utils import is_output_up_to_date, skip_overwrite, write_file
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,9 @@ def generate_dems_mosaic(
     vmax: float,
     title: str = "",
     overwrite: bool = False,
+    *,
+    quicklooks_dir: str | Path,
+    max_workers: int | None = None,
 ) -> None:
     """
     Generate a mosaic figure composed of multiple DEM images.
@@ -60,6 +65,10 @@ def generate_dems_mosaic(
         empty string.
     overwrite : bool, optional
         Set to True to force overwriting existing output. Default is False.
+    quicklooks_dir : str | Path
+        Directory caching the downsampled rasters (see :func:`_read_quicklook`).
+    max_workers : int | None, optional
+        Number of threads generating the missing quicklooks. Defaults to the ThreadPoolExecutor default.
 
     Returns
     -------
@@ -67,16 +76,17 @@ def generate_dems_mosaic(
         The function saves the generated figure to ``output_path`` and does not
         return any value.
     """
-    if not overwrite and is_output_up_to_date(list(dem_files_dict.values()), output_path):
-        logger.debug(f"File {output_path} is up to date -> skipping.")
+    if skip_overwrite(list(dem_files_dict.values()), _mosaic_output_paths(len(dem_files_dict), output_path), overwrite):
         return
 
-    with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
-        for i, (subtitle, file) in enumerate(sorted(dem_files_dict.items())):
-            dem = _read_raster_with_max_size(file)
+    _build_quicklooks(dem_files_dict.values(), quicklooks_dir, max_workers=max_workers)
 
-            axes[i].imshow(dem, cmap="terrain", vmin=vmin, vmax=vmax)
-            axes[i].set_title(subtitle)
+    for fig, axes, page in _mosaic_pages(dem_files_dict.items(), output_path, title):
+        for ax, (subtitle, file) in zip(axes, page):
+            dem = _read_quicklook(file, quicklooks_dir)
+
+            ax.imshow(dem, cmap="terrain", vmin=vmin, vmax=vmax)
+            ax.set_title(subtitle)
 
         # add the global color bar
         cbar = fig.colorbar(
@@ -85,7 +95,6 @@ def generate_dems_mosaic(
             orientation="vertical",
         )
         cbar.set_label("Altitude (m)")
-        fig.suptitle(title, fontsize=16)
 
 
 def generate_ddems_mosaic(
@@ -95,6 +104,9 @@ def generate_ddems_mosaic(
     vmax: float = 10,
     title: str = "",
     overwrite: bool = False,
+    *,
+    quicklooks_dir: str | Path,
+    max_workers: int | None = None,
 ) -> None:
     """
     Generate a mosaic of dDEM (differential DEM) rasters and save it as an image.
@@ -120,6 +132,10 @@ def generate_ddems_mosaic(
         Global title for the mosaic figure. Default is an empty string.
     overwrite : bool, optional
         Set to True to force overwriting existing output. Default is False.
+    quicklooks_dir : str | Path
+        Directory caching the downsampled rasters (see :func:`_read_quicklook`).
+    max_workers : int | None, optional
+        Number of threads generating the missing quicklooks. Defaults to the ThreadPoolExecutor default.
 
     Returns
     -------
@@ -127,18 +143,19 @@ def generate_ddems_mosaic(
         The function saves the generated mosaic to `output_path` and does not
         return any value.
     """
-    if not overwrite and is_output_up_to_date(list(ddem_files_dict.values()), output_path):
-        logger.debug(f"File {output_path} is up to date -> skipping.")
+    if skip_overwrite(list(ddem_files_dict.values()), _mosaic_output_paths(len(ddem_files_dict), output_path), overwrite):
         return
 
-    with _generate_mosaic_figure_and_axes(len(ddem_files_dict), output_path) as (fig, axes):
-        for i, (subtitle, file) in enumerate(sorted(ddem_files_dict.items())):
+    _build_quicklooks(ddem_files_dict.values(), quicklooks_dir, max_workers=max_workers)
+
+    for fig, axes, page in _mosaic_pages(ddem_files_dict.items(), output_path, title):
+        for ax, (subtitle, file) in zip(axes, page):
             try:
-                dem = _read_raster_with_max_size(file)
+                dem = _read_quicklook(file, quicklooks_dir)
                 dem = np.clip(dem, vmin, vmax)
 
-                axes[i].imshow(dem, cmap="coolwarm", vmin=vmin, vmax=vmax)
-                axes[i].set_title(subtitle)
+                ax.imshow(dem, cmap="coolwarm", vmin=vmin, vmax=vmax)
+                ax.set_title(subtitle)
             except Exception as e:
                 logger.error(f"Issue plotting file {file}: {e}")
                 continue
@@ -149,8 +166,7 @@ def generate_ddems_mosaic(
             ax=axes,
             orientation="vertical",
         )
-        cbar.set_label("Altitude difference (m)")
-        fig.suptitle(title, fontsize=16)
+        cbar.set_label("Altitude difference: DEM - ref (m)")
 
 
 def generate_slopes_mosaic(
@@ -160,6 +176,9 @@ def generate_slopes_mosaic(
     vmax: float = 40,
     title: str = "",
     overwrite: bool = False,
+    *,
+    quicklooks_dir: str | Path,
+    max_workers: int | None = None,
 ) -> None:
     """
     Generate a mosaic of slope maps derived from elevation rasters.
@@ -186,6 +205,10 @@ def generate_slopes_mosaic(
         Global title for the mosaic figure. Default is an empty string.
     overwrite : bool, optional
         Set to True to force overwriting existing output. Default is False.
+    quicklooks_dir : str | Path
+        Directory caching the downsampled rasters (see :func:`_read_quicklook`).
+    max_workers : int | None, optional
+        Number of threads generating the missing quicklooks. Defaults to the ThreadPoolExecutor default.
 
     Returns
     -------
@@ -193,28 +216,18 @@ def generate_slopes_mosaic(
         The function saves the generated mosaic to `output_path` and does not
         return any value.
     """
-    if not overwrite and is_output_up_to_date(list(dem_files_dict.values()), output_path):
-        logger.debug(f"File {output_path} is up to date -> skipping.")
+    if skip_overwrite(list(dem_files_dict.values()), _mosaic_output_paths(len(dem_files_dict), output_path), overwrite):
         return
 
-    with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
-        for i, (subtitle, file) in enumerate(sorted(dem_files_dict.items())):
-            dem = _read_raster_with_max_size(file)
+    _build_quicklooks(dem_files_dict.values(), quicklooks_dir, "slope", max_workers=max_workers)
 
-            with rasterio.open(file) as src:
-                dx, dy = src.res
+    for fig, axes, page in _mosaic_pages(dem_files_dict.items(), output_path, title):
+        for ax, (subtitle, file) in zip(axes, page):
+            slope_dem = np.clip(_read_quicklook(file, quicklooks_dir, "slope"), vmin, vmax)
 
-            # compute slope in degree
-            grad_y, grad_x = np.gradient(dem, dy, dx)
-            # Ignore runtime warnings only inside this block
-            with np.errstate(invalid="ignore", divide="ignore"):
-                slope_rad = np.arctan(np.sqrt(grad_x**2 + grad_y**2))
-            slope_dem = np.degrees(slope_rad)
-            slope_dem = np.clip(slope_dem, vmin, vmax)
-
-            axes[i].imshow(slope_dem, cmap="terrain", vmin=vmin, vmax=vmax)
-            axes[i].axis("off")
-            axes[i].set_title(subtitle)
+            ax.imshow(slope_dem, cmap="terrain", vmin=vmin, vmax=vmax)
+            ax.axis("off")
+            ax.set_title(subtitle)
 
         # add the global color bar
         cbar = fig.colorbar(
@@ -222,7 +235,6 @@ def generate_slopes_mosaic(
         )
         cbar.set_label("Slope (Degree)")
 
-        fig.suptitle(title, fontsize=16)
 
 
 def generate_hillshades_mosaic(
@@ -232,6 +244,9 @@ def generate_hillshades_mosaic(
     vmax: float = 1,
     title: str = "",
     overwrite: bool = False,
+    *,
+    quicklooks_dir: str | Path,
+    max_workers: int | None = None,
 ) -> None:
     """
     Generate a mosaic of hillshade visualizations from elevation rasters.
@@ -259,30 +274,28 @@ def generate_hillshades_mosaic(
         Global title for the hillshade mosaic. Default is an empty string.
     overwrite : bool, optional
         Set to True to force overwriting existing output. Default is False.
+    quicklooks_dir : str | Path
+        Directory caching the downsampled rasters (see :func:`_read_quicklook`).
+    max_workers : int | None, optional
+        Number of threads generating the missing quicklooks. Defaults to the ThreadPoolExecutor default.
 
     Returns
     -------
     None
         The function saves the generated hillshade mosaic to `output_path`.
     """
-    if not overwrite and is_output_up_to_date(list(dem_files_dict.values()), output_path):
-        logger.debug(f"File {output_path} is up to date -> skipping.")
+    if skip_overwrite(list(dem_files_dict.values()), _mosaic_output_paths(len(dem_files_dict), output_path), overwrite):
         return
 
-    with _generate_mosaic_figure_and_axes(len(dem_files_dict), output_path) as (fig, axes):
-        for i, (subtitle, file) in enumerate(sorted(dem_files_dict.items())):
-            dem = _read_raster_with_max_size(file)
+    _build_quicklooks(dem_files_dict.values(), quicklooks_dir, "hillshade", max_workers=max_workers)
 
-            with rasterio.open(file) as src:
-                dx, dy = src.res
+    for fig, axes, page in _mosaic_pages(dem_files_dict.items(), output_path, title):
+        for ax, (subtitle, file) in zip(axes, page):
+            hillshade = _read_quicklook(file, quicklooks_dir, "hillshade")
 
-            ls = LightSource(azdeg=315, altdeg=45)  # azimuth, sun altitude
-            hillshade = ls.hillshade(dem, vert_exag=1, dx=dx, dy=dy)
-            clean = np.asarray(hillshade).copy()
-
-            axes[i].imshow(hillshade, cmap="gray", vmin=0, vmax=np.nanpercentile(clean, 99))
-            axes[i].axis("off")
-            axes[i].set_title(subtitle)
+            ax.imshow(hillshade, cmap="gray", vmin=0, vmax=np.nanpercentile(hillshade.filled(np.nan), 99))
+            ax.axis("off")
+            ax.set_title(subtitle)
 
         # add the global color bar
         cbar = fig.colorbar(
@@ -291,7 +304,6 @@ def generate_hillshades_mosaic(
             orientation="vertical",
         )
         cbar.set_label("Hillshade")
-        fig.suptitle(title, fontsize=16)
 
 
 def generate_sparse_pointclouds_mosaic(
@@ -312,8 +324,7 @@ def generate_sparse_pointclouds_mosaic(
     drawn one at a time (rather than precomputing all point clouds' data upfront) to keep
     memory usage low regardless of how many point clouds are in the mosaic.
     """
-    if not overwrite and is_output_up_to_date(list(diff_files_dict.values()), output_path):
-        logger.debug(f"File {output_path} is up to date -> skipping.")
+    if skip_overwrite(list(diff_files_dict.values()), _mosaic_output_paths(len(diff_files_dict), output_path), overwrite):
         return
 
     # local import: keeps laspy out of this module's top-level imports.
@@ -321,14 +332,14 @@ def generate_sparse_pointclouds_mosaic(
 
     logger.info(f"Generating mosaic of sparse point clouds with {len(diff_files_dict)} input files...")
 
-    with _generate_mosaic_figure_and_axes(len(diff_files_dict), output_path) as (fig, axes):
-        for i, (code, file) in enumerate(sorted(diff_files_dict.items())):
+    for fig, axes, page in _mosaic_pages(diff_files_dict.items(), output_path, title):
+        for ax, (code, file) in zip(axes, page):
             try:
                 las = laspy.read(file)
                 x, y, dz = np.asarray(las.x), np.asarray(las.y), np.asarray(las.z)
-                axes[i].scatter(x, y, c=dz, s=1, cmap="coolwarm", vmin=vmin, vmax=vmax)
-                axes[i].set_aspect("equal")
-                axes[i].set_title(code)
+                ax.scatter(x, y, c=dz, s=1, cmap="coolwarm", vmin=vmin, vmax=vmax)
+                ax.set_aspect("equal")
+                ax.set_title(code)
             except Exception as e:
                 logger.error(f"Issue plotting point cloud {file}: {e}")
                 continue
@@ -340,7 +351,6 @@ def generate_sparse_pointclouds_mosaic(
             orientation="vertical",
         )
         cbar.set_label("Elevation difference (m)")
-        fig.suptitle(title, fontsize=16)
 
 
 def generate_provided_dems_mosaic(
@@ -350,6 +360,8 @@ def generate_provided_dems_mosaic(
     overwrite: bool = False,
     vmin: float = -10,
     vmax: float = 10,
+    *,
+    quicklooks_dir: str | Path,
 ) -> None:
     """
     Plot a mosaic of elevation differences between each provided DEM and the reference DEM.
@@ -357,23 +369,20 @@ def generate_provided_dems_mosaic(
     ``diff_files_dict`` maps each code to a precomputed diff raster (as produced by
     ``pipeline.generate_dem_diff``), so this function only reads and plots them.
     """
-    if not overwrite and is_output_up_to_date([*diff_files_dict.values()], output_path):
-        logger.debug(f"File {output_path} is up to date -> skipping.")
+    if skip_overwrite([*diff_files_dict.values()], _mosaic_output_paths(len(diff_files_dict), output_path), overwrite):
         return
-
-    import geoutils as gu
 
     logger.info(f"Generating mosaic of provided DEMs with {len(diff_files_dict)} input files...")
 
-    with _generate_mosaic_figure_and_axes(len(diff_files_dict), output_path) as (fig, axes):
-        for i, (code, file) in enumerate(diff_files_dict.items()):
+    for fig, axes, page in _mosaic_pages(diff_files_dict.items(), output_path, title):
+        for ax, (code, file) in zip(axes, page):
             try:
-                ddem = gu.Raster(file)
+                ddem = _read_quicklook(file, quicklooks_dir)
 
-                axes[i].imshow(ddem.data, cmap="coolwarm", vmin=vmin, vmax=vmax, interpolation="bilinear")
+                ax.imshow(ddem, cmap="coolwarm", vmin=vmin, vmax=vmax, interpolation="bilinear")
 
-                axes[i].set_aspect("equal")
-                axes[i].set_title(code)
+                ax.set_aspect("equal")
+                ax.set_title(code)
             except Exception as e:
                 logger.error(f"Issure plotting provided DEM {file} : {e}")
                 continue
@@ -385,7 +394,6 @@ def generate_provided_dems_mosaic(
             orientation="vertical",
         )
         cbar.set_label("Elevation difference (m)")
-        fig.suptitle(title, fontsize=16)
 
 
 #######################################################################################################################
@@ -409,10 +417,6 @@ def generate_extrinsics_position_mosaic(
     group; ``initial_extrinsics_df`` is the camera position file provided alongside the raw images
     (e.g. ``camera_model_extrinsics.csv``).
     """
-    if not overwrite and Path(output_path).exists():
-        logger.debug(f"File {output_path} is up to date -> skipping.")
-        return
-
     merged = _merge_extrinsics_with_initial(extrinsics_df, initial_extrinsics_df)
     if merged.empty:
         logger.warning("No extrinsics data could be matched with initial positions -> skipping plot.")
@@ -420,9 +424,11 @@ def generate_extrinsics_position_mosaic(
 
     codes = sorted(merged["code"].unique())
 
-    with _generate_mosaic_figure_and_axes(len(codes), output_path) as (fig, axes):
-        for i, code in enumerate(codes):
-            ax = axes[i]
+    if skip_overwrite(None, _mosaic_output_paths(len(codes), output_path), overwrite):
+        return
+
+    for fig, axes, page in _mosaic_pages(codes, output_path, title):
+        for ax, code in zip(axes, page):
             ax.axis("on")
             group = merged.loc[merged["code"] == code]
             ax.scatter(group["dx"], group["dy"], s=15, alpha=0.7, edgecolor="black", linewidth=0.3)
@@ -433,7 +439,6 @@ def generate_extrinsics_position_mosaic(
 
         fig.supxlabel("X (m)")
         fig.supylabel("Y (m)")
-        fig.suptitle(title, fontsize=16)
 
 
 def generate_extrinsics_z_boxplot(
@@ -449,8 +454,7 @@ def generate_extrinsics_z_boxplot(
     ``extrinsics_df`` and ``initial_extrinsics_df`` are expected to cover a single (site, dataset)
     group, see :func:`generate_extrinsics_position_mosaic`.
     """
-    if not overwrite and Path(output_path).exists():
-        logger.debug(f"File {output_path} is up to date -> skipping.")
+    if skip_overwrite(None, output_path, overwrite):
         return
 
     merged = _merge_extrinsics_with_initial(extrinsics_df, initial_extrinsics_df)
@@ -470,9 +474,8 @@ def generate_extrinsics_z_boxplot(
     fig.suptitle(title, fontsize=16, wrap=True)
     fig.tight_layout()
 
-    output_path = Path(output_path)
-    output_path.parent.mkdir(exist_ok=True, parents=True)
-    fig.savefig(output_path)
+    with write_file(output_path) as out:
+        fig.savefig(out)
 
 
 def _beeswarm_offsets(values: pd.Series | np.ndarray, spacing: float = 0.06, nbins: int = 20) -> np.ndarray:
@@ -520,8 +523,7 @@ def generate_intrinsics_boxplots(
     ``[("focal_length", "Focal length (mm)"), ("pixel_pitch", "Pixel pitch (mm)")]``; each becomes
     its own axis so more variables can be added without changing the plot layout logic.
     """
-    if not overwrite and Path(output_path).exists():
-        logger.debug(f"File {output_path} is up to date -> skipping.")
+    if skip_overwrite(None, output_path, overwrite):
         return
 
     codes = intrinsics_df.index.tolist()
@@ -556,9 +558,8 @@ def generate_intrinsics_boxplots(
     fig.suptitle(title, fontsize=16)
     fig.tight_layout()
 
-    output_path = Path(output_path)
-    output_path.parent.mkdir(exist_ok=True, parents=True)
-    fig.savefig(output_path, bbox_inches="tight")
+    with write_file(output_path) as out:
+        fig.savefig(out, bbox_inches="tight")
 
 
 def generate_principal_point_scatter(
@@ -574,8 +575,7 @@ def generate_principal_point_scatter(
     submission ``code`` with ``principal_point_x_mm``/``principal_point_y_mm`` columns,
     see :func:`generate_extrinsics_z_boxplot`.
     """
-    if not overwrite and Path(output_path).exists():
-        logger.debug(f"File {output_path} is up to date -> skipping.")
+    if skip_overwrite(None, output_path, overwrite):
         return
 
     points = intrinsics_df[["principal_point_x_mm", "principal_point_y_mm"]].dropna()
@@ -608,9 +608,8 @@ def generate_principal_point_scatter(
     fig.suptitle(title, fontsize=16)
     fig.tight_layout()
 
-    output_path = Path(output_path)
-    output_path.parent.mkdir(exist_ok=True, parents=True)
-    fig.savefig(output_path)
+    with write_file(output_path) as out:
+        fig.savefig(out)
 
 
 #######################################################################################################################
@@ -651,15 +650,8 @@ def barplot_var(
     """
     file_cols = [c for c in global_df.columns if c == "file" or c.endswith("_file")]
     inputs = pd.concat([global_df[c].dropna() for c in file_cols]).values if file_cols else None
-    if not overwrite:
-        check = (
-            is_output_up_to_date(inputs, output_path)
-            if inputs is not None and len(inputs) > 0
-            else Path(output_path).exists()
-        )
-        if check:
-            logger.debug(f"File {output_path} is up to date -> skipping.")
-            return
+    if skip_overwrite(inputs, output_path, overwrite):
+        return
 
     df = global_df.dropna(subset=[colname]).copy(True)
 
@@ -700,9 +692,8 @@ def barplot_var(
     ax.legend(bars, labels, title="Groupes")
 
     fig.tight_layout()
-    output_path = Path(output_path)
-    output_path.parent.mkdir(exist_ok=True, parents=True)
-    fig.savefig(output_path)
+    with write_file(output_path) as out:
+        fig.savefig(out)
 
 
 def generate_plot_coreg_shifts(
@@ -734,11 +725,8 @@ def generate_plot_coreg_shifts(
     - Rows with NaN values in any of the shift columns are ignored.
     - Shifts are displayed in meters with labels above each bar.
     """
-    if not overwrite:
-        check = is_output_up_to_date(inputs, output_path) if inputs is not None else Path(output_path).exists()
-        if check:
-            logger.debug(f"File {output_path} is up to date -> skipping.")
-            return
+    if skip_overwrite(inputs, output_path, overwrite):
+        return
 
     colnames = ["coreg_shift_x", "coreg_shift_y", "coreg_shift_z"]
     dropped_df = (
@@ -761,8 +749,8 @@ def generate_plot_coreg_shifts(
     fig.suptitle(title, fontsize=16)
     fig.tight_layout()
 
-    Path(output_path).parent.mkdir(exist_ok=True, parents=True)
-    fig.savefig(output_path)
+    with write_file(output_path) as out:
+        fig.savefig(out)
 
 
 def generate_plot_nmad_before_vs_after(
@@ -789,17 +777,10 @@ def generate_plot_nmad_before_vs_after(
     None
         The plot is saved to the specified path without returning a value.
     """
-    if not overwrite:
-        file_cols = [c for c in ("ddem_before_file", "ddem_after_file") if c in df.columns]
-        inputs = pd.concat([df[c].dropna() for c in file_cols]).values if file_cols else None
-        check = (
-            is_output_up_to_date(inputs, output_path)
-            if inputs is not None and len(inputs) > 0
-            else Path(output_path).exists()
-        )
-        if check:
-            logger.debug(f"File {output_path} is up to date -> skipping.")
-            return
+    file_cols = [c for c in ("ddem_before_file", "ddem_after_file") if c in df.columns]
+    inputs = pd.concat([df[c].dropna() for c in file_cols]).values if file_cols else None
+    if skip_overwrite(inputs, output_path, overwrite):
+        return
 
     colnames = ["ddem_before_nmad", "ddem_after_nmad"]
     dropped_df = df.dropna(subset=colnames).sort_values(by="ddem_after_nmad")
@@ -816,8 +797,8 @@ def generate_plot_nmad_before_vs_after(
     fig.suptitle(title, fontsize=16)
     fig.tight_layout()
 
-    Path(output_path).parent.mkdir(exist_ok=True, parents=True)
-    fig.savefig(output_path)
+    with write_file(output_path) as out:
+        fig.savefig(out)
 
 
 #######################################################################################################################
@@ -845,10 +826,9 @@ def visualize_files_presence_map(
     """
     directories: list[Path] = [Path(d) for d in directories if d.is_dir()]
 
-    if not overwrite and output_path is not None:
+    if output_path is not None:
         input_files = [f for d in directories for f in d.iterdir() if f.is_file()]
-        if is_output_up_to_date(input_files, output_path):
-            logger.debug(f"File {output_path} is up to date -> skipping.")
+        if skip_overwrite(input_files, output_path, overwrite):
             return
     rows: dict[str, dict] = {}
 
@@ -893,7 +873,8 @@ def visualize_files_presence_map(
     fig.tight_layout()
 
     if output_path:
-        plt.savefig(output_path, bbox_inches="tight")
+        with write_file(output_path) as out:
+            plt.savefig(out, bbox_inches="tight")
 
     if output_path is None:
         plt.show()
@@ -919,16 +900,10 @@ def visualize_files_size_map(df: pd.DataFrame, output_path: str | Path | None = 
     output_path : str or Path or None, optional
         If provided the plot is saved there; otherwise it is displayed interactively.
     """
-    if not overwrite and output_path is not None:
+    if output_path is not None:
         file_cols = [c for c in df.columns if c.endswith("_file")]
         inputs = pd.concat([df[c].dropna() for c in file_cols]).values if file_cols else None
-        check = (
-            is_output_up_to_date(inputs, output_path)
-            if inputs is not None and len(inputs) > 0
-            else Path(output_path).exists()
-        )
-        if check:
-            logger.debug(f"File {output_path} is up to date -> skipping.")
+        if skip_overwrite(inputs, output_path, overwrite):
             return
 
     _SIZE_COLS = {
@@ -1028,7 +1003,8 @@ def visualize_files_size_map(df: pd.DataFrame, output_path: str | Path | None = 
     fig.tight_layout()
 
     if output_path:
-        plt.savefig(output_path, bbox_inches="tight")
+        with write_file(output_path) as out:
+            plt.savefig(out, bbox_inches="tight")
 
     if output_path is None:
         plt.show()
@@ -1065,9 +1041,7 @@ def generate_coregistration_individual_plots(
     None
         Saves individual PNG plots for each code; does not return anything.
     """
-    # create the output directory if needed
     output_directory = Path(output_directory)
-    output_directory.mkdir(exist_ok=True, parents=True)
 
     dropped_df = df.dropna(subset=["ddem_before_file", "ddem_after_file"])
 
@@ -1075,8 +1049,7 @@ def generate_coregistration_individual_plots(
         output_path = output_directory / f"{code}.png"
 
         input_files = [row["ddem_before_file"], row["ddem_after_file"]]
-        if not overwrite and is_output_up_to_date(input_files, output_path):
-            logger.debug(f"File {output_path} is up to date -> skipping.")
+        if skip_overwrite(input_files, output_path, overwrite):
             continue
 
         # open the raw dDEM and the coregistered dDEM
@@ -1111,9 +1084,10 @@ def generate_coregistration_individual_plots(
             fraction=0.03,
             pad=0.02,
         )
-        cbar.set_label("Altitude difference(m)")
+        cbar.set_label("Altitude difference: DEM - ref (m)")
 
-        fig.savefig(output_path)
+        with write_file(output_path) as out:
+            fig.savefig(out)
 
 
 #######################################################################################################################
@@ -1121,26 +1095,45 @@ def generate_coregistration_individual_plots(
 #######################################################################################################################
 
 
-@contextmanager
-def _generate_mosaic_figure_and_axes(
-    n: int, output_path: str | Path
-) -> Generator[tuple[Figure, list[Axes]], None, None]:
-    try:
-        ncols = int(np.ceil(np.sqrt(n)))
-        nrows = int(np.ceil(n / ncols))
-        # enforce a minimum width so the suptitle fits even for a single-panel mosaic
-        fig = Figure(figsize=(max(4 * ncols, 6), 4 * nrows), constrained_layout=True)
-        axes = fig.subplots(nrows, ncols)
-        axes = list(axes.flatten()) if isinstance(axes, np.ndarray) else [axes]
+_MOSAIC_NCOLS, _MOSAIC_NROWS = 4, 6
+_MOSAIC_MAX_PER_PAGE = _MOSAIC_NCOLS * _MOSAIC_NROWS
+_MOSAIC_MIN_WIDTH = 8  # inches; keeps the long subplot titles from being cut on narrow grids
 
-        for i in range(ncols * nrows):
-            axes[i].axis("off")
 
-        yield fig, axes
-    finally:
-        output_path = Path(output_path)
-        output_path.parent.mkdir(exist_ok=True, parents=True)
-        fig.savefig(output_path)
+def _mosaic_output_paths(n: int, output_path: str | Path) -> list[Path]:
+    """Return the file paths a mosaic of `n` subplots is saved to (`_p1`, `_p2`... suffixes if paginated)."""
+    output_path = Path(output_path)
+    n_pages = math.ceil(n / _MOSAIC_MAX_PER_PAGE)
+    if n_pages <= 1:
+        return [output_path]
+    return [output_path.with_name(f"{output_path.stem}_p{p}{output_path.suffix}") for p in range(1, n_pages + 1)]
+
+
+def _mosaic_pages(items: Iterable, output_path: str | Path, title: str = "") -> Generator[tuple[Figure, list[Axes], list], None, None]:
+    """Yield `(fig, axes, page_items)` per page of at most 24 sorted subplots filled row by row on a grid of at most 4 columns and 6 rows, saving each figure once the caller is done."""
+    items = sorted(items)
+    output_path = Path(output_path)
+    paths = _mosaic_output_paths(len(items), output_path)
+    # remove files of a previous run that used a different page count
+    for old in [output_path, *output_path.parent.glob(f"{output_path.stem}_p*{output_path.suffix}")]:
+        if old not in paths:
+            old.unlink(missing_ok=True)
+
+    per_page = math.ceil(len(items) / len(paths))
+    for k, path in enumerate(paths):
+        page = items[k * per_page : (k + 1) * per_page]
+        ncols = min(len(page), _MOSAIC_NCOLS)
+        nrows = math.ceil(len(page) / _MOSAIC_NCOLS)
+        fig = Figure(figsize=(max(4 * ncols, _MOSAIC_MIN_WIDTH), 4 * nrows), constrained_layout=True)
+        axes = fig.subplots(nrows, ncols, squeeze=False).flatten().tolist()
+        for ax in axes:
+            ax.axis("off")
+        fig.suptitle(f"{title} (page {k + 1}/{len(paths)})" if len(paths) > 1 else title, fontsize=16)
+
+        yield fig, axes, page
+
+        with write_file(path) as out:
+            fig.savefig(out)
         del fig
 
 
@@ -1190,7 +1183,8 @@ def _plot_boolean_df(
     if standalone:
         fig.tight_layout()
         if output_path:
-            plt.savefig(output_path)
+            with write_file(output_path) as out:
+                plt.savefig(out)
         if show:
             plt.show()
         else:
@@ -1215,6 +1209,106 @@ def _merge_extrinsics_with_initial(extrinsics_df: pd.DataFrame, initial_extrinsi
     merged["dy"] = merged["y_map"] - merged["y_map_initial"]
     merged["dz"] = merged["alt"] - merged["alt_initial"]
     return merged
+
+
+_QUICKLOOK_MAXSIZE = 600
+
+
+def _quicklook(file: str | Path, quicklooks_dir: str | Path, product: Literal["hillshade", "slope"] | None = None) -> Path:
+    """Return the cached downsampled GeoTIFF of `file`, generating it if missing or older than `file`.
+
+    With `product`, the terrain product (Horn, as `gdaldem`) is computed at full resolution and only then downsampled:
+    deriving it from an already averaged DEM would smooth out the relief it highlights (see `_write_quicklook`).
+    Quicklooks are stored in `quicklooks_dir / <parent dir name of file>[_<product>] / <file name>`, the parent dir
+    name avoids collisions between rasters sharing a file name (e.g. raw and coregistered DEMs).
+    """
+    file = Path(file)
+    path = Path(quicklooks_dir) / (f"{file.parent.name}_{product}" if product else file.parent.name) / file.name
+    if not is_output_up_to_date(file, path):
+        _write_quicklook(file, path, product)
+    return path
+
+
+def _write_quicklook(file: Path, path: Path, product: Literal["hillshade", "slope"] | None) -> None:
+    """Write `file` (or its slope in degrees / hillshade in 0-255) averaged down to at most `_QUICKLOOK_MAXSIZE` px.
+
+    Processed in strips of rows with a 1-pixel halo, so memory stays low whatever the raster size.
+
+    Tested on a synthetic DEM with a nodata hole, whose size is a multiple of the block size: the output matches
+    rasterio's average resampling (no product) and `gdaldem` slope/hillshade (Horn), the latter within 8-bit rounding.
+    """
+    az, alt = math.radians(315), math.radians(45)
+    with rasterio.open(file) as src:
+        xres, yres = abs(src.transform.a), abs(src.transform.e)
+        f = max(1, math.ceil(max(src.height, src.width) / _QUICKLOOK_MAXSIZE))  # integer block size to average
+        out_h, out_w = math.ceil(src.height / f), math.ceil(src.width / f)
+        out = np.empty((out_h, out_w), dtype="float32")
+
+        step = max(1, 1024 // f)  # output rows per strip
+        for o0 in range(0, out_h, step):
+            o1 = min(out_h, o0 + step)
+            r0, r1 = o0 * f, min(src.height, o1 * f)
+            rr0, rr1 = max(r0 - 1, 0), min(r1 + 1, src.height)
+            # NaN padding: the halo outside the raster makes the terrain product undefined on the edges, like gdaldem
+            z = np.full((r1 - r0 + 2, src.width + 2), np.nan, dtype="float32")
+            data = src.read(1, window=Window(0, rr0, src.width, rr1 - rr0), masked=True)
+            z[rr0 - r0 + 1 : rr1 - r0 + 1, 1:-1] = data.astype("float32").filled(np.nan)
+
+            if product is None:
+                res = z[1:-1, 1:-1]
+            else:
+                a, b, c = z[:-2, :-2], z[:-2, 1:-1], z[:-2, 2:]
+                d, e, g, h, i = z[1:-1, :-2], z[1:-1, 2:], z[2:, :-2], z[2:, 1:-1], z[2:, 2:]
+                dzdx = ((c + 2 * e + i) - (a + 2 * d + g)) / (8 * xres)
+                dzdy = ((a + 2 * b + c) - (g + 2 * h + i)) / (8 * yres)
+                if product == "slope":
+                    res = np.degrees(np.arctan(np.hypot(dzdx, dzdy)))
+                else:
+                    light = np.sin(alt) - np.cos(alt) * (dzdx * np.sin(az) + dzdy * np.cos(az))
+                    cang = light / np.sqrt(1 + dzdx**2 + dzdy**2)
+                    res = np.where(cang <= 0, 1, 1 + 254 * cang)
+
+            # NaN-aware block average, padded to whole blocks
+            full = np.full(((o1 - o0) * f, out_w * f), np.nan, dtype="float32")
+            full[: res.shape[0], : res.shape[1]] = res
+            valid = np.isfinite(full)
+            blocks = (o1 - o0, f, out_w, f)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                total = np.where(valid, full, 0).reshape(blocks).sum(axis=(1, 3))
+                out[o0:o1] = total / valid.reshape(blocks).sum(axis=(1, 3))
+
+        profile = {
+            "driver": "GTiff",
+            "count": 1,
+            "dtype": "float32",
+            "height": out_h,
+            "width": out_w,
+            "crs": src.crs,
+            "transform": src.transform * src.transform.scale(src.width / out_w, src.height / out_h),  # keeps the extent
+            "nodata": np.nan,
+            "compress": "deflate",
+            "predictor": 3,
+        }
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(out, 1)
+
+
+def _build_quicklooks(
+    files, quicklooks_dir: str | Path, product: Literal["hillshade", "slope"] | None = None, max_workers: int | None = None
+) -> None:
+    """Generate the missing quicklooks of `files` in parallel threads with a progress bar."""
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(_quicklook, file, quicklooks_dir, product) for file in files]
+        for future in tqdm(as_completed(futures), total=len(futures), desc=f"Quicklooks{f' ({product})' if product else ''}"):
+            future.result()
+
+
+def _read_quicklook(file: str | Path, quicklooks_dir: str | Path, product: Literal["hillshade", "slope"] | None = None):
+    """Read the first band of the quicklook of `file` as a masked array."""
+    with rasterio.open(_quicklook(file, quicklooks_dir, product)) as src:
+        return src.read(1, masked=True)
 
 
 def _read_raster_with_max_size(file: str, maxsize: int = 2000):

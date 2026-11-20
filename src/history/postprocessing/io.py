@@ -1,14 +1,11 @@
 import logging
 import re
 import shutil
-import tarfile
-import zipfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence, Union
+from typing import Any, Dict, Iterable, Sequence, Union
 
 import gdown
 import pandas as pd
-import py7zr
 from pyproj import Transformer
 import rasterio
 
@@ -66,165 +63,6 @@ class FilenameParseError(ValueError):
             if expected:
                 msg += f", expected one of {expected}"
         super().__init__(msg)
-
-
-def check_disk_space_and_estimate(archive_files: List[Path], output_dir: Path) -> Dict[str, float]:
-    """
-    Check available disk space and estimate space needed for extraction.
-
-    Parameters
-    ----------
-    archive_files : List[Path]
-        List of archive files to be extracted
-    output_dir : Path
-        Directory where files will be extracted
-
-    Returns
-    -------
-    Dict[str, float]
-        Dictionary with 'available_gb', 'archive_size_gb', 'estimated_extracted_gb'
-    """
-    # Get available disk space
-    stat = shutil.disk_usage(output_dir.parent if output_dir.exists() else output_dir.parent)
-    available_bytes = stat.free
-    available_gb = available_bytes / (1024**3)
-
-    # Calculate total archive size
-    total_archive_size = sum(f.stat().st_size for f in archive_files)
-    archive_size_gb = total_archive_size / (1024**3)
-
-    # Estimate extracted size (rough estimate: 2-4x archive size for typical compression)
-    # Use conservative estimate of 4x for safety
-    estimated_extracted_gb = archive_size_gb * 4
-
-    return {
-        "available_gb": available_gb,
-        "archive_size_gb": archive_size_gb,
-        "estimated_extracted_gb": estimated_extracted_gb,
-    }
-
-
-def extract_single_archive(
-    archive_file: Union[str, Path],
-    output_dir: Path,
-    overwrite: bool = False,
-    dry_run: bool = True,
-    verbose: bool = True,
-) -> Union[str, None]:
-    """
-    Extract a single archive file to the specified output directory.
-
-    Parameters
-    ----------
-    archive_file : str or Path
-        Path to the archive file to be extracted
-    output_dir : str or Path
-        Directory to extract files to
-    overwrite : bool, default False
-        Whether to overwrite existing extracted directory
-    dry_run : bool, default True
-        If True, only print what would be done without actually extracting
-    verbose : bool, default True
-        Whether to print progress messages
-    Returns
-    -------
-    str or None
-        Path to the extraction directory if successful, None otherwise
-    """
-    # Define supported archive extensions
-    archive_extensions = {
-        ".zip": _extract_zip,
-        ".7z": _extract_7z,
-        ".tgz": _extract_tar,
-        ".tar.gz": _extract_tar,
-        ".tar.bz2": _extract_tar,
-        ".tar.xz": _extract_tar,
-    }
-
-    # Convert str to Path
-    archive_file = Path(archive_file)
-    output_dir = Path(output_dir)
-
-    # Determine extraction directory name (remove extension)
-    if archive_file.suffix == ".gz" and archive_file.stem.endswith(".tar"):
-        # Handle .tar.gz
-        extract_name = archive_file.stem.replace(".tar", "")
-    else:
-        extract_name = archive_file.stem
-
-    extract_dir = output_dir / extract_name
-
-    # Check if already extracted and not overwriting
-    if extract_dir.exists() and not overwrite:
-        if verbose:
-            print(f"Skipping {archive_file.name} - already extracted")
-        result = str(extract_dir)
-        return result
-
-    if dry_run:
-        if verbose:
-            print(f"{archive_file.name} -> {extract_dir}")
-        result = str(extract_dir)
-        return result
-
-    # Remove existing directory if overwriting
-    if extract_dir.exists() and overwrite:
-        if verbose:
-            print(f"Removing existing directory: {extract_dir}")
-        shutil.rmtree(extract_dir)
-
-    # Determine extraction method
-    extraction_func = None
-    for ext, func in archive_extensions.items():
-        if archive_file.name.endswith(ext):
-            extraction_func = func
-            break
-
-    if extraction_func is None:
-        if verbose:
-            print(f"Unsupported archive format: {archive_file.name}")
-        return None
-
-    try:
-        if verbose:
-            print(f"Extracting {archive_file.name}...")
-
-        # Create extraction directory
-        extract_dir.mkdir(exist_ok=True)
-
-        # Extract the archive
-        extraction_func(archive_file, extract_dir)
-        result = str(extract_dir)
-
-        if verbose:
-            print(f"Successfully extracted {archive_file.name}")
-
-    except Exception as e:
-        if verbose:
-            print(f"Failed to extract {archive_file.name}: {e}")
-        # Clean up partial extraction
-        if extract_dir.exists():
-            shutil.rmtree(extract_dir)
-
-    return result
-
-
-def _extract_zip(archive_path: Path, extract_dir: Path) -> None:
-    """Extract ZIP archive."""
-    with zipfile.ZipFile(archive_path, "r") as zip_ref:
-        zip_ref.extractall(extract_dir)
-
-
-def _extract_7z(archive_path: Path, extract_dir: Path) -> None:
-    """Extract 7Z archive."""
-    with py7zr.SevenZipFile(archive_path, mode="r") as archive:
-        archive.extractall(extract_dir)
-
-
-def _extract_tar(archive_path: Path, extract_dir: Path) -> None:
-    """Extract TAR archive (including .tgz, .tar.gz, .tar.bz2, .tar.xz)."""
-    with tarfile.open(archive_path, "r:*") as tar_ref:
-        tar_ref.extractall(extract_dir)
 
 
 def analyze_submissions(
@@ -1063,6 +901,9 @@ def scan_submissions(input_dir: str | Path, filename_renames: dict[str, str] | N
     rows: dict[str, dict] = {}
 
     for f in input_dir.rglob("*"):
+        # leftover of an interrupted atomic_output extraction
+        if any(part.startswith(".tmp-") for part in f.relative_to(input_dir).parts):
+            continue
         if f.is_file():
             virtual_name = _apply_filename_rename(f.name, filename_renames)
             try:
@@ -1157,30 +998,3 @@ def download_planned_submissions(outfile: str | Path) -> None:
     logger.info(f"Saved CSV to file {outfile}.")
 
     return submissions_df
-
-
-def is_output_up_to_date(inputs: str | Path | Sequence[str | Path], outputs: str | Path | Sequence[str | Path]) -> bool:
-    """Return True if all outputs exist and are newer than all inputs."""
-    inputs = [inputs] if isinstance(inputs, (str, Path)) else inputs
-    outputs = [outputs] if isinstance(outputs, (str, Path)) else outputs
-
-    # standardize path
-    inputs = [Path(f) for f in inputs]
-    outputs = [Path(f) for f in outputs]
-
-    if not inputs:
-        raise ValueError("inputs cannot be empty")
-    if not outputs:
-        raise ValueError("outputs cannot be empty")
-
-    if any(not p.exists() for p in outputs):
-        return False
-
-    for p in inputs:
-        if not p.exists():
-            raise FileNotFoundError(f"Input file not found: {p}")
-
-    oldest_output = min(p.stat().st_mtime for p in outputs)
-    newest_input = max(p.stat().st_mtime for p in inputs)
-
-    return newest_input <= oldest_output

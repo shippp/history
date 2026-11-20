@@ -80,6 +80,8 @@ class ProcConfig:
         Sparse point cloud vs. reference DEM diffs.
     provided_dem_diff_dir : Path
         User-provided DEM vs. reference DEM diffs.
+    quicklooks_dir : Path
+        Cached downsampled rasters used to speed up mosaic plots.
     camera_metadata_dir : Path
         Concatenated intrinsics/extrinsics CSVs across all submissions.
     """
@@ -93,6 +95,7 @@ class ProcConfig:
     std_dems_dir: Path
     sparsecloud_diff_dir: Path
     provided_dem_diff_dir: Path
+    quicklooks_dir: Path
     camera_metadata_dir: Path
 
     @classmethod
@@ -108,6 +111,7 @@ class ProcConfig:
             std_dems_dir=base_dir / "std_dems",
             sparsecloud_diff_dir=base_dir / "sparsecloud_diff",
             provided_dem_diff_dir=base_dir / "provided_dem_diff",
+            quicklooks_dir=base_dir / "quicklooks",
             camera_metadata_dir=base_dir / "camera_metadata",
         )
 
@@ -141,6 +145,8 @@ class Config:
         If True, PDAL commands are prepared but not executed. Default False.
     no_plots : bool
         If True, plot generation is skipped for all steps. Default False.
+    plots_only : bool
+        If True, steps skip their computation and only (re)generate plots. Default False.
     pdal_exec_path : str
         Path or name of the PDAL executable. Default ``"pdal"``.
     max_workers : int
@@ -158,6 +164,7 @@ class Config:
     overwrite_plots: bool = False
     dry_run: bool = False
     no_plots: bool = False
+    plots_only: bool = False
     pdal_exec_path: str = "pdal"
     max_workers: int = 4
     filename_renames: dict[str, str] | None = None

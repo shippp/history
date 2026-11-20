@@ -34,6 +34,7 @@ Two subcommands are available:
 Verbosity is controlled with ``-v`` (INFO) or ``-vv`` (DEBUG).
 """
 
+import dataclasses
 import logging
 import shutil
 from pathlib import Path
@@ -115,6 +116,10 @@ def cmd_status(config_path: Path) -> None:
 
 def _run_uncompress(config: Config) -> None:
     """Extract all compressed submission archives into the extracted directory."""
+    if config.plots_only:
+        logger.info("No plots for this step -> skipping.")
+        return
+
     from history.postprocessing.pipeline import cleanup_orphaned_extracted, uncompress_all_submissions
 
     cleanup_orphaned_extracted(config.raw_dir, config.extracted_dir)
@@ -132,6 +137,10 @@ def _run_symlinks(config: Config) -> None:
     from history.postprocessing.pipeline import create_symlinks, plot_symlinks
 
     df = io.scan_submissions(config.extracted_dir, filename_renames=config.filename_renames)
+    if config.plots_only:
+        plot_symlinks(config, submissions_df=df)
+        return
+
     io.validate_submissions(df)
     create_symlinks(df, config.proc_dir.symlinks_dir, overwrite=True)  # force overwriting the symlinks to avoid issues
     report_symlinks(config)
@@ -147,6 +156,13 @@ def _run_check_planned(config: Config) -> None:
 
     df = io.scan_submissions(config.extracted_dir, filename_renames=config.filename_renames)
     planned_outfile = config.proc_dir.base_dir / "planned_submissions.csv"
+    if config.plots_only:
+        if planned_outfile.exists():
+            plot_planned_submissions(config, planned_outfile)
+        else:
+            logger.warning(f"{planned_outfile} not found, run `check_planned` without --plots-only first -> skipping.")
+        return
+
     check_planned_submissions(df.index.tolist(), planned_outfile)
 
     if not config.no_plots:
@@ -179,6 +195,10 @@ def _run_point2dem(config: Config) -> None:
         process_pointclouds_to_dems,
     )
     from history.utils import log_to_file
+
+    if config.plots_only:
+        plot_point2dem(config)
+        return
 
     cleanup_orphaned_raw_dems(config.proc_dir.raw_dems_dir, config.proc_dir.symlinks_dir)
 
@@ -219,6 +239,10 @@ def _run_coregister(config: Config) -> None:
     """Coregister raw DEMs to the reference using Nuth–Kaab + vertical shift."""
     from history.postprocessing.pipeline import cleanup_orphaned_coreg_dems, coregister_dems, plot_coregistration
 
+    if config.plots_only:
+        plot_coregistration(config)
+        return
+
     cleanup_orphaned_coreg_dems(config.proc_dir.coreg_dems_dir, config.proc_dir.raw_dems_dir)
 
     coregister_dems(
@@ -237,6 +261,10 @@ def _run_coregister(config: Config) -> None:
 def _run_ddem(config: Config) -> None:
     """Compute differential DEMs against the reference, before and after coregistration."""
     from history.postprocessing.pipeline import cleanup_orphaned_ddems, generate_ddems, plot_ddems
+
+    if config.plots_only:
+        plot_ddems(config)
+        return
 
     cleanup_orphaned_ddems(config.proc_dir.before_coreg_ddems_dir, config.proc_dir.raw_dems_dir)
     cleanup_orphaned_ddems(config.proc_dir.after_coreg_ddems_dir, config.proc_dir.coreg_dems_dir)
@@ -296,6 +324,7 @@ _STEP_RUNNERS = {
 @click.option("--overwrite-plots", "overwrite_plots", is_flag=True, default=False, help="Force regeneration of existing plots (overrides config)")
 @click.option("--dry-run", "dry_run", is_flag=True, default=False, help="Print actions without executing them (overrides config)")
 @click.option("--no-plots", "no_plots", is_flag=True, default=False, help="Skip plot generation for this step")
+@click.option("--plots-only", "plots_only", is_flag=True, default=False, help="Skip computation and only regenerate plots from existing outputs")
 @click.option("--max-workers", "max_workers", type=int, default=None, help="Number of parallel workers (overrides config)")
 @click.option("-v", "--verbose", "verbose", count=True, help="Increase verbosity (-v INFO, -vv DEBUG)")
 def cmd_run(
@@ -305,6 +334,7 @@ def cmd_run(
     overwrite_plots: bool,
     dry_run: bool,
     no_plots: bool,
+    plots_only: bool,
     max_workers: int | None,
     verbose: int,
 ) -> None:
@@ -314,8 +344,13 @@ def cmd_run(
     point2dem, coregister, ddem, generate_pdf, all. Steps always run in pipeline order,
     regardless of the order given on the command line.
     """
+    if plots_only and no_plots:
+        raise click.UsageError("--plots-only and --no-plots are mutually exclusive.")
+
     configure_logging(verbose, cli_logger_name=__name__)
     config = load_config(config_path, overwrite, overwrite_plots, dry_run, no_plots, max_workers)
+    if plots_only:
+        config = dataclasses.replace(config, plots_only=True)
 
     steps_to_run = list(_STEP_RUNNERS) if "all" in step else [name for name in _STEP_RUNNERS if name in step]
 
