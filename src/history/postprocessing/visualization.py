@@ -1097,6 +1097,7 @@ def generate_coregistration_individual_plots(
 
 _MOSAIC_NCOLS, _MOSAIC_NROWS = 4, 6
 _MOSAIC_MAX_PER_PAGE = _MOSAIC_NCOLS * _MOSAIC_NROWS
+_MOSAIC_MIN_WIDTH = 8  # inches; keeps the long subplot titles from being cut on narrow grids
 
 
 def _mosaic_output_paths(n: int, output_path: str | Path) -> list[Path]:
@@ -1109,7 +1110,7 @@ def _mosaic_output_paths(n: int, output_path: str | Path) -> list[Path]:
 
 
 def _mosaic_pages(items: list, output_path: str | Path, title: str = "") -> Generator[tuple[Figure, list[Axes], list], None, None]:
-    """Yield `(fig, axes, page_items)` per page of at most 24 subplots on a fixed 4x6 grid, saving each figure once the caller is done."""
+    """Yield `(fig, axes, page_items)` per page of at most 24 subplots filled row by row on a grid of at most 4 columns and 6 rows, saving each figure once the caller is done."""
     output_path = Path(output_path)
     paths = _mosaic_output_paths(len(items), output_path)
     # remove files of a previous run that used a different page count
@@ -1120,8 +1121,10 @@ def _mosaic_pages(items: list, output_path: str | Path, title: str = "") -> Gene
     per_page = math.ceil(len(items) / len(paths))
     for k, path in enumerate(paths):
         page = items[k * per_page : (k + 1) * per_page]
-        fig = Figure(figsize=(4 * _MOSAIC_NCOLS, 4 * _MOSAIC_NROWS), constrained_layout=True)
-        axes = fig.subplots(_MOSAIC_NROWS, _MOSAIC_NCOLS).flatten().tolist()
+        ncols = min(len(page), _MOSAIC_NCOLS)
+        nrows = math.ceil(len(page) / _MOSAIC_NCOLS)
+        fig = Figure(figsize=(max(4 * ncols, _MOSAIC_MIN_WIDTH), 4 * nrows), constrained_layout=True)
+        axes = fig.subplots(nrows, ncols, squeeze=False).flatten().tolist()
         for ax in axes:
             ax.axis("off")
         fig.suptitle(f"{title} (page {k + 1}/{len(paths)})" if len(paths) > 1 else title, fontsize=16)
