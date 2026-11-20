@@ -562,20 +562,13 @@ def process_pointclouds_to_dems(
                 print(f)
 
 
-def save_dem_diff(dem_path: Path, ref_dem: gu.Raster, output_path: Path) -> None:
-    """Compute the elevation difference between a DEM and a reference DEM, and save it as a raster."""
-    dem = gu.Raster(dem_path).reproject(ref_dem)
-    ddem = ref_dem - dem
-    ddem.save(str(output_path))
-
-
 def generate_dem_diff(
     dem_files: dict[str, Path],
-    ref_dem: gu.Raster,
+    ref_dem_path: Path,
     output_dir: Path,
     overwrite: bool = False,
 ) -> dict[str, Path]:
-    """Cache, for each DEM, its elevation difference with ``ref_dem``.
+    """Cache, for each DEM, its elevation difference (DEM - reference) with the DEM at ``ref_dem_path``.
 
     Outputs are cached GeoTIFF files under ``output_dir``, one per input file, skipped when
     already up to date.
@@ -595,7 +588,7 @@ def generate_dem_diff(
             continue
 
         try:
-            save_dem_diff(f, ref_dem, output_path)
+            generate_ddem(f, ref_dem_path, output_path)
             diff_files[code] = output_path
         except Exception as e:
             logger.error(f"Error computing DEM diff for {f.name}: {e}")
@@ -625,10 +618,9 @@ def generate_provided_dem_viz(config: Config) -> None:
     for (site, dataset), dem_files_dict in grouped_files.items():
         logger.debug(f"Plotting provided DEMs mosaic **** {site} - {dataset} **** ({len(dem_files_dict)} files)")
         ref_dem_path = config.references_data_mapping.get_ref_dem(site, dataset)
-        ref_dem = gu.Raster(ref_dem_path)
 
         diff_files_dict = generate_dem_diff(
-            dem_files_dict, ref_dem, config.proc_dir.provided_dem_diff_dir, config.overwrite
+            dem_files_dict, ref_dem_path, config.proc_dir.provided_dem_diff_dir, config.overwrite
         )
         all_diff_files.update(diff_files_dict)
         output_path = config.plot_dir / f"{site}_{dataset}" / "mosaic" / "mosaic_provided_ddem.png"
@@ -1187,30 +1179,20 @@ def coregister_dem(
     return output_dem_path
 
 
-def generate_ddem(dem_path1: str | Path, dem_path2: str | Path, output_path: str | Path) -> Path:
+def generate_ddem(dem_path: str | Path, ref_dem_path: str | Path, output_path: str | Path) -> Path:
+    """Save the differential DEM (DEM - reference), with the DEM reprojected onto the reference grid.
+
+    :param dem_path: path to the DEM to evaluate
+    :param ref_dem_path: path to the reference DEM
+    :param output_path: path where the dDEM is saved
+    :return: path to the generated dDEM file
     """
-    Generates a differential DEM (dDEM) by subtracting one DEM from another.
+    ref_dem = gu.Raster(ref_dem_path)
+    ddem = gu.Raster(dem_path).reproject(ref_dem) - ref_dem
 
-    This function computes the pixel-wise difference between two input DEMs and saves the
-    resulting dDEM to the specified output path.
-
-    Args:
-        dem_path1 (str | Path): Path to the first DEM (minuend).
-        dem_path2 (str | Path): Path to the second DEM (subtrahend).
-        output_path (str | Path): Path where the resulting dDEM will be saved.
-
-    Returns:
-        Path: Path to the generated dDEM file.
-    """
-    output_path = Path(output_path)
-
-    dem1 = gu.Raster(dem_path1)
-    dem2 = gu.Raster(dem_path2)
-    ddem = dem1 - dem2
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    ddem.save(output_path)
-    return output_path
+    with write_file(output_path):
+        ddem.save(output_path)
+    return Path(output_path)
 
 
 def extract_archive(archive_path: Path | str, output_dir: Path | str, flatten_nested: bool = True) -> None:

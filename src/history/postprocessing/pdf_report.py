@@ -224,6 +224,7 @@ def generate_pdf_report(
         _add_png_page(pdf, plot_dir / "pointcloud_point_count.png", orientation)
         _add_png_page(pdf, plot_dir / "sparse_pointcloud_point_count.png", orientation)
         _add_png_page(pdf, plot_dir / "provided_dem_nmad.png", orientation)
+        _add_png_page(pdf, plot_dir / "raw_dem_voids.png", orientation)
         _add_png_page(pdf, plot_dir / "nmad_after_coregistration.png", orientation)
 
         # 5. Per-(site, dataset) sections
@@ -231,8 +232,13 @@ def generate_pdf_report(
             sub_dir = plot_dir / f"{site}_{dataset}"
             _add_section_title_page(pdf, f"{_SITE_DISPLAY[site]}  —  {_DATASET_DISPLAY[dataset]}")
 
+            _add_png_page(pdf, sub_dir / "intrinsics_spread_boxplots.png", orientation)
+            _add_png_page(pdf, sub_dir / "principal_point_scatter.png", orientation)
+            _add_png_page(pdf, sub_dir / "camera_positions_mosaic.png", orientation)
+            _add_png_page(pdf, sub_dir / "camera_z_shift_boxplot.png", orientation)
             _add_mosaic_pages(pdf, sub_dir / "mosaic" / "mosaic_sparsecloud_diff.png", orientation)
             _add_mosaic_pages(pdf, sub_dir / "mosaic" / "mosaic_raw_dem.png", orientation)
+            _add_mosaic_pages(pdf, sub_dir / "mosaic" / "mosaic_coreg_dem.png", orientation)
             _add_mosaic_pages(pdf, sub_dir / "mosaic" / "mosaic_ddem.png", orientation)
             _add_mosaic_pages(pdf, sub_dir / "mosaic" / "mosaic_provided_ddem.png", orientation)
             _add_mosaic_pages(pdf, sub_dir / "mosaic" / "mosaic_hillshades.png", orientation)

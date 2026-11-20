@@ -166,7 +166,7 @@ def generate_ddems_mosaic(
             ax=axes,
             orientation="vertical",
         )
-        cbar.set_label("Altitude difference (m)")
+        cbar.set_label("Altitude difference: DEM - ref (m)")
 
 
 def generate_slopes_mosaic(
@@ -1084,7 +1084,7 @@ def generate_coregistration_individual_plots(
             fraction=0.03,
             pad=0.02,
         )
-        cbar.set_label("Altitude difference(m)")
+        cbar.set_label("Altitude difference: DEM - ref (m)")
 
         with write_file(output_path) as out:
             fig.savefig(out)
