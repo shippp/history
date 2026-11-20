@@ -343,10 +343,40 @@ def generate_intrinsics_extrinsics_viz(config: Config) -> None:
 SPARSECLOUD_MAX_POINTS = 50_000
 
 
-def _read_sparsecloud_sample(path: Path, max_points: int = SPARSECLOUD_MAX_POINTS) -> gu.PointCloud:
+def _detect_pointcloud_crs(pointcloud_path: Path, ref_dem: gu.Raster):
+    """Return the CRS of a LAS/LAZ file, guessing it from the header bounds when the file has none.
+
+    The candidates are the reference DEM CRS and EPSG:4326; the first one placing the cloud within the
+    reference DEM bounds (buffered by 10%) wins. Raises ValueError if none fits.
+    """
+    if ref_dem.crs is None:
+        raise ValueError("The reference DEM has no CRS.")
+
+    with laspy.open(pointcloud_path) as reader:
+        pc_crs = reader.header.parse_crs()
+        mins, maxs = reader.header.mins, reader.header.maxs
+    if pc_crs is not None:
+        return pc_crs
+
+    test_crs_list = [str(ref_dem.crs), "EPSG:4326"]
+    logger.warning(f"{pointcloud_path.name} : No CRS found, try CRSs : {test_crs_list}")
+
+    pc_box = box(mins[0], mins[1], maxs[0], maxs[1])
+    ref_box = box(*ref_dem.bounds)
+    ref_box_buffered = ref_box.buffer(np.sqrt(ref_box.area) * 0.1)
+
+    for tested_crs in test_crs_list:
+        transformer = Transformer.from_crs(tested_crs, ref_dem.crs, always_xy=True)
+        if transform(pc_box, transformer.transform, interleaved=False).within(ref_box_buffered):
+            return tested_crs
+    raise ValueError(f"{pointcloud_path.name} : Can't find a valid CRS")
+
+
+def _read_sparsecloud_sample(path: Path, ref_dem: gu.Raster, max_points: int = SPARSECLOUD_MAX_POINTS) -> gu.PointCloud:
     """Read a point cloud, keeping a reproducible random sample of about `max_points` points if it has more.
 
-    The file is read in chunks so that huge clouds never have to fit in memory.
+    The file is read in chunks so that huge clouds never have to fit in memory. A missing CRS is guessed
+    against `ref_dem`.
     """
     rng = np.random.default_rng(0)
     with laspy.open(path) as reader:
@@ -357,15 +387,15 @@ def _read_sparsecloud_sample(path: Path, max_points: int = SPARSECLOUD_MAX_POINT
         for chunk in reader.chunk_iterator(1_000_000):
             keep = rng.random(len(chunk)) < keep_fraction
             chunks.append(np.column_stack([chunk.x[keep], chunk.y[keep], chunk.z[keep]]))
-        crs = reader.header.parse_crs()
 
+    crs = _detect_pointcloud_crs(path, ref_dem)
     x, y, z = np.concatenate(chunks).T
     return gu.PointCloud.from_xyz(x, y, z, crs=crs, data_column="Z")
 
 
 def save_sparsecloud_diff(sparsecloud_path: Path, ref_dem: gu.Raster, output_path: Path) -> None:
     """Compute the elevation difference between a (subsampled) point cloud and a reference DEM, and save it as a LAS file."""
-    sparse_pc = _read_sparsecloud_sample(sparsecloud_path)
+    sparse_pc = _read_sparsecloud_sample(sparsecloud_path, ref_dem)
     sparse_pc.reproject(ref_dem, inplace=True)
 
     ref_z = ref_dem.interp_points(sparse_pc, as_array=True)
@@ -1024,36 +1054,9 @@ def convert_pointcloud_to_dem(
     )
     output_pipeline_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with laspy.open(pointcloud_path) as las_reader:
-        pc_crs = las_reader.header.parse_crs()
-
     ref_dem = gu.Raster(reference_dem_path)
     ref_crs = ref_dem.crs
-    if ref_crs is None:
-        raise ValueError(f"The reference dem {reference_dem_path} has no CRS.")
-    ref_box = box(*ref_dem.bounds)
-
-    # if no crs found in pc_crs, tests with a list of CRS
-    if pc_crs is None:
-        test_crs_list = [str(ref_crs), "EPSG:4326"]
-
-        logger.warning(f"{pointcloud_path.name} : No CRS found, try CRSs : {test_crs_list}")
-
-        # open the real bounding box of the pointcloud file
-        las = laspy.read(pointcloud_path)
-        pc_box = box(float(las.x.min()), float(las.y.min()), float(las.x.max()), float(las.y.max()))
-
-        # buffered of 10% of area the ref_dem bounding box
-        ref_box_buffered = ref_box.buffer(np.sqrt(ref_box.area) * 0.1)
-
-        for tested_crs in test_crs_list:
-            transformer = Transformer.from_crs(tested_crs, ref_crs, always_xy=True)
-            pc_box_reprojected = transform(pc_box, transformer.transform, interleaved=False)
-            if pc_box_reprojected.within(ref_box_buffered):
-                pc_crs = tested_crs
-
-    if pc_crs is None:
-        raise ValueError(f"{pointcloud_path.name} : Can't find a valid CRS")
+    pc_crs = _detect_pointcloud_crs(pointcloud_path, ref_dem)
 
     if not ProjCRS.from_user_input(pc_crs).equals(ProjCRS.from_user_input(ref_crs)):
         logger.warning(
